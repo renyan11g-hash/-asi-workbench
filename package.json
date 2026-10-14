@@ -1,0 +1,22 @@
+{
+  "name": "asi-workbench",
+  "version": "1.0.0",
+  "description": "ASI Product Listing Workbench - 1688 to ASI product listing generator",
+  "scripts": {
+    "dev": "concurrently \"cd backend && npm run dev\" \"cd frontend && npm run dev\"",
+    "build": "cd backend && npm run build && cd ../frontend && npm run build",
+    "start": "cd backend && npm start",
+    "install:all": "cd backend && npm install && cd ../frontend && npm install"
+  },
+  "keywords": [
+    "asi",
+    "promotional-products",
+    "1688",
+    "product-listing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

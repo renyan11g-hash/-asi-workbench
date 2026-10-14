@@ -1,0 +1,359 @@
+import { Settings, SourceInfo, Evaluation } from '../types'
+import { ASI_CATEGORIES, ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
+import { costSummaryForPrompt, convertUnits } from './pricing'
+
+const ASI_CONTEXT = `You are a senior copywriter for US promotional products (ASI / PPAI / SAGE / Distributor e-commerce) catalogs.
+You write product listings that rank in distributor search and convert corporate buyers.
+
+ASI Listing field rules (strict):
+- Product Title: ≤ 60 characters. Pattern: Keyword + Traffic Word + Selling Point + Core Noun.
+- Summary Description: ≤ 130 characters, MUST end with EXACTLY: "Rush service is available".
+- Full Description: ≤ 800 characters. 50-70% product description, the rest keywords blended in naturally (do NOT list keywords separately, do NOT stuff). Do NOT mention dimensions or size in the description.
+- Keywords: up to 30 groups, each ≤ 30 characters, each ≤ 4 words, Title Case, English comma separated.
+  - You may include a brand name from the SAME product line (e.g. "Yeti Bags" only when it's truly a parallel/clone product line, not the actual brand).
+  - DO NOT include obvious branded terms (Disney, Marvel, NBA, NFL, MLB, Sanrio, Hello Kitty, Nike, Apple, Coca, Pepsi, LEGO, Barbie, Tesla, Gucci, LV, etc.).
+  - DO NOT force-fit unrelated brands.
+- Category: choose ONE from the ASI category list below.
+- Themes: choose EXACTLY 5 from the ASI themes list below; ALWAYS include "Anniversary" and "Sustainable" as two of the five (they are universal).
+- Material: choose ONE OR MORE from the ASI material list (max 4), joined by English comma (e.g. "Stainless Steel, Aluminum"). Pick every material actually present in the product.
+- Colors: translate each Chinese color into its ASI English equivalent and join with "/" (e.g. "Black/Gray/Brown/Orange/Army Green").
+- Imprint Methods: choose from the ASI imprint methods list below. ALWAYS include exactly these three: "Silkscreen", "Unimprinted", and "Full Color". Then add as many additional relevant methods from the same list as genuinely apply to this product (no upper limit).
+- Imprint Area: estimate the printable area in inches for each printable face (Front/Back/Wrap), e.g. 'Front: 2.5" W x 2" H; Wrap: 8" W x 3" H'. Use the uploaded product images + size data.
+- Do NOT invent certifications (FDA, UL, CPSIA, BPA-free, etc.) unless the 1688 source explicitly states them.
+- Do NOT mention brand names, licensed characters, or trademarks.
+- Do NOT add features, materials, or certifications that are not in the 1688 source.
+- Quality bar: keyword-rich but natural, benefit-first, no buzzword soup.
+
+You will also produce a Chinese translation of title/summary/description/keywords for the salesperson to verify.`
+
+export function buildEvaluatePrompt(source: SourceInfo, settings: Settings) {
+  const system = `${ASI_CONTEXT}
+
+Evaluate the 1688 item for fit with US promotional products market.
+Respond with STRICT JSON only (no markdown, no commentary).`
+
+  const user = `Evaluate this 1688 product for the US promotional products (ASI) market.
+
+PRODUCT DATA
+- 1688 title (Chinese): ${source.sourceTitle || '(not provided)'}
+- 1688 detailed description: ${source.description || '(not provided)'}
+- 1688 URL: ${source.sourceUrl || '(not provided)'}
+- 1688 keywords: ${(source.sourceKeywords ?? []).join(', ') || '(not provided)'}
+- Amazon-style reference title: ${source.amazonTitle || '(not provided)'}
+- Supplier: ${source.supplier || '(unknown)'}
+- Unit price: ¥${source.priceCny ?? '(unknown)'}
+- MOQ: ${source.moq ?? '(unknown)'} pcs
+- Material (Chinese): ${source.materialCn || '(unknown)'}
+- Colors (Chinese): ${source.colorsCn || '(unknown)'}
+- Carton: ${source.cartonLCm ?? '?'}x${source.cartonWCm ?? '?'}x${source.cartonHCm ?? '?'} cm, ${source.pcsPerCarton ?? '?'} pcs/ctn, ${source.cartonGwKg ?? '?'} kg
+- Unit weight: ${source.weightG ?? '(unknown)'} g
+- 1688 category hint: ${source.category || '(unknown)'}
+- Notes: ${source.notes || '(none)'}
+
+COST MODEL (already calculated)
+${costSummaryForPrompt(source, settings)}
+
+OUTPUT JSON SCHEMA (all fields required):
+{
+  "score": <integer 0-100>,
+  "verdict": "GO" | "MAYBE" | "NO",
+  "summary": "<2-3 sentence Chinese verdict for the salesperson>",
+  "pros": ["<Chinese, 3-5 items>"],
+  "cons": ["<Chinese, 2-4 items>"],
+  "risks": ["<Chinese, compliance/IP/freight/quality risks, 2-5 items>"],
+  "issues": ["<Chinese: 该产品在该市场的主要弱点（材质/合规/IP/价格/包装/印花难度），3-6 条>"],
+  "suggestions": ["<Chinese: 针对每条 issue 的具体改进策略 + 上架思路 + 是否换类目 + 标题/关键词调整方向 + 是否换印花方式，3-6 条>"],
+  "buyers": ["<Chinese, 3-5 ideal end-buyer types>"],
+  "occasions": ["<Chinese, 3-5 usage occasions>"],
+  "channels": ["<Chinese, 2-4 sales channels>"],
+  "asiCategories": ["<English ASI category names, 1-3>"],
+  "suggestedThemes": ["<English ASI theme names, exactly 5, MUST include 'Anniversary' and 'Sustainable'>"],
+  "suggestedMaterial": "<one English ASI material>",
+  "suggestedImprintMethods": ["<English ASI imprint methods, 1-4>"],
+  "suggestedColors": ["<English ASI color names detected/normalized>"],
+  "priceAdviceUsd": { "min": <number>, "max": <number> },
+  "sourcingTips": "<Chinese: negotiation, sampling, QC and packaging advice>",
+  "listingHooks": ["<English selling hooks that can go straight into a listing, 3-5 items>"]
+}
+
+Scoring guide: 80-100 = strong promo item, list it; 60-79 = viable with caveats; 40-59 = only for niche buyers; 0-39 = skip.
+Be brutally honest. The 'issues' list must be CONCRETE and actionable (e.g. '仅一种主色，缺海军蓝/灰色不易匹配客户 VI'), not generic. The 'suggestions' list must be the matching FIX for each issue, e.g. '与供应商沟通加做海军蓝、灰色，至少 5 种颜色可选'.`
+
+  return { system, user }
+}
+
+export function buildListingPrompt(
+  source: SourceInfo,
+  settings: Settings,
+  answers?: ListingAnswer[]
+) {
+  const units = convertUnits(source)
+  const system = `${ASI_CONTEXT}
+
+Output STRICT JSON only (no markdown, no commentary). Do not wrap in code fences.
+
+IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
+- Each answer describes a real feature / use case / audience / printing preference / packaging of THIS product.
+- Use them in the title / summary / description as the primary selling points.
+- Do NOT contradict the answers.
+- Do NOT add certifications, materials, features, or claims that are not present in the 1688 source OR the salesperson's answers.
+- If an answer says "no" or is empty, omit that claim from the listing.`
+
+  const themesPick = ASI_THEMES.join(', ')
+  const categoriesPick = ASI_CATEGORIES.join(', ')
+  const materialsPick = ASI_MATERIALS.join(', ')
+  const imprintsPick = ASI_IMPRINT_METHODS.join(', ')
+
+  const answersBlock = answers?.length
+    ? `\n\nANSWERS FROM THE SALESPERSON (use as the source of truth for selling points; do NOT add anything not stated here):\n${answers
+        .map((a, i) => `${i + 1}. Q: ${a.question}\n   A: ${a.answer || '(skipped)'}`)
+        .join('\n')}`
+    : ''
+
+  const user = `Create an ASI/PPAI compliant product for the US promotional products industry.
+
+1688 SOURCE
+- Title: ${source.sourceTitle || '(not provided)'}
+- Detailed description: ${source.description || '(not provided)'}
+- 1688 keywords: ${(source.sourceKeywords ?? []).join(', ') || '(not provided)'}
+- Amazon-style reference title (provided by user): ${source.amazonTitle || '(not provided)'}
+- Material (Chinese): ${source.materialCn || '(unknown)'}
+- Colors (Chinese): ${source.colorsCn || '(unknown)'}
+- Size: ${source.sizeCn || '(unknown)'}
+- Carton: ${source.cartonLCm ?? '?'}x${source.cartonWCm ?? '?'}x${source.cartonHCm ?? '?'} cm (≈${units.cartonSizeInch}), ${source.pcsPerCarton ?? '?'} pcs/ctn, ${source.cartonGwKg ?? '?'} kg (≈${units.cartonGwLb ?? '?'} lb)
+- Unit weight: ${source.weightG ?? '?'} g (≈${units.unitWeightLb ?? '?'} lb)
+- Category hint: ${source.category || '(unknown)'}
+- Buyer notes: ${source.notes || '(none)'}
+${answersBlock}
+
+REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)
+- ASI Categories (up to 2): ${categoriesPick}
+- ASI Themes (exactly 5, MUST include 'Anniversary' and 'Sustainable'): ${themesPick}
+- ASI Materials (one): ${materialsPick}
+- ASI Imprint Methods (1-4): ${imprintsPick}
+- Color style: translate each Chinese color to its ASI English form, join with "/" (e.g. "Black/Gray/Brown/Orange/Army Green").
+
+KEYWORD SEED LIBRARY (high-frequency US promo terms, drawn from asinseed / Amazon promo research; pick only ones that are RELEVANT to this product, do NOT stuff):
+${SEED_KEYWORDS.join(', ')}
+
+CALCULATED PRICE GRID (authoritative — DO NOT change numbers, USE these only)
+${costSummaryForPrompt(source, settings)}
+
+OUTPUT JSON SCHEMA (all fields required, all values MUST be plain strings/objects/arrays, no markdown):
+{
+  "title": "≤60 chars, English, Title Case. Keyword+Traffic Word+Selling Point+Core Noun",
+  "summary": "≤130 chars English, MUST end with EXACTLY 'Rush service is available' (include a space before it)",
+  "description": "≤800 chars English, 50-70% product description + the rest keywords blended in naturally. Do NOT list dimensions or size.",
+  "keywords": "single string, ≤30 groups separated by English comma. Each group ≤30 chars, ≤4 words. Title Case. Do NOT include obvious brand names like ${BRAND_BLOCKLIST.slice(0, 6).join(', ')}.",
+  "category": "the PRIMARY category, ONE from the above ASI category list",
+  "categories": ["1-2 ASI categories from the list above; the first MUST equal \"category\"; pick the most relevant for this product (max 2)"],
+  "themes": ["exactly 5 ASI theme strings, MUST include 'Anniversary' and 'Sustainable'"],
+  "material": "ONE OR MORE from the above ASI material list, joined by English comma (e.g. 'Stainless Steel, Aluminum'), max 4",
+  "materials": ["array form of the same materials"],
+  "colors": "color string joined by '/', e.g. 'Black/Gray/Brown/Orange/Army Green'",
+  "colorChips": ["individual English color names used in 'colors'"],
+  "imprintMethods": ["the three REQUIRED items 'Silkscreen', 'Unimprinted', 'Full Color' PLUS any additional relevant ones from the above ASI imprint list — there is NO upper limit, include all that apply to this product"],
+  "imprintArea": "English imprint area per face in inches (e.g. 'Front: 2.5\\\" W x 2\\\" H; Wrap: 8\\\" W x 3\\\" H'), estimated from the uploaded product images + product size",
+  "productionTime": "English, e.g. '5-7 business days after proof approval'",
+  "packaging": "English packaging & shipping info",
+  "warnings": ["English compliance / handling notes, 0-4 items"],
+  "titleZh": "Chinese translation of title (for salesperson review)",
+  "summaryZh": "Chinese translation of summary",
+  "descriptionZh": "Chinese translation of description",
+  "keywordsZh": "Chinese translation/list of keywords"
+}
+
+Quality bar: every claim must come from 1688 source OR the salesperson's answers; do not fabricate certifications, materials, or features. If you cannot fit Title in ≤60 chars, shorten a noun; never return a Title >60. If you cannot fit Summary in ≤130 chars while keeping 'Rush service is available' as the last phrase, shorten earlier text.`
+
+  // expose constants to silence unused-warning
+  void LIMITS
+  return { system, user }
+}
+
+/** 生成前询问用户的关键问题（AI 主动收集差异化信息，避免捏造） */
+export interface ListingAnswer {
+  id: string
+  question: string
+  answer: string
+}
+
+export interface ListingQuestion {
+  id: string
+  question: string
+  placeholder: string
+  hint?: string
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+}
+
+/** 多轮对话式调整评估：基于现有评估 + 用户补充信息重新打分 */
+export function buildChatEvaluationPrompt(
+  source: SourceInfo,
+  currentEval: Evaluation,
+  messages: ChatMessage[]
+) {
+  const system = `${ASI_CONTEXT}
+
+You are refining an existing ASI market evaluation of a 1688 product. The salesperson is providing more context (sample photos, factory feedback, customer requirements, etc.) and you must update the evaluation accordingly.
+
+Respond with STRICT JSON only (no markdown, no commentary). Output the FULL updated evaluation (same schema as the original), not a partial diff.`
+
+  const conv = messages
+    .map((m) => `${m.role === 'user' ? 'Salesperson' : 'You'}:\n${m.content}`)
+    .join('\n\n')
+
+  const user = `Update the ASI evaluation for this 1688 product based on the conversation below.
+
+1688 SOURCE
+- Title: ${source.sourceTitle || '(empty)'}
+- Description: ${source.description || '(empty)'}
+- Material (Chinese): ${source.materialCn || '(empty)'}
+- Colors (Chinese): ${source.colorsCn || '(empty)'}
+- Size: ${source.sizeCn || '(empty)'}
+- Carton: ${source.cartonLCm ?? '?'}x${source.cartonWCm ?? '?'}x${source.cartonHCm ?? '?'} cm, ${source.pcsPerCarton ?? '?'} pcs/ctn
+- 1688 category hint: ${source.category || '(empty)'}
+- Notes: ${source.notes || '(none)'}
+
+CURRENT EVALUATION (this is the baseline — you may keep, adjust, or rewrite any field based on the conversation):
+${JSON.stringify(currentEval, null, 2)}
+
+CONVERSATION
+${conv || '(no messages yet)'}
+
+OUTPUT JSON SCHEMA (must match the original evaluation schema, all fields required):
+{
+  "score": <integer 0-100, may shift up or down based on conversation>,
+  "verdict": "GO" | "MAYBE" | "NO",
+  "summary": "<2-3 sentence Chinese verdict reflecting the latest conversation>",
+  "pros": ["<Chinese, 3-5 items>"],
+  "cons": ["<Chinese, 2-4 items>"],
+  "risks": ["<Chinese, 2-5 items>"],
+  "issues": ["<Chinese, 3-6 items, concrete>"],
+  "suggestions": ["<Chinese, 3-6 items, each a fix for an issue>"],
+  "buyers": ["<Chinese, 3-5 ideal end-buyer types>"],
+  "occasions": ["<Chinese, 3-5 usage occasions>"],
+  "channels": ["<Chinese, 2-4 sales channels>"],
+  "asiCategories": ["<English ASI category names, 1-3>"],
+  "suggestedThemes": ["<English ASI theme names, exactly 5, MUST include 'Anniversary' and 'Sustainable'>"],
+  "suggestedMaterial": "<one English ASI material>",
+  "suggestedImprintMethods": ["<English ASI imprint methods, 1-4>"],
+  "suggestedColors": ["<English ASI color names>"],
+  "priceAdviceUsd": { "min": <number>, "max": <number> },
+  "sourcingTips": "<Chinese: negotiation, sampling, QC and packaging advice>",
+  "listingHooks": ["<English selling hooks, 3-5 items>"]
+}
+
+Rules:
+- Only change scores/fields when the conversation gives concrete new info (e.g. "已经和供应商确认可以做 5 种颜色" → upgrade colors flexibility).
+- Be brutally honest. Do not be a yes-man.
+- If the conversation adds no real signal, you may return the same evaluation.`
+
+  return { system, user }
+}
+
+export function buildListingQuestionsPrompt(source: SourceInfo) {
+  const system = `You are a senior ASI promotional products copywriter. Before drafting a listing, you ask the salesperson 5-8 sharp, product-specific questions so the final English copy is accurate (not generic) and aligned with the real product.
+
+Rules:
+- Ask only what you cannot infer from the 1688 source provided.
+- Each question must be answerable in 1-3 short sentences.
+- Phrase questions in Chinese (salesperson's language). Option-hints in English.
+- Output STRICT JSON only (no markdown, no commentary).`
+
+  const user = `Generate 5-8 clarifying questions before drafting the ASI listing for this 1688 product.
+
+1688 SOURCE
+- Title: ${source.sourceTitle || '(empty)'}
+- Description: ${source.description || '(empty)'}
+- 1688 keywords: ${(source.sourceKeywords ?? []).join(', ') || '(empty)'}
+- Material (Chinese): ${source.materialCn || '(empty)'}
+- Colors (Chinese): ${source.colorsCn || '(empty)'}
+- Size: ${source.sizeCn || '(empty)'}
+- Category hint: ${source.category || '(empty)'}
+- Notes: ${source.notes || '(empty)'}
+
+OUTPUT JSON SCHEMA (all fields required, no markdown):
+{
+  "questions": [
+    {
+      "id": "<short id like 'target_buyer' | 'key_benefit' | 'use_case' | 'imprint_pref' | 'packaging' | 'compliance' | 'price_band' | 'competing_brand'>",
+      "question": "<Chinese, 1 sentence, specific to this product>",
+      "placeholder": "<Chinese, 1 sentence telling the salesperson what to write>",
+      "hint": "<optional English, 1 line e.g. 'e.g. corporate travel program, university bookstore'>"
+    }
+  ]
+}
+
+Coverage requirement: cover at least 4 of these 6 angles:
+  1) Target buyer / occasion (谁会用、什么场景)
+  2) Top 1-2 selling points the salesperson wants to highlight (突出卖点)
+  3) Imprinting preference (logo placement / size limit / preferred method)
+  4) Packaging & export (白盒 / 彩盒 / opp 袋 / 彩卡)
+  5) Compliance & warnings (FDA / CPSIA / choking hazard / fragile / 电池 等)
+  6) Competing brand reference (要像哪个品牌/型号，例如 Yeti / Corkcicle 风格)`
+  return { system, user }
+}
+
+/**
+ * 看图找类似商品：基于用户上传的产品图片 + 1688 描述，返回亚马逊/ASI 搜索关键词建议、
+ * 可能对应的 ASIN、参考标题模板、参考定价区间。注意：实际亚马逊/ASI 商品链接需要实时搜索，
+ * 这里我们输出"建议用户搜什么"+"已知的同款/克隆品品牌系列关键词"。
+ */
+export function buildFindSimilarPrompt(source: SourceInfo) {
+  const system = `You are a US promotional products market analyst. You recognize product categories and recommend search keywords/ASINs to find similar items on Amazon and ASI distributor catalogs (espn / PPAI / SAGE).
+You will look at product photos (front view, multi-angle if available) plus the 1688 source data, and output STRICT JSON only (no markdown, no commentary).`
+
+  const imageList = (source.images ?? [])
+    .slice(0, 6)
+    .map((u, i) => `${i + 1}. ${u.length > 200 ? '[base64 ' + u.length + ' chars]' : u}`)
+    .join('\n')
+
+  const user = `Find US promotional product equivalents for this 1688 item.
+
+1688 SOURCE
+- Title: ${source.sourceTitle || '(not provided)'}
+- Description: ${source.description || '(not provided)'}
+- Material: ${source.materialCn || '(unknown)'}
+- Colors: ${source.colorsCn || '(unknown)'}
+- Size: ${source.sizeCn || '(unknown)'}
+- Category hint: ${source.category || '(unknown)'}
+
+PRODUCT IMAGES (you will analyze them visually):
+${imageList}
+
+OUTPUT JSON SCHEMA:
+{
+  "productType": "<2-5 word English product type, e.g. '20oz Stainless Tumbler'>",
+  "visualFeatures": ["<4-8 visible features: shape, color, finish, opening style, lid type, accessories>"],
+  "categoryGuess": "<one best-fit ASI category>",
+  "amazonSearchTerms": ["5-10 English search queries that would surface this on Amazon US, ordered most→least specific"],
+  "amazonSearchUrl": "single https://www.amazon.com/s?k=<url-encoded best query>",
+  "asiSearchTerms": ["5-8 English search queries for ASI/PPAI/SAGE distributor sites"],
+  "asiSearchUrl": "single https://www.google.com/search?q=<url-encoded ASI query> (Google is the easiest way to surface ASI distributor catalogs)",
+  "amazonItems": [
+    { "title": "<Amazon product title>", "asin": "<B0xxxxxxxx or empty>", "priceUsd": <number or null>, "url": "https://www.amazon.com/dp/<asin>", "note": "<1-line why this is a competitor>" }
+  ],
+  "asiItems": [
+    { "title": "<distributor catalog product title>", "brand": "<brand line name>", "url": "https://...", "note": "<1-line why this is a competitor>" }
+  ],
+  "likelyAsins": ["0-5 plausible ASINs you might have seen for similar items (B0xxxxxxxx format, leave empty array if unsure)"],
+  "competingBrands": ["3-6 US promo catalog brand line names that compete in this category, e.g. 'Yeti', 'Brumate', 'Corkcicle' (do NOT invent; only list commonly known ones)"],
+  "referenceTitles": ["3-5 example US-distributor-style titles for the same product"],
+  "suggestions": [
+    "3-5 concrete Chinese suggestions for the salesperson (e.g. '优先用 asinseed.com 查上述 ASIN 的高频词，补充到标题前 30 字符', '对比 CamelBak / Hydro Flask 价位，把 250pc 定价定在 $4-$6 区间', '主图换白色背景 + 尺寸参照物（USD 1 角硬币）提升点击率')"
+  ],
+  "priceRangeUsd": { "min": <typical 250pc price in USD>, "max": <typical 250pc price in USD> }
+}
+
+Rules:
+- Do NOT invent ASINs if you don't recognize the product. Return empty array.
+- Do NOT include actual trademarks as competing brands you sell under (you can list them as competing brands for analysis). Never write a title that contains a real trademark unless the user is making a licensed product.
+- Amazon search queries should be 2-5 words, benefit-aware, that a corporate buyer would type.
+- ASI search queries should include category terms distributors use (e.g. '20oz tumbler', 'vacuum insulated drinkware').
+- amazonItems / asiItems: list the 3-6 most representative competitors with a 1-line note. URLs can be generic Amazon/Google search URLs when you don't have the exact ASIN.`
+
+  return { system, user }
+}

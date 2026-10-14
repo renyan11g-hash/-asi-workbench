@@ -1,0 +1,17 @@
+[[app]]
+name = "frontend"
+cmd = "cd frontend && pnpm install && pnpm dev"
+autoRun = true
+port = 5173
+
+[[app]]
+name = "backend"
+cmd = "cd backend && pnpm install && pnpm dev"
+autoRun = true
+port = 3000
+
+[[app]]
+name = "publish"
+cmd = "cd /workspace/backend && PORT=4100 bash /workspace/backend/start.sh"
+autoRun = true
+port = 4100
