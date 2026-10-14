@@ -196,6 +196,8 @@ export interface Settings {
   // 价格模型
   /** 1 USD = ? CNY（默认 6.7，符合用户给定公式） */
   fxRate: number
+  /** 汇率自动实时更新（后台定时拉取并覆盖 fxRate），默认开启 */
+  fxAutoUpdate: boolean
   /** 空运：元/kg（默认 50） */
   airRateCnyPerKg: number
   /** 海运：元/kg（默认 20） */
@@ -227,6 +229,7 @@ export const DEFAULT_SETTINGS: Settings = {
   aiApiKey: '',
   aiModel: 'deepseek-chat',
   fxRate: 6.7,
+  fxAutoUpdate: true,
   airRateCnyPerKg: 50,
   seaRateCnyPerKg: 20,
   volumetricDivisor: 5000,

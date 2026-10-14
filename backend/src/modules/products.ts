@@ -1,14 +1,15 @@
 import { randomUUID } from 'crypto'
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import ExcelJS from 'exceljs'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { AiError } from '../services/ai'
 import { callChatJson } from '../services/ai'
-import { applyQc, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions } from '../services/workbench'
+import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, suggestSourcing } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
-import { buildPriceGrid, parseProductSizeCm, TIER_COUNT } from '../services/pricing'
+import { buildPriceGrid } from '../services/pricing'
+import { buildGlsWorkbook } from '../services/gls-export'
+import { recommendImprintMethods } from '../services/imprint-recommend'
 import { Evaluation, Listing, Product, ProductStatus, SimilarResearch, SourceInfo } from '../types'
 import { loadSettings } from './settings'
 
@@ -388,155 +389,19 @@ productsRouter.get('/export/submission.xlsx', async (req: Request, res: Response
   const products = rows.map(rowToProduct)
   const settings = loadSettings()
 
-  // 列定义：type='data' 直接填值；type='cm' 录入（cm 原始值）；type='formula' 按公式换算
-  const headers = [
-    'Item Name',
-    'Item Number',
-    'Description',
-    'Categories (max 2)',
-    'Themes',
-    'Materials',
-    'Colors',
-    'Imprint Method',
-    'Imprint Area',
-    'Imprinting Location',
-    'Imprinting Colors',
-    'Item Packaging',
-    'Production Time (days)',
-    'Rush Service Offered (days)',
-    'Can order less than minimum',
-    'Price Includes',
-    'Set-up Charge (G)',
-    'Sample Charge',
-    'Shipping Dimensions (inch)',
-    'Product Size (inch)',
-    'Shipping Weight (lb)',
-    'Product Weight (lb)',
-    'PCS / CTN',
-    ...Array.from({ length: TIER_COUNT }, (_, i) => [`Tier${i + 1} Qty`, `Tier${i + 1} Price (USD)`]).flat(),
-    'MOQ',
-    // —— 最右列：cm / 原始录入（用户填写后公式自动换算左边）——
-    'Product Size L (cm)',
-    'Product Size W (cm)',
-    'Product Size H (cm)',
-    'Carton L (cm)',
-    'Carton W (cm)',
-    'Carton H (cm)',
-    'Product Weight (g)',
-    'Carton GW (kg)',
-  ]
-
-  const wb = new ExcelJS.Workbook()
-  wb.creator = 'ASI Workbench'
-  wb.created = new Date()
-  const ws = wb.addWorksheet('Submission')
-  ws.columns = headers.map((h) => ({ header: h, width: h.length > 16 ? 22 : 16 }))
-  ws.getRow(1).font = { bold: true }
-  ws.getRow(1).alignment = { vertical: 'middle', wrapText: true }
-
-  // 列字母映射（Excel 列号 >=1）。取出常用列索引
-  const col = (name: string) => headers.indexOf(name) + 1
-  const C = {
-    prodL: col('Product Size L (cm)'),
-    prodW: col('Product Size W (cm)'),
-    prodH: col('Product Size H (cm)'),
-    cartL: col('Carton L (cm)'),
-    cartW: col('Carton W (cm)'),
-    cartH: col('Carton H (cm)'),
-    prodWg: col('Product Weight (g)'),
-    cartWg: col('Carton GW (kg)'),
-    shipDim: col('Shipping Dimensions (inch)'),
-    prodSize: col('Product Size (inch)'),
-    shipWt: col('Shipping Weight (lb)'),
-    prodWt: col('Product Weight (lb)'),
-  }
-  const L = (n: number) => {
-    let s = ''
-    while (n > 0) {
-      const m = (n - 1) % 26
-      s = String.fromCharCode(65 + m) + s
-      n = Math.floor((n - 1) / 26)
-    }
-    return s
-  }
-
-  let r = 2
-  for (const p of products) {
-    const l = p.listing
-    const grid = l?.priceGrid ?? buildPriceGrid(p.source, settings).rows
-    const prodCm =
-      l?.productSizeCm ?? parseProductSizeCm(p.source.sizeCn, p.source.weightG)
-    const cartonCm = [
-      p.source.cartonLCm ?? null,
-      p.source.cartonWCm ?? null,
-      p.source.cartonHCm ?? null,
-    ]
-
-    const rowVals: (string | number | null | { formula: string })[] = []
-    rowVals[col('Item Name') - 1] = l?.title ?? p.source.sourceTitle
-    rowVals[col('Item Number') - 1] = p.id
-    rowVals[col('Description') - 1] = l?.summary ?? ''
-    rowVals[col('Categories (max 2)') - 1] = (l?.categories ?? [l?.category ?? p.source.category].filter(Boolean)).slice(0, 2).join(', ')
-    rowVals[col('Themes') - 1] = (l?.themes ?? []).join(', ')
-    rowVals[col('Materials') - 1] = (l?.materials && l.materials.length ? l.materials.join(', ') : l?.material ?? '')
-    rowVals[col('Colors') - 1] = l?.colors ? l.colors.replace(/\//g, ', ') : ''
-    rowVals[col('Imprint Method') - 1] = (l?.imprintMethods ?? []).join(', ')
-    rowVals[col('Imprint Area') - 1] = '' // 由用户自行填写
-    rowVals[col('Imprinting Location') - 1] = 'Front or as your request'
-    rowVals[col('Imprinting Colors') - 1] = 'PMS'
-    rowVals[col('Item Packaging') - 1] = 'POLY BAG, BULK,Gift box'
-    rowVals[col('Production Time (days)') - 1] = 7
-    rowVals[col('Rush Service Offered (days)') - 1] = 5
-    rowVals[col('Can order less than minimum') - 1] = 'yes'
-    rowVals[col('Price Includes') - 1] = '1 color 1 location imprinted'
-    rowVals[col('Set-up Charge (G)') - 1] = 30
-    rowVals[col('Sample Charge') - 1] = 30
-    // 公式列（依赖最右 cm 列）
-    rowVals[C.shipDim - 1] = {
-      formula: `TEXT(ROUND(${L(C.cartL)}${r}*0.3937,2),"0.00"" x """)&TEXT(ROUND(${L(C.cartW)}${r}*0.3937,2),"0.00"" x """)&TEXT(ROUND(${L(C.cartH)}${r}*0.3937,2),"0.00")&" inch"`,
-    }
-    rowVals[C.prodSize - 1] = {
-      formula: `TEXT(ROUND(${L(C.prodL)}${r}*0.3937,2),"0.00"" x """)&TEXT(ROUND(${L(C.prodW)}${r}*0.3937,2),"0.00"" x """)&TEXT(ROUND(${L(C.prodH)}${r}*0.3937,2),"0.00")&" inch"`,
-    }
-    rowVals[C.shipWt - 1] = { formula: `ROUND(${L(C.cartWg)}${r}*2.20462,2)` }
-    rowVals[C.prodWt - 1] = { formula: `ROUND(${L(C.prodWg)}${r}/453.592,2)` }
-    rowVals[col('PCS / CTN') - 1] = p.source.pcsPerCarton ?? ''
-    let ti = col('Tier1 Qty') - 1
-    for (let i = 0; i < TIER_COUNT; i++) {
-      const hit = grid[i]
-      rowVals[ti++] = hit ? hit.qty : ''
-      rowVals[ti++] = hit ? Number(hit.unitPrice.toFixed(2)) : ''
-    }
-    rowVals[col('MOQ') - 1] = p.source.moq ?? ''
-
-    // 最右 cm 录入列
-    rowVals[C.prodL - 1] = prodCm?.l ?? null
-    rowVals[C.prodW - 1] = prodCm?.w ?? null
-    rowVals[C.prodH - 1] = prodCm?.h ?? null
-    rowVals[C.cartL - 1] = cartonCm[0]
-    rowVals[C.cartW - 1] = cartonCm[1]
-    rowVals[C.cartH - 1] = cartonCm[2]
-    rowVals[C.prodWg - 1] = p.source.weightG ?? null
-    rowVals[C.cartWg - 1] = p.source.cartonGwKg ?? null
-
-    const excelRow = ws.getRow(r)
-    rowVals.forEach((v, idx) => {
-      const cell = excelRow.getCell(idx + 1)
-      if (v && typeof v === 'object' && 'formula' in v) {
-        cell.value = { formula: (v as { formula: string }).formula }
-      } else {
-        cell.value = v as string | number | null
-      }
-    })
-    r++
-  }
+  // 严格匹配 gls产品表格1014.xlsx「上传产品-1」结构（表头一字不改 + cm 录入列 + 公式换算）
+  const wb = buildGlsWorkbook({
+    products,
+    settings,
+    numberPrefix: (req.query.prefix as string) || 'GLS',
+  })
 
   const buf = await wb.xlsx.writeBuffer()
   res.setHeader(
     'Content-Type',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   )
-  res.setHeader('Content-Disposition', 'attachment; filename="asi-submission.xlsx"')
+  res.setHeader('Content-Disposition', 'attachment; filename="gls-upload.xlsx"')
   res.send(Buffer.from(buf))
 })
 
@@ -987,4 +852,71 @@ productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
     )
   }
   res.json({ priceGrid: rows, product: findProduct(id) })
+})
+
+// ---------- 印刷方式推荐（材质适配 + 优缺点分析，本地规则引擎，无需 AI） ----------
+productsRouter.post('/imprint-recommend', async (req: Request, res: Response) => {
+  const body = z
+    .object({
+      source: sourceSchema.optional(),
+      materialEn: z.array(z.string()).optional(),
+    })
+    .parse(req.body ?? {})
+  const source = toSourceInfo(body.source ?? sourceSchema.parse({}))
+  const result = recommendImprintMethods(source, body.materialEn)
+  res.json(result)
+})
+
+// ---------- AI 助手对话窗口（免提问，自动补全信息；可返回 listing 补丁） ----------
+productsRouter.post('/assistant', async (req: Request, res: Response) => {
+  const body = z
+    .object({
+      productId: z.string().optional(),
+      source: sourceSchema.optional(),
+      listing: z.any().nullable().optional(),
+      messages: z
+        .array(
+          z.object({
+            role: z.enum(['user', 'assistant']),
+            content: z.string(),
+          })
+        )
+        .default([]),
+    })
+    .parse(req.body ?? {})
+
+  let source: SourceInfo
+  let listing: Partial<Listing> | null = (body.listing ?? null) as Partial<Listing> | null
+  if (body.productId) {
+    const current = findProduct(body.productId)
+    source = current.source
+    listing = (current.listing ?? listing) as Partial<Listing> | null
+  } else {
+    source = toSourceInfo(body.source ?? sourceSchema.parse({}))
+  }
+
+  const settings = loadSettings()
+  const result = await runAi(() =>
+    assistantChat(source, listing, body.messages as ChatMessage[], settings)
+  )
+  res.json(result)
+})
+
+// ---------- 1688 选品自动搜寻（AI 推荐选品方向 + 1688 搜索词） ----------
+productsRouter.post('/sourcing-suggest', async (req: Request, res: Response) => {
+  const body = z
+    .object({
+      category: z.string().optional(),
+      keywords: z.string().optional(),
+      budgetCny: z.coerce.number().nullable().optional(),
+      targetPriceUsd: z
+        .object({ min: z.coerce.number(), max: z.coerce.number() })
+        .nullable()
+        .optional(),
+      notes: z.string().optional(),
+    })
+    .parse(req.body ?? {})
+  const settings = loadSettings()
+  const result = await runAi(() => suggestSourcing(body, settings))
+  res.json(result)
 })

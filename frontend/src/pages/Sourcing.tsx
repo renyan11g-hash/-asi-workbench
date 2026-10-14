@@ -3,14 +3,18 @@ import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
+  Bot,
   CheckCircle2,
+  Compass,
   Copy,
   History,
   Loader2,
   MinusCircle,
+  Printer,
   RotateCcw,
   Save,
   Search,
+  Send,
   Sparkles,
   Trash2,
   Upload,
@@ -123,6 +127,87 @@ export default function Sourcing() {
   useDraft('sourcing:priceGrid', priceGrid)
   useDraft('sourcing:keywordsText', keywordsText)
   useDraft('sourcing:imageText', imageText)
+
+  // ---------- 新功能状态 ----------
+  const [busySuggest, setBusySuggest] = useState(false)
+  const [sourcing, setSourcing] = useState<{
+    directions: Array<{
+      product: string
+      why: string
+      search1688: string[]
+      category: string
+      expectedUnitCostCny: number | null
+      expectedSellUsd: { min: number; max: number } | null
+      risks: string[]
+    }>
+    keywords1688: string[]
+    tips: string[]
+  } | null>(null)
+  const [suggestInput, setSuggestInput] = useState({ category: '', keywords: '', budgetCny: '', notes: '' })
+  const [busyImprint, setBusyImprint] = useState(false)
+  const [imprintRec, setImprintRec] = useState<{
+    recommendations: Array<{ id: string; nameZh: string; why: string; pros: string[]; cons: string[]; bestFor: string }>
+    materialProfiles: Array<{ name: string; nameZh: string; pros: string[]; cons: string[] }>
+    materialTags: string[]
+    summary: string
+  } | null>(null)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatBusy, setChatBusy] = useState(false)
+
+  /** 1688 选品方向推荐（AI） */
+  const runSourcingSuggest = async () => {
+    setBusySuggest(true)
+    try {
+      const r = await api.sourcingSuggest({
+        category: suggestInput.category || undefined,
+        keywords: suggestInput.keywords || undefined,
+        budgetCny: suggestInput.budgetCny ? Number(suggestInput.budgetCny) : undefined,
+        notes: suggestInput.notes || undefined,
+      })
+      setSourcing(r)
+      toast.success(`已生成 ${r.directions?.length ?? 0} 个选品方向`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusySuggest(false)
+    }
+  }
+
+  /** 印刷方式推荐（本地规则引擎，秒出） */
+  const runImprintRecommend = async () => {
+    setBusyImprint(true)
+    try {
+      const r = await api.imprintRecommend(buildSource())
+      setImprintRec(r)
+      toast.success(`已推荐 ${r.recommendations?.length ?? 0} 种印刷方式`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusyImprint(false)
+    }
+  }
+
+  /** AI 助手对话（免提问，自动补全信息） */
+  const sendAssistant = async () => {
+    const text = chatInput.trim()
+    if (!text || chatBusy) return
+    const next = [...chatMessages, { role: 'user' as const, content: text }]
+    setChatMessages(next)
+    setChatInput('')
+    setChatBusy(true)
+    try {
+      const r = await api.assistantChat({ source: buildSource(), listing: null, messages: next })
+      setChatMessages([...next, { role: 'assistant', content: r.reply }])
+      if (r.notes?.length) toast.info(r.notes.join('；'))
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+      setChatMessages(next)
+    } finally {
+      setChatBusy(false)
+    }
+  }
 
   /** 需求 8：从 1688 链接自动抓取资料，尽量填充表单 */
   const runFetch1688 = async () => {
@@ -409,6 +494,139 @@ export default function Sourcing() {
 
       <div className="grid gap-5 lg:grid-cols-12">
       <div className="space-y-4 lg:col-span-7">
+        <SectionCard
+          title="1688 选品方向推荐（AI 自动搜寻）"
+          hint="不知道卖什么？填几个条件，AI 推荐适合美国促销礼品市场、能吸引买家下单的选品方向，并给出 1688 搜索词"
+          right={
+            <Button size="sm" onClick={runSourcingSuggest} disabled={busySuggest}>
+              {busySuggest ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Compass className="mr-1 h-3.5 w-3.5" />}
+              {busySuggest ? '推荐中…' : '生成选品方向'}
+            </Button>
+          }
+        >
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="目标类目（可选）">
+              <select
+                className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+                value={suggestInput.category}
+                onChange={(e) => setSuggestInput((s) => ({ ...s, category: e.target.value }))}
+              >
+                <option value="">不限</option>
+                {ASI_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="预算（¥/件，可选）">
+              <Input
+                className={inputCls}
+                type="number"
+                min={0}
+                step="0.5"
+                placeholder="如 15"
+                value={suggestInput.budgetCny}
+                onChange={(e) => setSuggestInput((s) => ({ ...s, budgetCny: e.target.value }))}
+              />
+            </Field>
+            <Field label="偏好关键词（可选）">
+              <Input
+                className={inputCls}
+                placeholder="如 保温杯 帆布袋"
+                value={suggestInput.keywords}
+                onChange={(e) => setSuggestInput((s) => ({ ...s, keywords: e.target.value }))}
+              />
+            </Field>
+          </div>
+
+          {sourcing && (
+            <div className="mt-3 space-y-3">
+              {sourcing.directions?.map((d, i) => (
+                <div key={i} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-semibold text-slate-800">
+                      {i + 1}. {d.product}
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px]">
+                      {d.expectedUnitCostCny != null && (
+                        <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">成本 ≈ ¥{d.expectedUnitCostCny}</span>
+                      )}
+                      {d.expectedSellUsd && (
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">
+                          售价 ${d.expectedSellUsd.min}–${d.expectedSellUsd.max}
+                        </span>
+                      )}
+                      {d.category && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">{d.category}</span>}
+                    </div>
+                  </div>
+                  <p className="mt-1.5 text-[13px] leading-relaxed text-slate-600">{d.why}</p>
+                  {d.search1688?.length > 0 && (
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] text-slate-500">1688 搜索：</span>
+                      {d.search1688.map((k, j) => (
+                        <a
+                          key={j}
+                          href={`https://search.1688.com/kq/-6D3O${encodeURIComponent(k)}.html`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded border border-orange-200 bg-orange-50 px-1.5 py-0.5 text-[11px] text-orange-700 hover:bg-orange-100"
+                        >
+                          {k} ↗
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                  {d.risks?.length > 0 && (
+                    <p className="mt-1.5 text-[11px] text-rose-600">风险：{d.risks.join('；')}</p>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="mt-1 h-7 text-xs text-blue-600"
+                    onClick={() => {
+                      set('sourceTitle', d.product)
+                      set('category', d.category || '')
+                      setKeywordsText([...(d.search1688 ?? [])].join(', '))
+                      toast.success('已填入表单，补充箱规等信息后即可评估')
+                    }}
+                  >
+                    <Wand2 className="mr-1 h-3 w-3" /> 填入下方表单
+                  </Button>
+                </div>
+              ))}
+              {sourcing.keywords1688?.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-slate-500">通用搜索词：</span>
+                  {sourcing.keywords1688.map((k, i) => (
+                    <a
+                      key={i}
+                      href={`https://search.1688.com/kq/-6D3O${encodeURIComponent(k)}.html`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-200"
+                    >
+                      {k} ↗
+                    </a>
+                  ))}
+                </div>
+              )}
+              {sourcing.tips?.length > 0 && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                  <div className="mb-1 text-[11px] font-semibold text-amber-800">选品/成交要点</div>
+                  <ul className="space-y-0.5">
+                    {sourcing.tips.map((t, i) => (
+                      <li key={i} className="text-[12px] leading-relaxed text-amber-800">
+                        · {t}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </SectionCard>
+
         <SectionCard
           title="1688 商品信息"
           hint="信息越完整，AI 评估与英文链接质量越高。箱规和数量决定第一级"
@@ -747,6 +965,17 @@ export default function Sourcing() {
             )}
             {busy ? '评估中…' : 'AI 选品评估'}
           </Button>
+          <Button variant="outline" onClick={runImprintRecommend} disabled={busyImprint}>
+            {busyImprint ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            ) : (
+              <Printer className="mr-1 h-4 w-4" />
+            )}
+            {busyImprint ? '分析中…' : '印刷方式推荐'}
+          </Button>
+          <Button variant="outline" onClick={() => setChatOpen(true)}>
+            <Bot className="mr-1 h-4 w-4" /> AI 助手
+          </Button>
           <Button
             variant="outline"
             onClick={() => {
@@ -756,6 +985,9 @@ export default function Sourcing() {
               setEvaluation(null)
               setPriceGrid([])
               setSimilar(null)
+              setImprintRec(null)
+              setSourcing(null)
+              setChatMessages([])
             }}
           >
             <RotateCcw className="mr-1 h-4 w-4" /> 清空
@@ -1061,6 +1293,127 @@ export default function Sourcing() {
               </div>
             </div>
           </div>
+        )}
+
+        {imprintRec && (
+          <SectionCard
+            title="印刷方式推荐（按材质适配）"
+            hint={imprintRec.summary}
+            right={
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard.writeText(
+                    imprintRec.recommendations
+                      .map((r, i) => `${i + 1}. ${r.nameZh}：${r.why}\n   优点：${r.pros.join('、')}\n   缺点：${r.cons.join('、')}`)
+                      .join('\n')
+                  )
+                  toast.success('已复制')
+                }}
+              >
+                <Copy className="mr-1 h-3 w-3" /> 复制
+              </Button>
+            }
+          >
+            <div className="space-y-3">
+              {imprintRec.recommendations.map((r, i) => (
+                <div key={r.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white">
+                      {i + 1}
+                    </span>
+                    <span className="text-sm font-semibold text-slate-800">{r.nameZh}</span>
+                    <span className="text-[11px] text-slate-400">{r.bestFor}</span>
+                  </div>
+                  <p className="mt-1.5 text-[12px] leading-relaxed text-slate-600">
+                    <span className="font-medium text-slate-700">为什么适合：</span>
+                    {r.why}
+                  </p>
+                  <div className="mt-1.5 grid gap-1 text-[11px] sm:grid-cols-2">
+                    <div className="text-emerald-700">✓ {r.pros.join('；')}</div>
+                    <div className="text-amber-700">✗ {r.cons.join('；')}</div>
+                  </div>
+                </div>
+              ))}
+              {imprintRec.materialProfiles?.length > 0 && (
+                <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                  <div className="mb-1 text-[11px] font-semibold text-slate-700">材质分析（优缺点）</div>
+                  {imprintRec.materialProfiles.map((m, i) => (
+                    <div key={i} className="mb-1.5 last:mb-0">
+                      <div className="text-[12px] font-medium text-slate-700">
+                        {m.nameZh || m.name}
+                      </div>
+                      <div className="text-[11px] text-emerald-700">✓ {m.pros.join('；')}</div>
+                      <div className="text-[11px] text-amber-700">✗ {m.cons.join('；')}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </SectionCard>
+        )}
+
+        {chatOpen && (
+          <SectionCard
+            title="AI 助手（自动补全信息，不用反复回答问题）"
+            hint="把 1688 的材质/尺寸/箱规等基本信息发给 AI，它会自己研究使用场景、买家、卖点，并可直接帮你改链接内容"
+            right={
+              <Button variant="ghost" size="sm" onClick={() => setChatOpen(false)}>
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            }
+          >
+            <div className="space-y-3">
+              <div className="max-h-[420px] min-h-[120px] space-y-2 overflow-y-auto rounded-md border border-slate-100 bg-slate-50 p-3">
+                {chatMessages.length === 0 && (
+                  <p className="text-[12px] text-slate-400">
+                    例如直接发：「帮我评估这个保温杯能不能做，目标卖 $5-8」或「把描述改得更吸引美国买家」。
+                    AI 会基于左侧已填的 1688 信息自动研究，不会反问多余问题。
+                  </p>
+                )}
+                {chatMessages.map((m, i) => (
+                  <div
+                    key={i}
+                    className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div
+                      className={`max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 text-[12px] leading-relaxed ${
+                        m.role === 'user'
+                          ? 'bg-blue-600 text-white'
+                          : 'border border-slate-200 bg-white text-slate-700'
+                      }`}
+                    >
+                      {m.content}
+                    </div>
+                  </div>
+                ))}
+                {chatBusy && (
+                  <div className="flex items-center gap-2 text-[12px] text-slate-400">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> AI 思考中…
+                  </div>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  className="h-9 text-sm"
+                  placeholder="输入问题或要求，回车发送"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      sendAssistant()
+                    }
+                  }}
+                  disabled={chatBusy}
+                />
+                <Button size="sm" className="h-9 shrink-0" onClick={sendAssistant} disabled={chatBusy || !chatInput.trim()}>
+                  {chatBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                </Button>
+              </div>
+            </div>
+          </SectionCard>
         )}
       </div>
       </div>

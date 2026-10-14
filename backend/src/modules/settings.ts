@@ -4,6 +4,8 @@ import { db, getSetting, setSetting } from '../db'
 import { DEFAULT_SETTINGS, Settings } from '../types'
 import { testConnection } from '../services/ai'
 import { AppError } from '../middleware/errorHandler'
+import { getFxStatus, refreshFxRate } from '../services/fx'
+import { AI_PROVIDER_PRESETS } from '../constants/ai-providers'
 
 export const settingsRouter: Router = Router()
 
@@ -34,6 +36,7 @@ const settingsSchema = z.object({
   aiApiKey: z.string().optional(),
   aiModel: z.string().optional(),
   fxRate: z.number().positive().optional(),
+  fxAutoUpdate: z.boolean().optional(),
   airRateCnyPerKg: z.number().min(0).optional(),
   seaRateCnyPerKg: z.number().min(0).optional(),
   volumetricDivisor: z.number().min(100).optional(),
@@ -115,40 +118,20 @@ settingsRouter.delete('/data', async (req: Request, res: Response) => {
 })
 
 /**
- * 实时汇率：拉 exchangerate-api.com（免费、无 Key）。返回 USD/CNY（即 1 USD = N CNY），
- * 失败时回退到当前设置里的 fxRate。
+ * 预设 AI 供应商列表（前端设置页下拉选择用）。
  */
-settingsRouter.get('/fx-rate', async (_req: Request, res: Response) => {
-  const current = loadSettings()
-  const fallback = Number(current.fxRate) || 6.7
-  try {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 8000)
-    const r = await fetch('https://open.er-api.com/v6/latest/CNY', {
-      signal: ctrl.signal,
-      headers: { 'User-Agent': 'asi-workbench/1.0' },
-    })
-    clearTimeout(timer)
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    const data = (await r.json()) as { result?: string; rates?: Record<string, number> }
-    if (data.result !== 'success' || !data.rates?.USD)
-      throw new Error('返回格式异常')
-    const usdPerCny = data.rates.USD // 1 CNY = X USD
-    const cnyPerUsd = 1 / usdPerCny
-    res.json({
-      ok: true,
-      fxRate: Math.round(cnyPerUsd * 1000) / 1000,
-      source: 'open.er-api.com',
-      updatedAt: new Date().toISOString(),
-    })
-  } catch (err) {
-    res.json({
-      ok: false,
-      fxRate: fallback,
-      source: 'fallback',
-      message: err instanceof Error ? err.message : String(err),
-    })
-  }
+settingsRouter.get('/ai-providers', async (_req: Request, res: Response) => {
+  res.json({ providers: AI_PROVIDER_PRESETS })
+})
+
+/**
+ * 实时汇率：后台每小时自动拉取并写回设置（价格计算自动生效）。
+ * ?refresh=1 时手动强制刷新（即使关闭了自动更新也会写回）。
+ */
+settingsRouter.get('/fx-rate', async (req: Request, res: Response) => {
+  const force = req.query.refresh === '1' || req.query.refresh === 'true'
+  const status = force ? await refreshFxRate(true) : getFxStatus()
+  res.json(status)
 })
 
 export { AppError }

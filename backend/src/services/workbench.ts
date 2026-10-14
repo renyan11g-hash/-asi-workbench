@@ -14,7 +14,7 @@ import {
   toTitleCase,
   translateColors,
 } from '../constants/asi'
-import { buildEvaluatePrompt, buildFindSimilarPrompt, buildListingPrompt, buildChatEvaluationPrompt, buildListingQuestionsPrompt, ChatMessage, ListingAnswer } from './prompts'
+import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, ChatMessage, ListingAnswer } from './prompts'
 import { callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
 import { estimateImprintArea, estimateToImprintString } from './imprint'
@@ -687,4 +687,92 @@ export async function findSimilarForSource(source: SourceInfo, settings: Setting
   const images = (source.images ?? []).slice(0, 4)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.4, images)
   return normalizeSimilar(raw)
+}
+
+// ---------- AI 助手对话窗口（免提问，自动补全信息） ----------
+
+export interface AssistantResult {
+  /** 中文自然语言回复 */
+  reply: string
+  /** 可选的 Listing 字段补丁（前端直接合并进表单） */
+  patch: Record<string, unknown> | null
+  /** 警告/提示 */
+  notes: string[]
+}
+
+export async function assistantChat(
+  source: SourceInfo,
+  listing: Partial<Listing> | null,
+  messages: ChatMessage[],
+  settings: Settings
+): Promise<AssistantResult> {
+  const { system, user } = buildAssistantPrompt(source, listing, messages)
+  const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.6)
+  const patchRaw = raw.patch
+  const patch =
+    patchRaw && typeof patchRaw === 'object' && !Array.isArray(patchRaw)
+      ? (patchRaw as Record<string, unknown>)
+      : null
+  return {
+    reply: String(raw.reply ?? '').trim() || '（AI 未返回内容，请重试）',
+    patch,
+    notes: Array.isArray(raw.notes) ? raw.notes.map(String) : [],
+  }
+}
+
+// ---------- 1688 选品自动搜寻 ----------
+
+export interface SourcingDirection {
+  product: string
+  why: string
+  search1688: string[]
+  category: string
+  expectedUnitCostCny: number | null
+  expectedSellUsd: { min: number; max: number } | null
+  risks: string[]
+}
+
+export interface SourcingResult {
+  directions: SourcingDirection[]
+  keywords1688: string[]
+  tips: string[]
+}
+
+export async function suggestSourcing(
+  input: {
+    category?: string
+    keywords?: string
+    budgetCny?: number | null
+    targetPriceUsd?: { min: number; max: number } | null
+    notes?: string
+  },
+  settings: Settings
+): Promise<SourcingResult> {
+  const { system, user } = buildSourcingPrompt(input)
+  const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.7)
+  const dirs: SourcingDirection[] = Array.isArray(raw.directions)
+    ? (raw.directions as unknown[])
+        .filter((d): d is Record<string, unknown> => !!d && typeof d === 'object')
+        .map((d) => ({
+          product: String(d.product ?? '').trim(),
+          why: String(d.why ?? '').trim(),
+          search1688: Array.isArray(d.search1688) ? d.search1688.map(String) : [],
+          category: String(d.category ?? '').trim(),
+          expectedUnitCostCny: typeof d.expectedUnitCostCny === 'number' ? d.expectedUnitCostCny : null,
+          expectedSellUsd:
+            d.expectedSellUsd && typeof d.expectedSellUsd === 'object'
+              ? {
+                  min: Number((d.expectedSellUsd as Record<string, unknown>).min) || 0,
+                  max: Number((d.expectedSellUsd as Record<string, unknown>).max) || 0,
+                }
+              : null,
+          risks: Array.isArray(d.risks) ? d.risks.map(String) : [],
+        }))
+        .filter((d) => d.product)
+    : []
+  return {
+    directions: dirs,
+    keywords1688: Array.isArray(raw.keywords1688) ? raw.keywords1688.map(String) : [],
+    tips: Array.isArray(raw.tips) ? raw.tips.map(String) : [],
+  }
 }

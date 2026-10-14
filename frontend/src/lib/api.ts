@@ -151,14 +151,120 @@ export const api = {
     return data
   },
 
-  async refreshFxRate(): Promise<{ ok: boolean; fxRate: number; source?: string; message?: string }> {
+  async refreshFxRate(refresh = false): Promise<{
+    ok: boolean
+    fxRate: number
+    source?: string
+    updatedAt?: string
+    autoUpdate?: boolean
+    message?: string
+  }> {
     const { data } = await apiClient.get<{
       ok: boolean
       fxRate: number
       source?: string
+      updatedAt?: string
+      autoUpdate?: boolean
       message?: string
-    }>('/settings/fx-rate')
+    }>('/settings/fx-rate', { params: refresh ? { refresh: '1' } : undefined })
     return data
+  },
+
+  async listAiProviders(): Promise<{
+    providers: Array<{
+      id: string
+      name: string
+      baseUrl: string
+      models: string[]
+      keyUrl: string
+      needsProxy: boolean
+      supportsVision: boolean
+      priceNote: string
+      note: string
+    }>
+  }> {
+    const { data } = await apiClient.get('/settings/ai-providers')
+    return data
+  },
+
+  // ---------- 印刷方式推荐（本地规则引擎，无需 AI） ----------
+  async imprintRecommend(
+    source: SourceInfo
+  ): Promise<{
+    recommendations: Array<{
+      id: string
+      nameZh: string
+      why: string
+      pros: string[]
+      cons: string[]
+      bestFor: string
+    }>
+    materialProfiles: Array<{ name: string; nameZh: string; pros: string[]; cons: string[] }>
+    materialTags: string[]
+    summary: string
+  }> {
+    const { data } = await apiClient.post('/products/imprint-recommend', { source })
+    return data
+  },
+
+  // ---------- AI 助手对话窗口（免提问，自动补全信息） ----------
+  async assistantChat(payload: {
+    source?: SourceInfo
+    listing?: Partial<Listing> | null
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  }): Promise<{ reply: string; patch: Record<string, unknown> | null; notes: string[] }> {
+    const { data } = await apiClient.post('/products/assistant', payload, LONG_TIMEOUT)
+    return data
+  },
+
+  // ---------- 1688 选品自动搜寻（AI 推荐选品方向 + 1688 搜索词） ----------
+  async sourcingSuggest(payload: {
+    category?: string
+    keywords?: string
+    budgetCny?: number
+    targetPriceUsd?: number
+    notes?: string
+  }): Promise<{
+    directions: Array<{
+      product: string
+      why: string
+      search1688: string[]
+      category: string
+      expectedUnitCostCny: number | null
+      expectedSellUsd: { min: number; max: number } | null
+      risks: string[]
+    }>
+    keywords1688: string[]
+    tips: string[]
+  }> {
+    const { data } = await apiClient.post('/products/sourcing-suggest', payload, LONG_TIMEOUT)
+    return data
+  },
+
+  // ---------- 服务端草稿（选品评估防丢失） ----------
+  async listDrafts(): Promise<
+    Array<{ id: string; title: string; createdAt: string; updatedAt: string }>
+  > {
+    const { data } = await apiClient.get('/drafts')
+    return data.drafts
+  },
+
+  async saveDraft(payload: {
+    id?: string
+    title?: string
+    content?: Record<string, unknown>
+  }): Promise<{ draft: { id: string; title: string; updatedAt: string } }> {
+    const { data } = await apiClient.post('/drafts', payload)
+    return data
+  },
+
+  async getDraft(id: string): Promise<{ draft: { id: string; title: string; content: Record<string, unknown> } }> {
+    const { data } = await apiClient.get(`/drafts/${id}`)
+    return data
+  },
+
+  async deleteDraft(id: string): Promise<void> {
+    await apiClient.delete(`/drafts/${id}`)
   },
 
   async evaluateProduct(id: string): Promise<Product> {

@@ -1,4 +1,4 @@
-import { Settings, SourceInfo, Evaluation } from '../types'
+import { Settings, SourceInfo, Evaluation, Listing } from '../types'
 import { ASI_CATEGORIES, ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
 import { costSummaryForPrompt, convertUnits } from './pricing'
 
@@ -354,6 +354,110 @@ Rules:
 - Amazon search queries should be 2-5 words, benefit-aware, that a corporate buyer would type.
 - ASI search queries should include category terms distributors use (e.g. '20oz tumbler', 'vacuum insulated drinkware').
 - amazonItems / asiItems: list the 3-6 most representative competitors with a 1-line note. URLs can be generic Amazon/Google search URLs when you don't have the exact ASIN.`
+
+  return { system, user }
+}
+
+/**
+ * AI 助手对话窗口：用户只提供 1688 基础信息（材质/尺寸/箱规/卖点），
+ * AI 自行研究补全（不反问"这个产品用于什么场景"之类的无意义问题）。
+ * 返回自然语言回复 + 可选的结构化补丁（直接更新 listing 字段）。
+ */
+export function buildAssistantPrompt(
+  source: SourceInfo,
+  listing: Partial<Listing> | null,
+  messages: ChatMessage[]
+) {
+  const system = `${ASI_CONTEXT}
+
+You are the in-app AI assistant for a Chinese salesperson uploading products to US ASI distributor sites.
+The salesperson gives you basic 1688 info (material, size, carton spec, features). You do the research YOURSELF:
+- Never ask unnecessary questions like "what scenario is this product used for?" — infer it from the product itself.
+- Only ask when a truly blocking fact is missing (e.g. actual unit price).
+- When asked to modify the listing, output a JSON patch with the exact fields to change.
+
+Respond with STRICT JSON only (no markdown, no commentary):
+{
+  "reply": "<Chinese natural-language answer to the salesperson, concise, actionable>",
+  "patch": <optional JSON object with Listing fields to update, e.g. {"title": "...", "keywords": [...], "themes": [...], "imprintMethods": [...], "summary": "...", "description": "..."} — omit or use null if no change requested>,
+  "notes": ["<optional Chinese warnings, e.g. character limits, compliance>"]
+}`
+
+  const conv = messages
+    .slice(-12)
+    .map((m) => `${m.role === 'user' ? 'Salesperson' : 'You'}:\n${m.content}`)
+    .join('\n\n')
+
+  const user = `1688 PRODUCT
+- Title: ${source.sourceTitle || '(empty)'}
+- Description: ${source.description || '(empty)'}
+- Material (Chinese): ${source.materialCn || '(empty)'}
+- Colors (Chinese): ${source.colorsCn || '(empty)'}
+- Size: ${source.sizeCn || '(empty)'}
+- Carton: ${source.cartonLCm ?? '?'}x${source.cartonWCm ?? '?'}x${source.cartonHCm ?? '?'} cm, ${source.pcsPerCarton ?? '?'} pcs/ctn, ${source.cartonGwKg ?? '?'} kg
+- Unit weight: ${source.weightG ?? '?'} g
+- Unit price: ¥${source.priceCny ?? '?'}
+- MOQ: ${source.moq ?? '?'}
+- 1688 URL: ${source.sourceUrl || '(empty)'}
+
+CURRENT LISTING (may be partial)
+${JSON.stringify(listing ?? {}, null, 2)}
+
+CONVERSATION
+${conv || '(no messages yet — greet briefly and summarize what you can already do)'}
+
+Rules:
+- reply in Chinese, keep it under 200 characters unless explaining something complex.
+- patch: only include fields you are confident about; respect all ASI field rules (title ≤60, summary ≤130 ending with "Rush service is available", description ≤800, keywords ≤30 groups each ≤30 chars ≤4 words Title Case, themes exactly 5 incl. Anniversary + Sustainable).
+- Never output Chinese in patch fields (they go to the US catalog).`
+
+  return { system, user }
+}
+
+/**
+ * 1688 选品自动搜寻：根据目标类目/关键词/预算，AI 推荐适合上传 ASI 的产品方向
+ * 与 1688 搜索词（中文），并给出选品理由与定价预期。
+ */
+export function buildSourcingPrompt(input: {
+  category?: string
+  keywords?: string
+  budgetCny?: number | null
+  targetPriceUsd?: { min: number; max: number } | null
+  notes?: string
+}) {
+  const system = `You are a product-sourcing strategist for the US promotional products (ASI) market.
+You know what sells: high-perceived-value, low unit cost, easy to ship (small cube), customizable logo surfaces, broad buyer appeal (corporate gifting, trade shows, events).
+Respond with STRICT JSON only (no markdown, no commentary):
+{
+  "directions": [
+    {
+      "product": "<Chinese product name, e.g. 折叠收纳包>",
+      "why": "<Chinese: why this fits ASI market (buyer demand, margin, logistics)>",
+      "search1688": ["<2-4 Chinese 1688 search queries>"],
+      "category": "<one ASI category from the list>",
+      "expectedUnitCostCny": <number>,
+      "expectedSellUsd": { "min": <number>, "max": <number> },
+      "risks": ["<Chinese, 1-3 items>"]
+    }
+  ],
+  "keywords1688": ["<extra Chinese 1688 search keywords to explore>"],
+  "tips": ["<Chinese sourcing tips, 2-4 items>"]
+}
+Give 3-5 directions, ordered by overall opportunity.`
+
+  const user = `Suggest products to source on 1688 for the US ASI promotional market.
+
+CONSTRAINTS
+- Target ASI category: ${input.category || '(open — recommend best categories)'}
+- Keywords/interests: ${input.keywords || '(none)'}
+- Max unit budget: ${input.budgetCny ? `¥${input.budgetCny}` : '(flexible, prefer ≤ ¥30)'}
+- Target retail (250pc tier): ${input.targetPriceUsd ? `$${input.targetPriceUsd.min}-$${input.targetPriceUsd.max}` : '$1-$10 typical promo range'}
+- Notes: ${input.notes || '(none)'}
+
+Rules:
+- Prefer products: small & light (air-freight friendly), large flat imprint area, no battery/certification hassles, MOQ ≤ 500.
+- search1688 queries must be practical Chinese terms a 1688 supplier would list under.
+- expectedSellUsd must be consistent with expectedUnitCostCny (typical 2.5-4x markup at 250pc).`
 
   return { system, user }
 }

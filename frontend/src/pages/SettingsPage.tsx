@@ -28,13 +28,17 @@ function Field({
   )
 }
 
-const PRESETS = [
-  { name: 'DeepSeek（便宜，中文场景常用）', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
-  { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-  { name: '月之暗面 Kimi', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
-  { name: '阿里通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
-  { name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
-]
+interface ProviderPreset {
+  id: string
+  name: string
+  baseUrl: string
+  models: string[]
+  keyUrl: string
+  needsProxy: boolean
+  supportsVision: boolean
+  priceNote: string
+  note: string
+}
 
 export default function SettingsPage() {
   const qc = useQueryClient()
@@ -45,7 +49,16 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [refreshingFx, setRefreshingFx] = useState(false)
-  const [fxMeta, setFxMeta] = useState<{ source?: string; updatedAt?: string } | null>(null)
+  const [fxMeta, setFxMeta] = useState<{ source?: string; updatedAt?: string; autoUpdate?: boolean } | null>(null)
+  const [providers, setProviders] = useState<ProviderPreset[]>([])
+
+  // 从后端加载 AI 供应商预设（与后端保持同步）
+  useEffect(() => {
+    api
+      .listAiProviders()
+      .then((r) => setProviders(r.providers ?? []))
+      .catch(() => setProviders([]))
+  }, [])
 
   useEffect(() => {
     if (data && !form) {
@@ -128,11 +141,11 @@ export default function SettingsPage() {
   const refreshFx = async () => {
     setRefreshingFx(true)
     try {
-      const r = await api.refreshFxRate()
+      const r = await api.refreshFxRate(true)
       if (r.ok) {
         patch({ fxRate: r.fxRate })
-        setFxMeta({ source: r.source, updatedAt: new Date().toISOString() })
-        toast.success(`汇率已更新为 1 USD = ${r.fxRate} CNY（来源：${r.source}）`)
+        setFxMeta({ source: r.source, updatedAt: r.updatedAt ?? new Date().toISOString(), autoUpdate: r.autoUpdate })
+        toast.success(`汇率已更新为 1 USD = ${r.fxRate} CNY（来源：${r.source ?? 'live'}）`)
       } else {
         toast.error(`获取汇率失败：${r.message ?? '未知错误'}，已使用当前值`)
       }
@@ -155,16 +168,65 @@ export default function SettingsPage() {
     <div className="max-w-3xl space-y-5">
       <SectionCard title="AI 接口" hint="用于选品评估与英文链接生成，支持任何 OpenAI 兼容接口">
         <div className="space-y-4">
-          <div className="flex flex-wrap gap-2">
-            {PRESETS.map((p) => (
-              <button
-                key={p.name}
-                onClick={() => patch({ aiBaseUrl: p.baseUrl, aiModel: p.model })}
-                className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
-              >
-                {p.name}
-              </button>
-            ))}
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {providers.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => patch({ aiBaseUrl: p.baseUrl, aiModel: p.models[0] ?? '' })}
+                  title={`${p.note}\n价格：${p.priceNote}${p.needsProxy ? '\n需科学上网' : ' · 国内直连'}${p.supportsVision ? ' · 支持图片识别' : ''}`}
+                  className={`rounded-md border px-2.5 py-1 text-xs ${
+                    form.aiBaseUrl === p.baseUrl
+                      ? 'border-blue-400 bg-blue-50 text-blue-700'
+                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700'
+                  }`}
+                >
+                  {p.name}
+                  {p.supportsVision && <span className="ml-1 text-[10px] text-emerald-600">图</span>}
+                  {p.needsProxy && <span className="ml-1 text-[10px] text-amber-600">VPN</span>}
+                </button>
+              ))}
+            </div>
+            {(() => {
+              const cur = providers.find((p) => p.baseUrl === form.aiBaseUrl)
+              if (!cur) return null
+              return (
+                <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
+                  <div className="font-medium text-slate-700">{cur.name}</div>
+                  <div>{cur.note}</div>
+                  <div className="mt-0.5 text-slate-500">
+                    参考价格：{cur.priceNote}
+                    {cur.needsProxy ? ' · 需科学上网' : ' · 国内直连'}
+                    {cur.supportsVision ? ' · 支持图片识别（选品识图需要）' : ' · 不支持图片'}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <span>推荐模型：</span>
+                    {cur.models.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => patch({ aiModel: m })}
+                        className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${
+                          form.aiModel === m
+                            ? 'border-blue-400 bg-blue-100 text-blue-700'
+                            : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                    <a
+                      href={cur.keyUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ml-1 text-blue-600 hover:underline"
+                    >
+                      → 获取 API Key
+                    </a>
+                  </div>
+                </div>
+              )
+            })()}
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
@@ -219,18 +281,24 @@ export default function SettingsPage() {
                   className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
                   onClick={refreshFx}
                   disabled={refreshingFx}
-                  title="从 exchangerate-api.com 拉取实时汇率"
+                  title="强制从 open.er-api.com 拉取最新汇率"
                 >
                   {refreshingFx ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
                     <RefreshCw className="h-3 w-3" />
                   )}
-                  实时刷新
+                  强制刷新
                 </button>
               </span>
             }
-            hint={fxMeta?.source ? `数据来源：${fxMeta.source}${fxMeta.updatedAt ? ' · 更新于 ' + new Date(fxMeta.updatedAt).toLocaleTimeString() : ''}` : '可点右侧按钮从 exchangerate-api.com 拉取实时汇率，失败时保留当前值'}
+            hint={
+              fxMeta?.autoUpdate
+                ? `已开启自动实时更新（每小时自动拉取，价格计算自动使用最新汇率）${fxMeta.updatedAt ? ` · 上次更新 ${new Date(fxMeta.updatedAt).toLocaleString('zh-CN')}` : ''}${fxMeta.source ? `（${fxMeta.source}）` : ''}`
+                : fxMeta?.source
+                  ? `数据来源：${fxMeta.source}${fxMeta.updatedAt ? ' · 更新于 ' + new Date(fxMeta.updatedAt).toLocaleString('zh-CN') : ''}`
+                  : '服务端每小时自动拉取实时汇率，价格计算自动使用最新值；也可点右侧按钮强制刷新'
+            }
           >
             <Input
               className="h-9 text-sm"
