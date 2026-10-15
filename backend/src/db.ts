@@ -1,38 +1,50 @@
 import fs from 'fs'
 import path from 'path'
-import { createRequire } from 'module'
+import Database from 'libsql'
 
 /**
- * 使用 Node 内置 node:sqlite（实验特性）。
- * 运行需带 --experimental-sqlite，已在 package.json 的 dev/start 脚本中注入 NODE_OPTIONS。
+ * 数据库层：libsql（better-sqlite3 兼容同步 API）
+ * - 默认本地文件模式（与原 node:sqlite 行为一致）
+ * - 设置 LIBSQL_URL（libsql://...，可选 LIBSQL_AUTH_TOKEN）后直连 Turso 云数据库，
+ *   线上 Render 容器文件系统是临时的，用 Turso 可让数据永久保存
  */
-const require_ = createRequire(`${process.cwd()}/`)
 
-interface StatementSync {
+interface StatementLike {
   run(...args: unknown[]): { changes: number; lastInsertRowid: number | bigint }
   get(...args: unknown[]): unknown
   all(...args: unknown[]): unknown[]
 }
 
-interface DatabaseSyncType {
+interface DatabaseLike {
   exec(sql: string): void
-  prepare(sql: string): StatementSync
+  prepare(sql: string): StatementLike
   close(): void
 }
 
-const { DatabaseSync } = require_('node:sqlite') as {
-  DatabaseSync: new (location: string) => DatabaseSyncType
+function openDatabase(): DatabaseLike {
+  const url = process.env.LIBSQL_URL
+  const authToken = process.env.LIBSQL_AUTH_TOKEN
+
+  if (url && /^libsql:\/\//.test(url)) {
+    // 远程 Turso 模式（authToken 运行时支持，类型声明未包含，故断言）
+    const opts = (authToken ? { authToken } : {}) as ConstructorParameters<typeof Database>[1]
+    return new Database(url, opts) as unknown as DatabaseLike
+  }
+
+  // 本地文件模式
+  const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data')
+  fs.mkdirSync(DATA_DIR, { recursive: true })
+  const dbPath = path.join(DATA_DIR, 'asi-workbench.db')
+  return new Database(dbPath) as unknown as DatabaseLike
 }
 
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data')
-fs.mkdirSync(DATA_DIR, { recursive: true })
+export const db = openDatabase()
 
-const dbPath = path.join(DATA_DIR, 'asi-workbench.db')
-export const db = new DatabaseSync(dbPath)
-
-// 启用 WAL 并发模式（线上发布实例与本地 dev 实例共用同一个 DB）
-db.exec('PRAGMA journal_mode = WAL;')
-db.exec('PRAGMA synchronous = NORMAL;')
+// 本地模式启用 WAL 并发；远程模式由 Turso 自行管理，PRAGMA 会报错则跳过
+if (!process.env.LIBSQL_URL || !/^libsql:\/\//.test(process.env.LIBSQL_URL)) {
+  db.exec('PRAGMA journal_mode = WAL;')
+  db.exec('PRAGMA synchronous = NORMAL;')
+}
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS products (
@@ -104,10 +116,22 @@ ensureColumn('carton_gw_kg', 'carton_gw_kg REAL')
 ensureColumn('similar', "similar TEXT NOT NULL DEFAULT '{}'")
 ensureColumn('trashed_at', 'trashed_at TEXT')
 
+/**
+ * libsql 的 get() 结果可能带 _metadata 字段（查询耗时元数据），剥离后返回纯数据行
+ */
+function cleanRow<T>(row: unknown): T | undefined {
+  if (row === undefined || row === null) return undefined
+  if (typeof row === 'object' && row !== null && '_metadata' in row) {
+    const { _metadata, ...rest } = row as Record<string, unknown>
+    return rest as T
+  }
+  return row as T
+}
+
 export function getSetting(key: string): string | null {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
-    | { value: string }
-    | undefined
+  const row = cleanRow<{ value: string }>(
+    db.prepare('SELECT value FROM settings WHERE key = ?').get(key)
+  )
   return row ? row.value : null
 }
 

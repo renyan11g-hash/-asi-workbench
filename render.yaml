@@ -17,4 +17,9 @@ services:
         value: /tmp/data
       - key: CORS_ORIGIN
         value: "*"
+      # Turso 云数据库：在 Render Dashboard 填入实际值（数据持久化必需）
+      - key: LIBSQL_URL
+        sync: false
+      - key: LIBSQL_AUTH_TOKEN
+        sync: false
     healthCheckPath: /api/health
