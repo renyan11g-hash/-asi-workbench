@@ -466,15 +466,6 @@ export default function ListingEditor() {
   const [hasDraft, setHasDraft] = useState(false)
   const [imprintFaces, setImprintFaces] = useState<ImprintFaces>(EMPTY_FACES)
   const imprintSynced = useRef<string | null>(null)
-  // 生成前询问（需求 1）
-  const [qDialog, setQDialog] = useState<{
-    open: boolean
-    questions: Array<{ id: string; question: string; placeholder: string; hint?: string }>
-    answers: Record<string, string>
-    loading: boolean
-    submitting: boolean
-    fallback?: boolean
-  }>({ open: false, questions: [], answers: {}, loading: false, submitting: false })
   // 生成后确认（需求 2）：刚生成的 listing 处于"待确认"状态
   const [unconfirmed, setUnconfirmed] = useState(false)
   // 评估对话模态（需求 3）
@@ -540,43 +531,12 @@ export default function ListingEditor() {
     setDirty(true)
   }
 
-  /** 触发生成：先拉问题弹模态，让用户先回答关键问题 */
-  const startGenerate = async () => {
+  /** 触发生成：直接调用 AI 生成（不再弹窗询问，节省时间） */
+  const doGenerate = async () => {
     if (!product) return
-    setQDialog({ open: true, questions: [], answers: {}, loading: true, submitting: false })
-    try {
-      const r = await api.previewListingQuestions(product.source)
-      setQDialog((s) => ({
-        ...s,
-        loading: false,
-        questions: r.questions ?? [],
-        fallback: r.fallback,
-        answers: (r.questions ?? []).reduce<Record<string, string>>((acc, q) => {
-          acc[q.id] = s.answers[q.id] ?? ''
-          return acc
-        }, {}),
-      }))
-      if ((r.questions ?? []).length === 0) {
-        toast.warning('AI 未生成问题，将直接生成（建议配置 API 后再生成更精准）')
-      }
-    } catch (err) {
-      setQDialog((s) => ({ ...s, open: false, loading: false }))
-      toast.error(getErrorMessage(err))
-    }
-  }
-
-  const closeQDialog = () => {
-    if (qDialog.submitting) return
-    setQDialog({ open: false, questions: [], answers: {}, loading: false, submitting: false })
-  }
-
-  /** 真正调用生成（带或跳过 answers） */
-  const doGenerate = async (answers: Array<{ id: string; question: string; answer: string }>) => {
-    if (!product) return
-    setQDialog((s) => ({ ...s, submitting: true }))
     setBusy(true)
     try {
-      const updated = await api.generateProductListing(product.id, answers)
+      const updated = await api.generateProductListing(product.id)
       setListing(updated.listing)
       setDirty(false)
       setHasDraft(false)
@@ -587,18 +547,16 @@ export default function ListingEditor() {
       }
       qc.invalidateQueries({ queryKey: ['products'] })
       qc.invalidateQueries({ queryKey: ['product', id] })
-      setQDialog({ open: false, questions: [], answers: {}, loading: false, submitting: false })
-      toast.success(answers.length ? '已根据您的回答生成英文链接，请逐项核对' : '英文链接已生成，请逐项核对')
+      toast.success('英文链接已生成，请逐项核对')
     } catch (err) {
       toast.error(getErrorMessage(err))
-      setQDialog((s) => ({ ...s, submitting: false }))
     } finally {
       setBusy(false)
     }
   }
 
   /** 旧 generate 保留兼容：直接调（如果以后想"跳过问题"按钮） */
-  const generate = () => startGenerate()
+  const generate = () => doGenerate()
 
   const discardDraft = () => {
     if (!product) return
@@ -729,7 +687,7 @@ export default function ListingEditor() {
               variant="outline"
               size="sm"
               className="h-7 border-amber-300 bg-white text-xs"
-              onClick={() => startGenerate()}
+              onClick={generate}
               disabled={busy}
             >
               <RefreshCw className="mr-1 h-3 w-3" /> 重新生成
@@ -1584,98 +1542,6 @@ export default function ListingEditor() {
           </div>
         </div>
       )}
-
-      {/* 生成前询问关键问题（需求 1） */}
-      <Dialog open={qDialog.open} onOpenChange={(o) => (o ? null : closeQDialog())}>
-        <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <HelpCircle className="h-4 w-4 text-blue-600" />
-              生成前确认：补充 5-8 个关键信息
-            </DialogTitle>
-            <DialogDescription>
-              AI 即将起草 ASI 英文链接（标题 / 摘要 / 详细描述 / 关键词）。为避免内容与产品实际不符，
-              请先回答以下问题。AI <b>会严格按您的回答</b>生成，绝不添加未声明的卖点、材质或认证。
-            </DialogDescription>
-          </DialogHeader>
-
-          {qDialog.loading ? (
-            <div className="flex items-center gap-2 py-6 text-sm text-slate-500">
-              <Loader2 className="h-4 w-4 animate-spin" /> 正在分析产品，准备关键问题…
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {qDialog.fallback && (
-                <Alert className="border-amber-200 bg-amber-50">
-                  <AlertDescription className="text-xs text-amber-800">
-                    AI 暂不可用，已使用兜底问题（可继续回答或直接生成）。
-                  </AlertDescription>
-                </Alert>
-              )}
-              {qDialog.questions.map((q, i) => (
-                <div key={q.id} className="space-y-1.5">
-                  <Label className="flex items-start gap-1.5 text-sm font-medium text-slate-700">
-                    <span className="text-blue-600">{i + 1}.</span>
-                    {q.question}
-                    {q.hint && (
-                      <span className="ml-auto text-[11px] font-normal text-slate-400">{q.hint}</span>
-                    )}
-                  </Label>
-                  <Textarea
-                    className="min-h-[68px] text-sm"
-                    placeholder={q.placeholder}
-                    value={qDialog.answers[q.id] ?? ''}
-                    onChange={(e) =>
-                      setQDialog((s) => ({ ...s, answers: { ...s.answers, [q.id]: e.target.value } }))
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-
-          <DialogFooter className="gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={closeQDialog}
-              disabled={qDialog.submitting}
-            >
-              取消
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => doGenerate([])}
-              disabled={qDialog.loading || qDialog.submitting}
-              title="不回答问题，直接生成"
-            >
-              跳过，直接生成
-            </Button>
-            <Button
-              type="button"
-              onClick={() => {
-                const answers = qDialog.questions
-                  .filter((q) => (qDialog.answers[q.id] ?? '').trim())
-                  .map((q) => ({
-                    id: q.id,
-                    question: q.question,
-                    answer: qDialog.answers[q.id].trim(),
-                  }))
-                doGenerate(answers)
-              }}
-              disabled={qDialog.loading || qDialog.submitting}
-            >
-              {qDialog.submitting ? (
-                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-              ) : (
-                <Wand2 className="mr-1 h-4 w-4" />
-              )}
-              提交回答并生成
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* 评估详情 + 继续讨论（需求 3：MAYBE 按钮） */}
       <Dialog open={evalDialogOpen} onOpenChange={setEvalDialogOpen}>

@@ -1,7 +1,7 @@
-import { useDeferredValue, useState } from 'react'
+import { Fragment, useDeferredValue, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { Archive, Download, Loader2, Package, RotateCcw, Search, SearchCheck, Trash2, Wand2, X } from 'lucide-react'
+import { Archive, ChevronDown, Download, Loader2, Package, RotateCcw, Search, SearchCheck, Trash2, Wand2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,6 +22,7 @@ export default function Library() {
   const qc = useQueryClient()
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState('')
+  const [expandedId, setExpandedId] = useState<string | null>(null)
   const deferredKeyword = useDeferredValue(keyword)
   const { data: products, isLoading } = useProducts({
     q: deferredKeyword || undefined,
@@ -159,14 +160,27 @@ export default function Library() {
                 </thead>
             <tbody>
               {list.map((p) => (
-                <tr key={p.id} className={`border-b border-slate-50 hover:bg-slate-50/60 ${isTrashTab ? 'opacity-75' : ''}`}>
+                <Fragment key={p.id}>
+                <tr className={`border-b border-slate-50 hover:bg-slate-50/60 ${isTrashTab ? 'opacity-75' : ''}`}>
                   <td className="max-w-[320px] px-4 py-3">
-                    <div className="truncate font-medium text-slate-900">
-                      {p.listing?.title || p.source.sourceTitle || '(未命名)'}
-                    </div>
-                    {p.listing?.title && (
-                      <div className="truncate text-xs text-slate-500">{p.source.sourceTitle}</div>
-                    )}
+                    <button
+                      type="button"
+                      className="flex w-full items-start gap-1 text-left"
+                      onClick={() => setExpandedId(expandedId === p.id ? null : p.id)}
+                      title={expandedId === p.id ? '收起选品评估信息' : '展开选品评估信息'}
+                    >
+                      <ChevronDown
+                        className={`mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${expandedId === p.id ? 'rotate-180' : ''}`}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium text-slate-900">
+                          {p.listing?.title || p.source.sourceTitle || '(未命名)'}
+                        </span>
+                        {p.listing?.title && (
+                          <span className="block truncate text-xs text-slate-500">{p.source.sourceTitle}</span>
+                        )}
+                      </span>
+                    </button>
                   </td>
                   <td className="px-4 py-3">
                     <VerdictBadge verdict={p.evaluation?.verdict} score={p.evaluation?.score} />
@@ -243,6 +257,108 @@ export default function Library() {
                     </div>
                   </td>
                 </tr>
+                {expandedId === p.id && (
+                  <tr className="border-b border-slate-100 bg-slate-50/70">
+                    <td colSpan={8} className="px-4 py-4">
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="mb-2 text-xs font-semibold text-slate-700">选品资料（评估时填写）</div>
+                          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs text-slate-600">
+                            <span className="text-slate-400">采购价</span>
+                            <span>
+                              ¥{p.source.priceCny}
+                              {p.source.priceMaxCny ? ` ~ ¥${p.source.priceMaxCny}` : ''}
+                            </span>
+                            <span className="text-slate-400">起订量 MOQ</span>
+                            <span>{p.source.moq || '—'}</span>
+                            <span className="text-slate-400">供应商</span>
+                            <span className="truncate">{p.source.supplier || '—'}</span>
+                            <span className="text-slate-400">材质</span>
+                            <span>{p.source.materialCn || '—'}</span>
+                            <span className="text-slate-400">颜色</span>
+                            <span>{p.source.colorsCn || '—'}</span>
+                            <span className="text-slate-400">尺寸 / 规格</span>
+                            <span>{p.source.sizeCn || '—'}</span>
+                            <span className="text-slate-400">单件重量</span>
+                            <span>{p.source.weightG ? `${p.source.weightG} g` : '—'}</span>
+                            <span className="text-slate-400">1688 链接</span>
+                            <span className="truncate">
+                              {p.source.sourceUrl ? (
+                                <a href={p.source.sourceUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
+                                  打开商品页
+                                </a>
+                              ) : (
+                                '—'
+                              )}
+                            </span>
+                            {p.source.notes && (
+                              <>
+                                <span className="text-slate-400">备注</span>
+                                <span>{p.source.notes}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-700">
+                            AI 评估结论
+                            <VerdictBadge verdict={p.evaluation?.verdict} score={p.evaluation?.score} />
+                          </div>
+                          {p.evaluation ? (
+                            <div className="space-y-2 text-xs text-slate-600">
+                              <p className="leading-relaxed">{p.evaluation.summary}</p>
+                              <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
+                                <span className="text-slate-400">建议售价</span>
+                                <span className="font-medium text-slate-700">
+                                  {p.evaluation.priceAdviceUsd
+                                    ? `$${p.evaluation.priceAdviceUsd.min} ~ $${p.evaluation.priceAdviceUsd.max}`
+                                    : '—'}
+                                </span>
+                                <span className="text-slate-400">ASI 类目</span>
+                                <span>
+                                  {p.evaluation.asiCategories?.length
+                                    ? p.evaluation.asiCategories.join('、')
+                                    : '—'}
+                                </span>
+                              </div>
+                              {(p.evaluation.buyers?.length ?? 0) > 0 && (
+                                <p>
+                                  <span className="text-slate-400">卖给谁：</span>
+                                  {p.evaluation.buyers.join('、')}
+                                </p>
+                              )}
+                              {(p.evaluation.occasions?.length ?? 0) > 0 && (
+                                <p>
+                                  <span className="text-slate-400">适用场合：</span>
+                                  {p.evaluation.occasions.join('、')}
+                                </p>
+                              )}
+                              {p.evaluation.sourcingTips && (
+                                <p>
+                                  <span className="text-slate-400">采购要点：</span>
+                                  {p.evaluation.sourcingTips}
+                                </p>
+                              )}
+                              {(p.evaluation.listingHooks?.length ?? 0) > 0 && (
+                                <div>
+                                  <span className="text-slate-400">上架思路：</span>
+                                  <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                                    {p.evaluation.listingHooks.map((h, i) => (
+                                      <li key={i}>{h}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-slate-400">暂无 AI 评估结论</p>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
