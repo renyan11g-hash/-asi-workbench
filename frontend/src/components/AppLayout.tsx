@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
+  FolderOpen,
   LayoutDashboard,
   Package,
   SearchCheck,
@@ -13,6 +14,7 @@ import { cn } from '@/lib/utils'
 const NAV = [
   { to: '/', label: '概览', icon: LayoutDashboard, end: true },
   { to: '/sourcing', label: '选品评估', icon: SearchCheck, end: false },
+  { to: '/evaluations', label: '评估库', icon: FolderOpen, end: false },
   { to: '/library', label: '产品库', icon: Package, end: false },
   { to: '/settings', label: '设置', icon: SettingsIcon, end: false },
 ]
@@ -20,6 +22,7 @@ const NAV = [
 const TITLES: Record<string, { title: string; sub: string }> = {
   '/': { title: '工作台概览', sub: '选品进度、链接产出与利润概览' },
   '/sourcing': { title: '1688 选品评估', sub: '粘贴商品信息，判断它值不值得做成美国 ASI 促销礼品' },
+  '/evaluations': { title: '评估库', sub: '选品评估草稿集中存放，随时载入继续编辑' },
   '/library': { title: '产品库', sub: '所有已保存的选品与生成的英文链接' },
   '/settings': { title: '设置', sub: 'AI 接口、成本参数与报价规则' },
 }

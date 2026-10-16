@@ -1,12 +1,14 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  CloudUpload,
   Compass,
   Copy,
+  FolderOpen,
   History,
   Loader2,
   MinusCircle,
@@ -24,6 +26,14 @@ import {
 import { toast } from 'sonner'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -33,7 +43,7 @@ import { api, getErrorMessage } from '@/lib/api'
 import { useProducts, useSettings } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
 import { EMPTY_SOURCE, Evaluation, PriceRow, SourceInfo } from '@/types'
-import { ASI_CATEGORIES } from '@/constants/asi'
+import { GLS_CATEGORIES } from '@/constants/gls-categories'
 
 function Field({
   label,
@@ -155,6 +165,115 @@ export default function Sourcing() {
   const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
   const [chatInput, setChatInput] = useState('')
   const [chatBusy, setChatBusy] = useState(false)
+
+  // ---------- 云端评估草稿库（服务端 /drafts，换浏览器/换电脑也不丢） ----------
+  const [savingCloud, setSavingCloud] = useState(false)
+  const [cloudSavedAt, setCloudSavedAt] = useState<string | null>(null)
+  const [draftDialogOpen, setDraftDialogOpen] = useState(false)
+  const [cloudDrafts, setCloudDrafts] = useState<
+    Array<{ id: string; title: string; updatedAt: string }>
+  >([])
+  const [loadingDrafts, setLoadingDrafts] = useState(false)
+  const [currentDraftId, setCurrentDraftId] = useState<string | null>(null)
+
+  /** 把当前评估页全部内容打包为一份云端草稿（有 id 则覆盖更新） */
+  const saveCloudDraft = async () => {
+    const payload = buildSource()
+    if (!payload.sourceTitle.trim() && !payload.description.trim()) {
+      toast.error('还没有内容可保存，请先填写商品信息')
+      return
+    }
+    setSavingCloud(true)
+    try {
+      const title =
+        payload.sourceTitle.trim().slice(0, 60) ||
+        `选品评估 ${new Date().toLocaleString('zh-CN')}`
+      const r = await api.saveDraft({
+        id: currentDraftId ?? undefined,
+        title,
+        content: {
+          kind: 'sourcing-evaluation',
+          source: payload,
+          evaluation,
+          priceGrid,
+          keywordsText,
+          imageText,
+        },
+      })
+      setCurrentDraftId(r.draft.id)
+      setCloudSavedAt(r.draft.updatedAt)
+      toast.success('评估草稿已保存到云端（评估库）')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setSavingCloud(false)
+    }
+  }
+
+  /** 打开云端草稿列表（评估库弹窗） */
+  const openDraftDialog = async () => {
+    setDraftDialogOpen(true)
+    setLoadingDrafts(true)
+    try {
+      const drafts = await api.listDrafts()
+      setCloudDrafts(drafts)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setLoadingDrafts(false)
+    }
+  }
+
+  /** 载入一份云端草稿到当前页面 */
+  const loadCloudDraft = async (id: string) => {
+    try {
+      const { draft } = await api.getDraft(id)
+      const c = draft.content as {
+        source?: SourceInfo
+        evaluation?: Evaluation | null
+        priceGrid?: PriceRow[]
+        keywordsText?: string
+        imageText?: string
+      }
+      if (c.source) setSource(c.source)
+      if (c.evaluation !== undefined) setEvaluation(c.evaluation ?? null)
+      if (c.priceGrid) setPriceGrid(c.priceGrid)
+      if (c.keywordsText !== undefined) setKeywordsText(c.keywordsText ?? '')
+      if (c.imageText !== undefined) setImageText(c.imageText ?? '')
+      setCurrentDraftId(draft.id)
+      setCloudSavedAt(draft.updatedAt)
+      setDraftDialogOpen(false)
+      toast.success(`已载入草稿「${draft.title || '未命名'}」`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  /** 删除一份云端草稿 */
+  const deleteCloudDraft = async (id: string) => {
+    try {
+      await api.deleteDraft(id)
+      setCloudDrafts((list) => list.filter((d) => d.id !== id))
+      if (currentDraftId === id) {
+        setCurrentDraftId(null)
+        setCloudSavedAt(null)
+      }
+      toast.success('草稿已删除')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  /** 从「评估库」页面跳转过来时，自动载入指定草稿 */
+  const location = useLocation()
+  useEffect(() => {
+    const id = (location.state as { loadDraftId?: string } | null)?.loadDraftId
+    if (id) {
+      void loadCloudDraft(id)
+      navigate(location.pathname, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /** 1688 选品方向推荐（AI） */
   const runSourcingSuggest = async () => {
@@ -512,7 +631,7 @@ export default function Sourcing() {
                 onChange={(e) => setSuggestInput((s) => ({ ...s, category: e.target.value }))}
               >
                 <option value="">不限</option>
-                {ASI_CATEGORIES.map((c) => (
+                {GLS_CATEGORIES.map((c) => (
                   <option key={c} value={c}>
                     {c}
                   </option>
@@ -725,14 +844,14 @@ export default function Sourcing() {
                 onChange={(e) => set('supplier', e.target.value)}
               />
             </Field>
-            <Field label="ASI 类目（28 项官方分类）">
+            <Field label="类目（金山文档 Categories 表，1620 项）">
               <select
                 className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
                 value={source.category}
                 onChange={(e) => set('category', e.target.value)}
               >
                 <option value="">未选择（让 AI 推荐）</option>
-                {ASI_CATEGORIES.map((c) => (
+                {GLS_CATEGORIES.map((c) => (
                   <option key={c} value={c}>
                     {c}
                   </option>
@@ -975,6 +1094,17 @@ export default function Sourcing() {
           </Button>
           <Button variant="outline" onClick={() => setChatOpen(true)}>
             <Bot className="mr-1 h-4 w-4" /> AI 助手
+          </Button>
+          <Button variant="outline" onClick={() => void saveCloudDraft()} disabled={savingCloud}>
+            {savingCloud ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            ) : (
+              <CloudUpload className="mr-1 h-4 w-4" />
+            )}
+            {savingCloud ? '保存中…' : currentDraftId ? '更新云端草稿' : '存入评估库'}
+          </Button>
+          <Button variant="outline" onClick={() => void openDraftDialog()}>
+            <FolderOpen className="mr-1 h-4 w-4" /> 评估库
           </Button>
           <Button
             variant="outline"
@@ -1273,6 +1403,24 @@ export default function Sourcing() {
               <Button variant="outline" onClick={() => save('library')} disabled={Boolean(saving)}>
                 <Save className="mr-1 h-4 w-4" /> 仅保存
               </Button>
+              <Button
+                variant="outline"
+                onClick={() => void saveCloudDraft()}
+                disabled={savingCloud}
+                title="把当前评估（含 AI 结论）存入评估库，随时回来修改"
+              >
+                {savingCloud ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <CloudUpload className="mr-1 h-4 w-4" />
+                )}
+                {currentDraftId ? '更新到评估库' : '存入评估库'}
+              </Button>
+              {cloudSavedAt && (
+                <span className="self-center text-[11px] text-emerald-600">
+                  已存入评估库 · {new Date(cloudSavedAt).toLocaleTimeString('zh-CN')}
+                </span>
+              )}
             </div>
           </>
         )}
@@ -1282,6 +1430,81 @@ export default function Sourcing() {
             <SimilarResult similar={similar} />
           </SectionCard>
         )}
+
+        <Dialog open={draftDialogOpen} onOpenChange={setDraftDialogOpen}>
+          <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <FolderOpen className="h-4 w-4 text-blue-600" />
+                评估库（云端草稿）
+              </DialogTitle>
+              <DialogDescription>
+                存在服务器上的选品评估草稿，换浏览器 / 换电脑都不会丢，随时载入继续编辑。
+              </DialogDescription>
+            </DialogHeader>
+
+            {loadingDrafts ? (
+              <div className="flex items-center justify-center py-10 text-sm text-slate-500">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                加载中…
+              </div>
+            ) : cloudDrafts.length === 0 ? (
+              <div className="py-10 text-center text-sm text-slate-500">
+                评估库还是空的
+                <p className="mt-1 text-xs text-slate-400">
+                  点「存入评估库」把当前评估保存到这里
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {cloudDrafts.map((d) => (
+                  <div
+                    key={d.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-slate-800">
+                          {d.title || '未命名评估'}
+                        </span>
+                        {d.id === currentDraftId && (
+                          <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+                            当前
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        更新于 {new Date(d.updatedAt).toLocaleString('zh-CN')}
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button size="sm" variant="outline" onClick={() => void loadCloudDraft(d.id)}>
+                        载入
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                        onClick={() => void deleteCloudDraft(d.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <DialogFooter className="gap-2">
+              <Button variant="outline" size="sm" onClick={() => void openDraftDialog()}>
+                <RotateCcw className="mr-1 h-3.5 w-3.5" /> 刷新
+              </Button>
+              <Button size="sm" onClick={() => setDraftDialogOpen(false)}>
+                关闭
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {busySimilar && (
           <div className="rounded-xl border border-slate-200 bg-white p-6">

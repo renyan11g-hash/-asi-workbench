@@ -211,9 +211,25 @@ export const api = {
   async assistantChat(payload: {
     source?: SourceInfo
     listing?: Partial<Listing> | null
+    /** 分区对话模式：限制 AI 只能讨论/修改这些字段 */
+    fields?: string[]
     messages: Array<{ role: 'user' | 'assistant'; content: string }>
   }): Promise<{ reply: string; patch: Record<string, unknown> | null; notes: string[] }> {
     const { data } = await apiClient.post('/products/assistant', payload, LONG_TIMEOUT)
+    return data
+  },
+
+  // ---------- 分块重新生成（只重生成指定区块字段，不重生成整个 listing） ----------
+  async regenerateFields(
+    id: string,
+    fields: string[],
+    instruction?: string
+  ): Promise<{ values: Record<string, unknown>; listing: Listing | null }> {
+    const { data } = await apiClient.post(
+      `/products/${id}/regenerate-fields`,
+      { fields, instruction: instruction?.trim() || undefined },
+      LONG_TIMEOUT
+    )
     return data
   },
 
@@ -258,7 +274,9 @@ export const api = {
     return data
   },
 
-  async getDraft(id: string): Promise<{ draft: { id: string; title: string; content: Record<string, unknown> } }> {
+  async getDraft(id: string): Promise<{
+    draft: { id: string; title: string; content: Record<string, unknown>; createdAt: string; updatedAt: string }
+  }> {
     const { data } = await apiClient.get(`/drafts/${id}`)
     return data
   },
@@ -360,7 +378,7 @@ export function listingToText(listing: Listing): string {
     `\nCOLORS\n${listing.colors}${
       listing.colorChips?.length ? ` (${listing.colorChips.join(' / ')})` : ''
     }`,
-    `\nIMPRINT METHODS\n${(listing.imprintMethods ?? []).join(', ')}`,
+    `\nIMPRINT METHODS\n${(listing.imprintMethods ?? []).join('/')}`,
     `\nIMPRINT AREA\n${listing.imprintArea}`,
     `\nPRODUCTION TIME\n${listing.productionTime}`,
     `\nPRODUCT SIZE\n${listing.productSizeInch || '-'}`,

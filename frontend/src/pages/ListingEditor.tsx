@@ -16,6 +16,7 @@ import {
   Ruler,
   Save,
   Search,
+  Send,
   Sparkles,
   Wand2,
   X,
@@ -47,7 +48,8 @@ import { api, getErrorMessage, listingToText } from '@/lib/api'
 import { useProduct } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
 import { Listing, PriceRow, SimilarResearch, SourceInfo } from '@/types'
-import { ASI_CATEGORIES, ASI_IMPRINT_METHODS, ASI_MATERIALS, ASI_THEMES } from '@/constants/asi'
+import { ASI_IMPRINT_METHODS, ASI_MATERIALS, ASI_THEMES } from '@/constants/asi'
+import { CategoryPicker } from '@/components/CategoryPicker'
 
 function Field({
   label,
@@ -283,6 +285,172 @@ function clientEstimateImprint(source: SourceInfo, materialCn: string): ImprintF
   }
 }
 
+// ---------- 分块 AI 工具：单区块重新生成 + 分区 AI 对话窗口 ----------
+
+/** 每个区块对应的可重生成字段（与后端 /regenerate-fields 支持的字段一致） */
+const SECTION_FIELDS = {
+  title: ['title', 'titleZh'],
+  summary: ['summary', 'summaryZh'],
+  description: ['description', 'descriptionZh'],
+  keywords: ['keywords', 'keywordsZh'],
+  category: ['category', 'categories'],
+  material: ['material', 'materials'],
+  colors: ['colors', 'colorChips'],
+  imprint: ['imprintMethods'],
+  warnings: ['warnings'],
+} as const
+
+/**
+ * 区块级 AI 工具条：
+ * - ⟳ 只重新生成本区块（不影响其他区块）
+ * - 💬 打开本区块专属 AI 对话窗口，AI 返回的修改自动填入表单
+ */
+function SectionAiTools({
+  productId,
+  source,
+  listing,
+  fields,
+  onApply,
+  disabled,
+}: {
+  productId: string
+  source: SourceInfo
+  listing: Listing | null
+  fields: readonly string[]
+  onApply: (values: Record<string, unknown>) => void
+  disabled?: boolean
+}) {
+  const [busy, setBusy] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  const [input, setInput] = useState('')
+  const [chatBusy, setChatBusy] = useState(false)
+
+  const regen = async () => {
+    setBusy(true)
+    try {
+      const r = await api.regenerateFields(productId, [...fields])
+      onApply(r.values)
+      toast.success('本区块已重新生成，请核对后保存')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const send = async () => {
+    const text = input.trim()
+    if (!text || chatBusy) return
+    const next = [...messages, { role: 'user' as const, content: text }]
+    setMessages(next)
+    setInput('')
+    setChatBusy(true)
+    try {
+      const r = await api.assistantChat({ source, listing, fields: [...fields], messages: next })
+      setMessages([...next, { role: 'assistant', content: r.reply }])
+      if (r.patch && Object.keys(r.patch).length > 0) {
+        onApply(r.patch)
+        toast.success('AI 已更新本区块，请核对后保存')
+      }
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setChatBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-0.5">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 px-1.5 text-slate-500 hover:text-blue-700"
+        disabled={disabled || busy}
+        onClick={() => void regen()}
+        title="只重新生成本区块，不影响其他区块"
+      >
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 px-1.5 text-slate-500 hover:text-blue-700"
+        disabled={disabled}
+        onClick={() => setChatOpen(true)}
+        title="和 AI 讨论本区块"
+      >
+        <MessageSquare className="h-3.5 w-3.5" />
+      </Button>
+
+      <Dialog open={chatOpen} onOpenChange={setChatOpen}>
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <MessageSquare className="h-4 w-4 text-blue-600" /> AI 讨论本区块
+            </DialogTitle>
+            <DialogDescription>
+              本窗口只修改当前区块（{fields.join(' / ')}），其他区块不受影响。AI 返回修改后会自动填入，核对后点「保存修改」。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-72 min-h-24 space-y-2 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 p-3">
+            {messages.length === 0 && (
+              <p className="text-xs leading-relaxed text-slate-400">
+                直接用中文告诉 AI 怎么改，例如：「标题里加上 20oz 和 Insulated」「关键词换成偏礼品场景的」「描述再口语化一点」。
+              </p>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className={m.role === 'user' ? 'text-right' : ''}>
+                <span
+                  className={`inline-block max-w-[85%] whitespace-pre-wrap rounded-lg px-2.5 py-1.5 text-left text-xs leading-relaxed ${
+                    m.role === 'user'
+                      ? 'bg-blue-600 text-white'
+                      : 'border border-slate-200 bg-white text-slate-800'
+                  }`}
+                >
+                  {m.content}
+                </span>
+              </div>
+            ))}
+            {chatBusy && (
+              <div className="flex items-center gap-1 text-xs text-slate-400">
+                <Loader2 className="h-3 w-3 animate-spin" /> AI 思考中…
+              </div>
+            )}
+          </div>
+          <div className="flex items-end gap-2">
+            <Textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  void send()
+                }
+              }}
+              placeholder="告诉 AI 怎么改这个区块…（Enter 发送，Shift+Enter 换行）"
+              className="min-h-[60px] text-sm"
+            />
+            <Button size="sm" onClick={() => void send()} disabled={chatBusy || !input.trim()}>
+              <Send className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setMessages([])} disabled={chatBusy}>
+              清空对话
+            </Button>
+            <Button size="sm" onClick={() => setChatOpen(false)}>
+              完成
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
 export default function ListingEditor() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -497,6 +665,11 @@ export default function ListingEditor() {
     if (set.has(t)) set.delete(t)
     else if (set.size < LIMITS.themes) set.add(t)
     patch({ themes: Array.from(set) })
+  }
+
+  /** 分块 AI：把「重新生成 / AI 对话」返回的字段值合并进当前 listing（不落库，确认后保存） */
+  const applyValues = (values: Record<string, unknown>) => {
+    patch(values as Partial<Listing>)
   }
 
   if (isLoading) {
@@ -765,8 +938,19 @@ export default function ListingEditor() {
 
             <SectionCard
               title="Product Title"
-              right={<CharCounter value={listing.title} max={TITLE_LIMIT} />}
-              hint="≤60 字符。结构：关键词 + 流量词 + 卖点词 + 中心词。Title Case。"
+              right={
+                <div className="flex items-center gap-1">
+                  <CharCounter value={listing.title} max={TITLE_LIMIT} />
+                  <SectionAiTools
+                    productId={product.id}
+                    source={product.source}
+                    listing={listing}
+                    fields={SECTION_FIELDS.title}
+                    onApply={applyValues}
+                  />
+                </div>
+              }
+              hint="≤60 字符。结构：关键词 + 流量词 + 卖点词 + 中心词。Title Case。右侧 ⟳ 只重生成标题，💬 与 AI 讨论标题。"
             >
               <Input
                 value={listing.title}
@@ -782,7 +966,18 @@ export default function ListingEditor() {
 
             <SectionCard
               title="Summary Description"
-              right={<CharCounter value={listing.summary} max={SUMMARY_LIMIT} />}
+              right={
+                <div className="flex items-center gap-1">
+                  <CharCounter value={listing.summary} max={SUMMARY_LIMIT} />
+                  <SectionAiTools
+                    productId={product.id}
+                    source={product.source}
+                    listing={listing}
+                    fields={SECTION_FIELDS.summary}
+                    onApply={applyValues}
+                  />
+                </div>
+              }
               hint="≤130 字符。突出核心卖点。末尾强制包含：Rush service is available"
             >
               <Textarea
@@ -797,7 +992,18 @@ export default function ListingEditor() {
 
             <SectionCard
               title="Full Description"
-              right={<CharCounter value={listing.description} max={DESC_LIMIT} />}
+              right={
+                <div className="flex items-center gap-1">
+                  <CharCounter value={listing.description} max={DESC_LIMIT} />
+                  <SectionAiTools
+                    productId={product.id}
+                    source={product.source}
+                    listing={listing}
+                    fields={SECTION_FIELDS.description}
+                    onApply={applyValues}
+                  />
+                </div>
+              }
               hint="≤800 字符。50-70% 产品描述 + 关键词自然融入；不堆砌；不出现尺寸。"
             >
               <Textarea
@@ -822,6 +1028,13 @@ export default function ListingEditor() {
                     value={(listing.keywords ?? []).length}
                     max={LIMITS.keywordMax}
                   />
+                  <SectionAiTools
+                    productId={product.id}
+                    source={product.source}
+                    listing={listing}
+                    fields={SECTION_FIELDS.keywords}
+                    onApply={applyValues}
+                  />
                 </div>
               }
               hint={`≤${LIMITS.keywordMax} 组，每组 ≤${LIMITS.keywordGroup} 字符、≤${LIMITS.keywordWords} 单词，Title Case；复制格式为「英文逗号隔开」。已剔除 Disney/Marvel/NBA 等品牌词。`}
@@ -842,49 +1055,30 @@ export default function ListingEditor() {
               )}
             </SectionCard>
 
-            <SectionCard title="ASI 类目 / Categories / Themes / Material" hint="必填项与下拉框数据来自 ASI 官方模板">
+            <SectionCard
+              title="ASI 类目 / Categories / Themes / Material"
+              hint="必填项与下拉框数据来自 ASI 官方模板"
+              right={
+                <SectionAiTools
+                  productId={product.id}
+                  source={product.source}
+                  listing={listing}
+                  fields={SECTION_FIELDS.category}
+                  onApply={applyValues}
+                />
+              }
+            >
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="ASI Category（主类目）" required>
-                  <select
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
-                    value={listing.category}
-                    onChange={(e) => patch({ category: e.target.value })}
-                  >
-                    <option value="">未选择</option>
-                    {ASI_CATEGORIES.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
                 <Field
-                  label="Categories（最多 2 个）"
-                  hint="提交表常用多类目，第 1 个默认等于主类目"
+                  label="Categories（最多 2 个，从金山文档类目表选择）"
+                  hint="数据来自金山文档「Categories」表（1620 项）；第 1 个自动作为主类目"
                   required
                 >
-                  <div className="flex items-center gap-2">
-                    <ChipList
-                      items={(listing.categories ?? [listing.category].filter(Boolean)).slice(0, 2)}
-                      variant="blue"
-                      onRemove={(i) => {
-                        const cur = (listing.categories ?? [listing.category].filter(Boolean)).filter(
-                          Boolean
-                        )
-                        const next = cur.filter((_, idx) => idx !== i).slice(0, 2)
-                        patch({ categories: next, category: next[0] ?? listing.category })
-                      }}
-                      onAdd={(v) => {
-                        const cur = (listing.categories ?? [listing.category].filter(Boolean)).filter(
-                          Boolean
-                        )
-                        const next = Array.from(new Set([...cur, v.trim()])).filter(Boolean).slice(0, 2)
-                        patch({ categories: next, category: next[0] ?? listing.category })
-                      }}
-                      placeholder="添加类目（回车，最多 2）"
-                    />
-                    <CopyBtn text={(listing.categories ?? [listing.category].filter(Boolean)).join(', ')} />
-                  </div>
+                  <CategoryPicker
+                    value={listing.categories ?? [listing.category].filter(Boolean)}
+                    max={2}
+                    onChange={(next) => patch({ categories: next, category: next[0] ?? listing.category })}
+                  />
                 </Field>
                 <Field
                   label="Material（主材质）"
@@ -967,7 +1161,18 @@ export default function ListingEditor() {
 
             <SectionCard
               title="Colors"
-              right={<CopyBtn text={listing.colors} />}
+              right={
+                <div className="flex items-center gap-1">
+                  <CopyBtn text={listing.colors} />
+                  <SectionAiTools
+                    productId={product.id}
+                    source={product.source}
+                    listing={listing}
+                    fields={SECTION_FIELDS.colors}
+                    onApply={applyValues}
+                  />
+                </div>
+              }
               hint={`ASI 标准格式：Black/Gray/Brown/Orange/Army Green（用 / 隔开）。chips 与字符串会自动同步；复制格式同上。`}
             >
               <Field label="Colors (string)">
@@ -1007,8 +1212,19 @@ export default function ListingEditor() {
 
             <SectionCard
               title="Imprint Method"
-              right={<CopyBtn text={(listing.imprintMethods ?? []).join(' / ')} />}
-              hint={`可多选，无数量上限；必含 Silkscreen / Unimprinted / Full Color（保存时系统强制补齐）。复制格式用 / 隔开。`}
+              right={
+                <div className="flex items-center gap-1">
+                  <CopyBtn text={(listing.imprintMethods ?? []).join('/')} />
+                  <SectionAiTools
+                    productId={product.id}
+                    source={product.source}
+                    listing={listing}
+                    fields={SECTION_FIELDS.imprint}
+                    onApply={applyValues}
+                  />
+                </div>
+              }
+              hint={`可多选，无数量上限；必含 Silkscreen / Unimprinted / Full Color（保存时系统强制补齐）。复制格式用英文 / 隔开、无空格（如 Silkscreen/Unimprinted/Full Color）。`}
             >
               <ChipList
                 items={listing.imprintMethods}
@@ -1196,7 +1412,18 @@ export default function ListingEditor() {
               </div>
             </SectionCard>
 
-            <SectionCard title="合规提示 / Warnings">
+            <SectionCard
+              title="合规提示 / Warnings"
+              right={
+                <SectionAiTools
+                  productId={product.id}
+                  source={product.source}
+                  listing={listing}
+                  fields={SECTION_FIELDS.warnings}
+                  onApply={applyValues}
+                />
+              }
+            >
               <ChipList
                 items={listing.warnings}
                 onRemove={(i) => patch({ warnings: listing.warnings.filter((_, idx) => idx !== i) })}

@@ -5,7 +5,7 @@ import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { AiError } from '../services/ai'
 import { callChatJson } from '../services/ai'
-import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, suggestSourcing } from '../services/workbench'
+import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, regenerateListingFields, suggestSourcing } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
 import { buildPriceGrid } from '../services/pricing'
 import { buildGlsWorkbook } from '../services/gls-export'
@@ -342,7 +342,7 @@ productsRouter.get('/export.csv', async (req: Request, res: Response) => {
         (l?.themes ?? []).join(', '),
         materials,
         colorsCsv,
-        (l?.imprintMethods ?? []).join(', '),
+        (l?.imprintMethods ?? []).join('/'),
         l?.imprintArea ?? '',
         l?.productionTime ?? '',
         l?.productSizeInch ?? '',
@@ -821,6 +821,54 @@ productsRouter.post('/:id/listing', async (req: Request, res: Response) => {
   res.json({ product: findProduct(id) })
 })
 
+// ---------- AI：分块重新生成（只重生成指定区块字段，不重生成整个 listing；不落库，由前端确认后保存） ----------
+const REGEN_FIELD_ENUM = [
+  'title',
+  'summary',
+  'description',
+  'keywords',
+  'category',
+  'categories',
+  'themes',
+  'material',
+  'materials',
+  'colors',
+  'colorChips',
+  'imprintMethods',
+  'imprintArea',
+  'productionTime',
+  'packaging',
+  'warnings',
+  'titleZh',
+  'summaryZh',
+  'descriptionZh',
+  'keywordsZh',
+] as const
+
+const regenFieldsSchema = z.object({
+  fields: z.array(z.enum(REGEN_FIELD_ENUM)).min(1).max(8),
+  instruction: z.string().max(2000).optional(),
+})
+
+productsRouter.post('/:id/regenerate-fields', async (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const current = findProduct(id)
+  const body = regenFieldsSchema.parse(req.body ?? {})
+  const settings = loadSettings()
+  const values = await runAi(() =>
+    regenerateListingFields(
+      current.source,
+      current.listing as Partial<Listing> | null,
+      body.fields,
+      body.instruction,
+      settings
+    )
+  )
+  // 与现有 listing 合并并重跑 QC（强制必填印刷方式/主题等），但不落库
+  const merged = current.listing ? applyQc({ ...current.listing, ...values } as Listing) : null
+  res.json({ values, listing: merged })
+})
+
 // ---------- AI：看图找类似商品（落库） ----------
 productsRouter.post('/:id/find-similar', async (req: Request, res: Response) => {
   const id = String(req.params.id)
@@ -874,6 +922,7 @@ productsRouter.post('/assistant', async (req: Request, res: Response) => {
       productId: z.string().optional(),
       source: sourceSchema.optional(),
       listing: z.any().nullable().optional(),
+      fields: z.array(z.string()).max(10).optional(),
       messages: z
         .array(
           z.object({
@@ -897,7 +946,7 @@ productsRouter.post('/assistant', async (req: Request, res: Response) => {
 
   const settings = loadSettings()
   const result = await runAi(() =>
-    assistantChat(source, listing, body.messages as ChatMessage[], settings)
+    assistantChat(source, listing, body.messages as ChatMessage[], settings, body.fields)
   )
   res.json(result)
 })

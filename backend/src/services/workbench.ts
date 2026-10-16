@@ -1,6 +1,5 @@
 import { Evaluation, Listing, PriceRow, Settings, SimilarResearch, SourceInfo } from '../types'
 import {
-  ASI_CATEGORIES,
   ASI_THEMES,
   ASI_MATERIALS,
   ASI_IMPRINT_METHODS,
@@ -14,8 +13,9 @@ import {
   toTitleCase,
   translateColors,
 } from '../constants/asi'
-import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, ChatMessage, ListingAnswer } from './prompts'
-import { callChatJson } from './ai'
+import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, ChatMessage, ListingAnswer } from './prompts'
+import { GLS_CATEGORIES } from '../constants/gls-categories'
+import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
 import { estimateImprintArea, estimateToImprintString } from './imprint'
 const arr = (v: unknown, fallback: string[] = []): string[] => {
@@ -408,7 +408,7 @@ function buildSkeletonListing(source: SourceInfo, settings: Settings): Listing {
   const imprintsSet = new Set<string>(['Silkscreen', 'Unimprinted', 'Full Color', ...imprintMethods])
   const imprintMethodsFinal = Array.from(imprintsSet)
 
-  const category = pickEnum(ASI_CATEGORIES, source.category, 'Other')
+  const category = pickEnum(GLS_CATEGORIES, source.category, 'Other')
 
   return {
     title: enforceLength(
@@ -500,10 +500,10 @@ function normalizeListing(
         ? String(raw.categories).split(/[,/]/).map((s) => s.trim())
         : []
     const filtered = list
-      .filter((c) => (ASI_CATEGORIES as readonly string[]).some((x) => x.toLowerCase() === c.toLowerCase()))
+      .filter((c) => (GLS_CATEGORIES as readonly string[]).some((x) => x.toLowerCase() === c.toLowerCase()))
     return Array.from(new Set(filtered)).slice(0, 2)
   })()
-  const primaryCategory = pickEnum(ASI_CATEGORIES, raw.category, source.category)
+  const primaryCategory = pickEnum(GLS_CATEGORIES, raw.category, source.category)
   const categories = rawCategories.length ? rawCategories : [primaryCategory]
 
   const listing: Listing = {
@@ -704,9 +704,11 @@ export async function assistantChat(
   source: SourceInfo,
   listing: Partial<Listing> | null,
   messages: ChatMessage[],
-  settings: Settings
+  settings: Settings,
+  /** 分区对话模式：只允许讨论/修改这些 listing 字段 */
+  scopeFields?: string[]
 ): Promise<AssistantResult> {
-  const { system, user } = buildAssistantPrompt(source, listing, messages)
+  const { system, user } = buildAssistantPrompt(source, listing, messages, scopeFields)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.6)
   const patchRaw = raw.patch
   const patch =
@@ -718,6 +720,58 @@ export async function assistantChat(
     patch,
     notes: Array.isArray(raw.notes) ? raw.notes.map(String) : [],
   }
+}
+
+// ---------- 分块重新生成（每个区块可单独 AI 重生成，不影响其他区块） ----------
+
+/** 数组型字段（重生成后按数组规范化） */
+const ARRAY_REGEN_FIELDS = new Set([
+  'keywords',
+  'themes',
+  'categories',
+  'materials',
+  'imprintMethods',
+  'warnings',
+  'colorChips',
+])
+
+/**
+ * 只重生成 listing 的指定字段（一个区块），返回 { 字段: 新值 } 补丁。
+ * 不落库、不改动其他字段；由前端合并后让用户确认保存。
+ */
+export async function regenerateListingFields(
+  source: SourceInfo,
+  listing: Partial<Listing> | null,
+  fields: string[],
+  instruction: string | undefined,
+  settings: Settings
+): Promise<Record<string, unknown>> {
+  const { system, user } = buildFieldsRegeneratePrompt(source, listing, fields, instruction)
+  const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.6)
+  // 兼容平铺与 {"value": {...}} 包裹两种返回
+  const src = (
+    raw.value && typeof raw.value === 'object' && !Array.isArray(raw.value) ? raw.value : raw
+  ) as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const f of fields) {
+    if (!(f in src)) continue
+    const v = src[f]
+    if (ARRAY_REGEN_FIELDS.has(f)) {
+      const list = Array.isArray(v)
+        ? v.map((x) => String(x).trim()).filter(Boolean)
+        : String(v ?? '')
+            .split(/[,，\n]/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+      out[f] = Array.from(new Set(list))
+    } else {
+      out[f] = String(v ?? '').trim()
+    }
+  }
+  if (Object.keys(out).length === 0) {
+    throw new AiError('AI 未返回任何字段值，请重试')
+  }
+  return out
 }
 
 // ---------- 1688 选品自动搜寻 ----------

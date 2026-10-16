@@ -1,5 +1,6 @@
 import { Settings, SourceInfo, Evaluation, Listing } from '../types'
-import { ASI_CATEGORIES, ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
+import { ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
+import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { costSummaryForPrompt, convertUnits } from './pricing'
 
 const ASI_CONTEXT = `You are a senior copywriter for US promotional products (ASI / PPAI / SAGE / Distributor e-commerce) catalogs.
@@ -100,7 +101,8 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 - If an answer says "no" or is empty, omit that claim from the listing.`
 
   const themesPick = ASI_THEMES.join(', ')
-  const categoriesPick = ASI_CATEGORIES.join(', ')
+  // 类目来自金山文档「Categories」表（1620 项）；全量注入太长，给前 400 项 + 匹配规则
+  const categoriesPick = GLS_CATEGORIES.slice(0, 400).join(', ')
   const materialsPick = ASI_MATERIALS.join(', ')
   const imprintsPick = ASI_IMPRINT_METHODS.join(', ')
 
@@ -127,7 +129,7 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 ${answersBlock}
 
 REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)
-- ASI Categories (up to 2): ${categoriesPick}
+- Categories (up to 2, MUST be from the GLS category table — first 400 of 1620 listed here; if none fits, pick the closest match by keyword): ${categoriesPick}
 - ASI Themes (exactly 5, MUST include 'Anniversary' and 'Sustainable'): ${themesPick}
 - ASI Materials (one): ${materialsPick}
 - ASI Imprint Methods (1-4): ${imprintsPick}
@@ -366,9 +368,19 @@ Rules:
 export function buildAssistantPrompt(
   source: SourceInfo,
   listing: Partial<Listing> | null,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  /** 分区对话模式：只允许讨论/修改这些 listing 字段（区块级 AI 对话窗口） */
+  scopeFields?: string[]
 ) {
-  const system = `${ASI_CONTEXT}
+  const scopeNote = scopeFields?.length
+    ? `
+
+SCOPED SECTION MODE: The salesperson opened the AI chat for ONE section of the listing.
+- Only these listing fields may be discussed or modified: ${scopeFields.join(', ')}.
+- The "patch" you return MUST only contain keys from: ${scopeFields.join(', ')}.
+- If asked to change anything outside these fields, politely reply (in Chinese) that this window only edits the current section.`
+    : ''
+  const system = `${ASI_CONTEXT}${scopeNote}
 
 You are the in-app AI assistant for a Chinese salesperson uploading products to US ASI distributor sites.
 The salesperson gives you basic 1688 info (material, size, carton spec, features). You do the research YOURSELF:
@@ -410,6 +422,52 @@ Rules:
 - reply in Chinese, keep it under 200 characters unless explaining something complex.
 - patch: only include fields you are confident about; respect all ASI field rules (title ≤60, summary ≤130 ending with "Rush service is available", description ≤800, keywords ≤30 groups each ≤30 chars ≤4 words Title Case, themes exactly 5 incl. Anniversary + Sustainable).
 - Never output Chinese in patch fields (they go to the US catalog).`
+
+  return { system, user }
+}
+
+/**
+ * 分块重新生成：只重生成 listing 中指定的若干字段（一个区块，如标题/摘要/描述/关键词/类目/材质/印刷方式），
+ * 其余字段保持不变。可附带业务员的一句话要求。返回 STRICT JSON，键与请求的 fields 完全一致。
+ */
+export function buildFieldsRegeneratePrompt(
+  source: SourceInfo,
+  listing: Partial<Listing> | null,
+  fields: string[],
+  instruction?: string
+) {
+  const system = `${ASI_CONTEXT}
+
+You regenerate ONLY the requested fields of an existing ASI listing. All other fields stay unchanged.
+Respond with STRICT JSON only (no markdown, no commentary).
+The JSON object MUST contain EXACTLY these keys (same names, flat — do NOT wrap in "value"): ${fields.join(', ')}
+
+Value type by key:
+- Array fields (keywords / themes / categories / materials / imprintMethods / warnings / colorChips): JSON array of strings
+- All other fields: a single string`
+
+  const user = `1688 PRODUCT
+- Title: ${source.sourceTitle || '(empty)'}
+- Description: ${source.description || '(empty)'}
+- Material (Chinese): ${source.materialCn || '(empty)'}
+- Colors (Chinese): ${source.colorsCn || '(empty)'}
+- Size: ${source.sizeCn || '(empty)'}
+- Carton: ${source.cartonLCm ?? '?'}x${source.cartonWCm ?? '?'}x${source.cartonHCm ?? '?'} cm, ${source.pcsPerCarton ?? '?'} pcs/ctn, ${source.cartonGwKg ?? '?'} kg
+- Unit weight: ${source.weightG ?? '?'} g
+- Unit price: ¥${source.priceCny ?? '?'}
+- MOQ: ${source.moq ?? '?'}
+- 1688 URL: ${source.sourceUrl || '(empty)'}
+
+CURRENT LISTING (context only — keep the same product facts and style; do NOT change other fields)
+${JSON.stringify(listing ?? {}, null, 2)}
+
+REGENERATE ONLY THESE KEYS: ${fields.join(', ')}
+${instruction ? `Salesperson instruction (MUST be respected): ${instruction}` : '(no special instruction — improve quality while keeping the same product facts)'}
+
+Rules:
+- Output ONLY the requested keys. Never output other fields.
+- Respect all ASI rules per field: title ≤60 chars; summary ≤130 chars ending with EXACTLY "Rush service is available"; description ≤800 chars, no size mention; keywords ≤30 groups each ≤30 chars ≤4 words Title Case; themes EXACTLY 5 incl. "Anniversary" + "Sustainable"; categories max 2 from the GLS category table (exact strings only); materials from the ASI material list; imprintMethods MUST include "Silkscreen", "Unimprinted", "Full Color" plus relevant extras; colors joined by "/".
+- English fields (title/summary/description/keywords/categories/themes/materials/imprintMethods/colors) must be English only. Chinese only in *Zh fields.`
 
   return { system, user }
 }
