@@ -1,7 +1,8 @@
 import apiClient, { getErrorMessage } from './api-client'
 import { Evaluation, Listing, PriceRow, Product, ProductStatus, Settings, SimilarResearch, SourceInfo } from '../types'
 
-const LONG_TIMEOUT = { timeout: 180_000 }
+/** AI 生成类接口耗时较长：默认 10 分钟，需与后端 AI_TIMEOUT_MS 保持一致 */
+const LONG_TIMEOUT = { timeout: 600_000 }
 
 export { getErrorMessage }
 

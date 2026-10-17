@@ -28,12 +28,15 @@ function endpointCandidates(baseUrl: string): string[] {
   return [`${base}/v1/chat/completions`, `${base}/chat/completions`]
 }
 
+/** AI 请求超时（ms）：评估/Listing 生成耗时长，默认 10 分钟，可用 AI_TIMEOUT_MS 覆盖 */
+const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS) || 600_000
+
 async function post(url: string, body: unknown, apiKey: string): Promise<Response> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`
 
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 180_000)
+  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS)
   try {
     return await fetch(url, {
       method: 'POST',
@@ -112,7 +115,7 @@ export async function callChat(
       const msg = err instanceof Error ? err.message : String(err)
       lastErr =
         err instanceof Error && err.name === 'AbortError'
-          ? new AiError('AI 请求超时（超过 3 分钟）', '可尝试换用更快的模型后重试。')
+          ? new AiError('AI 请求超时（超过 10 分钟）', '可尝试换用更快的模型后重试。')
           : new AiError(`无法连接 AI 服务：${msg}`, '请检查 Base URL 与网络是否可访问。')
       continue
     }

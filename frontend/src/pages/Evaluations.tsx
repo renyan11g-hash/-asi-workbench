@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { FolderOpen, Loader2, RefreshCw, SearchCheck, Trash2 } from 'lucide-react'
+import ProductThumb from '@/components/ProductThumb'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { SectionCard, VerdictBadge } from '@/components/ui/primitives'
@@ -100,7 +101,9 @@ export default function Evaluations() {
                   className="rounded-lg border border-slate-200 bg-slate-50 p-4 transition-colors hover:border-slate-300"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                      <ProductThumb images={src?.images} size={48} clickable={true} />
+                      <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-semibold text-slate-800">
                           {d.title || '未命名评估'}
@@ -128,6 +131,7 @@ export default function Evaluations() {
                             建议售价：${ev.priceAdviceUsd.min}-${ev.priceAdviceUsd.max}
                           </span>
                         )}
+                      </div>
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">

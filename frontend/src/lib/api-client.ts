@@ -65,7 +65,11 @@ apiClient.interceptors.response.use(
  */
 export function getErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
-    return error.response?.data?.message || error.message || 'An error occurred';
+    const raw = error.response?.data?.message || error.message || 'An error occurred';
+    if (error.code === 'ECONNABORTED' || /timeout/i.test(raw)) {
+      return `请求超时：AI 生成耗时过长（前端等待 ${Math.round(((error.config?.timeout as number) ?? 0) / 1000)} 秒）。请稍后重试，或换用更快的模型。`;
+    }
+    return raw;
   }
   if (error instanceof Error) {
     return error.message;

@@ -182,6 +182,8 @@ export function buildPriceGrid(
     const miscCny = (miscPct / 100) * unitPrice * fx
     const allInCostCny = fixedCostCny + miscCny
     const grossProfit = unitPrice - allInCostCny / fx
+    // 毛利润按实时汇率换算成人民币（fxRate 由 fx 服务定时拉取并写回设置库）
+    const grossProfitCny = grossProfit * fx
     const margin = unitPrice > 0 ? grossProfit / unitPrice : 0
 
     let note: string | undefined
@@ -220,6 +222,9 @@ export function buildPriceGrid(
       miscUsd: round2(miscCny / fx),
       allInCostUsd: round2(allInCostCny / fx),
       grossProfit: round2(grossProfit),
+      grossProfitCny: round2(grossProfitCny),
+      totalGrossProfitUsd: round2(grossProfit * qty),
+      totalGrossProfitCny: round2(grossProfitCny * qty),
       unitPrice,
       margin: bd.margin,
       shipping,
@@ -250,7 +255,7 @@ export function costSummaryForPrompt(
     `Calculated price grid (authoritative, USD):`,
     ...breakdowns.map(
       (b, i) =>
-        `  ${b.qty} pcs [${b.shipping.toUpperCase()} mark=${b.markupRate}] goods+freight=¥${b.unitCostCny.toFixed(2)} all-in=¥${b.allInCostCny.toFixed(2)} -> $${rows[i].unitPrice.toFixed(2)} (gross profit $${rows[i].grossProfit.toFixed(2)}, margin ${b.margin.toFixed(0)}%)`
+        `  ${b.qty} pcs [${b.shipping.toUpperCase()} mark=${b.markupRate}] goods+freight=¥${b.unitCostCny.toFixed(2)} all-in=¥${b.allInCostCny.toFixed(2)} -> $${rows[i].unitPrice.toFixed(2)} (gross profit $${rows[i].grossProfit.toFixed(2)} = ¥${(rows[i].grossProfitCny ?? 0).toFixed(2)}, total gross profit for ${b.qty} pcs: $${(rows[i].totalGrossProfitUsd ?? 0).toFixed(2)} = ¥${(rows[i].totalGrossProfitCny ?? 0).toFixed(2)}, margin ${b.margin.toFixed(0)}%)`
     ),
   ]
   return lines.join('\n')

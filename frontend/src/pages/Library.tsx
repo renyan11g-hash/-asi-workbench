@@ -2,6 +2,7 @@ import { Fragment, useDeferredValue, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Archive, ChevronDown, Download, Loader2, Package, RotateCcw, Search, SearchCheck, Trash2, Wand2, X } from 'lucide-react'
+import ProductThumb from '@/components/ProductThumb'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -162,13 +163,14 @@ export default function Library() {
               {list.map((p) => (
                 <Fragment key={p.id}>
                 <tr className={`border-b border-slate-50 hover:bg-slate-50/60 ${isTrashTab ? 'opacity-75' : ''}`}>
-                  <td className="max-w-[320px] px-4 py-3">
+                  <td className="max-w-[360px] px-4 py-3">
                     <button
                       type="button"
-                      className="flex w-full items-start gap-1 text-left"
+                      className="flex w-full items-start gap-2.5 text-left"
                       onClick={() => setExpandedId(expandedId === p.id ? null : p.id)}
                       title={expandedId === p.id ? '收起选品评估信息' : '展开选品评估信息'}
                     >
+                      <ProductThumb images={p.source.images} size={40} clickable={false} />
                       <ChevronDown
                         className={`mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${expandedId === p.id ? 'rotate-180' : ''}`}
                       />

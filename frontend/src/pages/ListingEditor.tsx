@@ -609,17 +609,22 @@ export default function ListingEditor() {
   const setPrice = (idx: number, price: number) => {
     if (!listing) return
     const miscPct = settings?.miscFeePct ?? 5
+    const fx = settings?.fxRate ?? 6.7
     const grid = listing.priceGrid.map((r, i) => {
       if (i !== idx) return r
       const fixed = r.fixedCostUsd ?? r.unitCost
       const misc = (miscPct / 100) * price
       const gp = price - fixed - misc
+      const gpCny = gp * fx
       return {
         ...r,
         unitPrice: price,
         miscUsd: misc,
         allInCostUsd: fixed + misc,
         grossProfit: gp,
+        grossProfitCny: gpCny,
+        totalGrossProfitUsd: gp * r.qty,
+        totalGrossProfitCny: gpCny * r.qty,
         margin: price > 0 ? (gp / price) * 100 : 0,
       }
     })
@@ -629,9 +634,19 @@ export default function ListingEditor() {
   /** 阶梯数量自定义：直接改某档的数量 */
   const setQty = (idx: number, qty: number) => {
     if (!listing) return
-    const grid = listing.priceGrid.map((r, i) =>
-      i === idx ? { ...r, qty: Math.max(1, Math.round(qty) || 1) } : r
-    )
+    const fx = settings?.fxRate ?? 6.7
+    const grid = listing.priceGrid.map((r, i) => {
+      if (i !== idx) return r
+      const q = Math.max(1, Math.round(qty) || 1)
+      const gp = r.grossProfit ?? r.unitPrice - (r.fixedCostUsd ?? r.unitCost) - (r.miscUsd ?? 0)
+      const gpCny = r.grossProfitCny ?? gp * fx
+      return {
+        ...r,
+        qty: q,
+        totalGrossProfitUsd: gp * q,
+        totalGrossProfitCny: gpCny * q,
+      }
+    })
     patch({ priceGrid: grid })
   }
 
@@ -1463,14 +1478,20 @@ export default function ListingEditor() {
                     <th className="pb-2">×倍率</th>
                     <th className="pb-2">售价 $</th>
                     <th className="pb-2">毛利 $</th>
+                    <th className="pb-2">毛利 ¥</th>
+                    <th className="pb-2">总毛利（×数量）</th>
                     <th className="pb-2">毛利率</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(listing.priceGrid ?? []).map((r: PriceRow, idx: number) => {
                     const miscPct = settings?.miscFeePct ?? 5
+                    const fx = settings?.fxRate ?? 6.7
                     const misc = r.miscUsd ?? r.unitPrice * (miscPct / 100)
                     const gp = r.grossProfit ?? r.unitPrice - (r.fixedCostUsd ?? r.unitCost) - misc
+                    const gpCny = r.grossProfitCny ?? gp * fx
+                    const totalUsd = r.totalGrossProfitUsd ?? gp * r.qty
+                    const totalCny = r.totalGrossProfitCny ?? gpCny * r.qty
                     return (
                     <tr key={idx} className="border-t border-slate-100">
                       <td className="py-1">
@@ -1511,6 +1532,20 @@ export default function ListingEditor() {
                         }`}
                       >
                         ${gp.toFixed(2)}
+                      </td>
+                      <td
+                        className={`py-1.5 font-medium ${
+                          gpCny >= 0 ? 'text-emerald-600' : 'text-red-500'
+                        }`}
+                      >
+                        ¥{gpCny.toFixed(2)}
+                      </td>
+                      <td
+                        className={`py-1.5 font-medium ${
+                          totalUsd >= 0 ? 'text-emerald-600' : 'text-red-500'
+                        }`}
+                      >
+                        ${totalUsd.toFixed(2)} / ¥{totalCny.toFixed(2)}
                       </td>
                       <td
                         className={`py-1.5 font-medium ${

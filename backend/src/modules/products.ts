@@ -614,8 +614,9 @@ function updateProductRow(
   )
   // 市场调研结果（看图找类似）只在显式传入时覆盖，避免同步流程意外清空
   if (similar !== undefined) {
+    // 该列迁移时为 TEXT NOT NULL DEFAULT '{}'，写 null 会触发 NOT NULL constraint failed（500）
     db.prepare('UPDATE products SET similar=? WHERE id=?').run(
-      similar ? JSON.stringify(similar) : null,
+      similar ? JSON.stringify(similar) : '{}',
       id
     )
   }
@@ -716,7 +717,8 @@ productsRouter.post('/', async (req: Request, res: Response) => {
     evaluation?.verdict ?? null,
     evaluation ? JSON.stringify(evaluation) : null,
     listing ? JSON.stringify(listing) : null,
-    similar ? JSON.stringify(similar) : null,
+    // 该列迁移时为 TEXT NOT NULL DEFAULT '{}'，写 null 会触发 NOT NULL constraint failed（500）
+    similar ? JSON.stringify(similar) : '{}',
     body.status ?? (listing ? 'listed' : 'sourced'),
     now,
     now

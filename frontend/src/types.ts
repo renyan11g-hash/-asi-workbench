@@ -65,6 +65,12 @@ export interface PriceRow {
   allInCostUsd?: number
   /** 毛利润（USD/件） */
   grossProfit?: number
+  /** 毛利润（CNY/件）= grossProfit × 实时汇率 */
+  grossProfitCny?: number
+  /** 总毛利润（USD）= grossProfit × 数量 */
+  totalGrossProfitUsd?: number
+  /** 总毛利润（CNY）= grossProfitCny × 数量 */
+  totalGrossProfitCny?: number
   unitPrice: number
   margin: number
   shipping: 'air' | 'sea'
