@@ -45,6 +45,9 @@ export const createApp = (): Application => {
     // SPA fallback：HTML 强不缓存（保证每次拿到最新版本），同时注入 loading 占位
     app.use((req, res, next) => {
       if (req.method !== 'GET' && req.method !== 'HEAD') return next()
+      // 带扩展名的请求（旧 JS/CSS 已随重新部署消失）必须 404：
+      // 若返回 HTML 会被浏览器当作 JS 执行，MIME 检查失败 → 整页白屏
+      if (path.extname(req.path)) return res.status(404).send('Not found')
       const fp = path.join(staticDir, 'index.html')
       fs.readFile(fp, 'utf8', (err, html) => {
         if (err) return next()
@@ -60,7 +63,9 @@ export const createApp = (): Application => {
         )
         res.setHeader('Content-Type', 'text/html; charset=UTF-8')
         res.setHeader('Cache-Control', 'no-store, must-revalidate')
-        res.setHeader('X-Build', 'asi-v4')
+        // 清除浏览器缓存的 HTTP/3(QUIC) 协议偏好，规避部分代理网络下 QUIC 挂起导致“一直在加载”
+        res.setHeader('Alt-Svc', 'clear')
+        res.setHeader('X-Build', 'asi-v5')
         res.send(withFallback)
       })
     })
