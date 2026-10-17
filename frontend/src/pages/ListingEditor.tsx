@@ -1477,9 +1477,7 @@ export default function ListingEditor() {
                     <th className="pb-2">计费</th>
                     <th className="pb-2">×倍率</th>
                     <th className="pb-2">售价 $</th>
-                    <th className="pb-2">毛利 $</th>
-                    <th className="pb-2">毛利 ¥</th>
-                    <th className="pb-2">总毛利（×数量）</th>
+                    <th className="pb-2">总毛利 ¥</th>
                     <th className="pb-2">毛利率</th>
                   </tr>
                 </thead>
@@ -1490,7 +1488,6 @@ export default function ListingEditor() {
                     const misc = r.miscUsd ?? r.unitPrice * (miscPct / 100)
                     const gp = r.grossProfit ?? r.unitPrice - (r.fixedCostUsd ?? r.unitCost) - misc
                     const gpCny = r.grossProfitCny ?? gp * fx
-                    const totalUsd = r.totalGrossProfitUsd ?? gp * r.qty
                     const totalCny = r.totalGrossProfitCny ?? gpCny * r.qty
                     return (
                     <tr key={idx} className="border-t border-slate-100">
@@ -1528,24 +1525,10 @@ export default function ListingEditor() {
                       </td>
                       <td
                         className={`py-1.5 font-medium ${
-                          gp >= 0 ? 'text-emerald-600' : 'text-red-500'
+                          totalCny >= 0 ? 'text-emerald-600' : 'text-red-500'
                         }`}
                       >
-                        ${gp.toFixed(2)}
-                      </td>
-                      <td
-                        className={`py-1.5 font-medium ${
-                          gpCny >= 0 ? 'text-emerald-600' : 'text-red-500'
-                        }`}
-                      >
-                        ¥{gpCny.toFixed(2)}
-                      </td>
-                      <td
-                        className={`py-1.5 font-medium ${
-                          totalUsd >= 0 ? 'text-emerald-600' : 'text-red-500'
-                        }`}
-                      >
-                        ${totalUsd.toFixed(2)} / ¥{totalCny.toFixed(2)}
+                        ¥{totalCny.toFixed(2)}
                       </td>
                       <td
                         className={`py-1.5 font-medium ${

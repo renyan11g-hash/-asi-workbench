@@ -1125,9 +1125,7 @@ export default function Sourcing() {
                       <th className="pb-2">全成本 ¥</th>
                       <th className="pb-2">倍率</th>
                       <th className="pb-2">建议售价</th>
-                      <th className="pb-2">毛利 $</th>
-                      <th className="pb-2">毛利 ¥</th>
-                      <th className="pb-2">总毛利（×数量）</th>
+                      <th className="pb-2">总毛利 ¥</th>
                       <th className="pb-2">毛利率</th>
                     </tr>
                   </thead>
@@ -1138,7 +1136,6 @@ export default function Sourcing() {
                       const misc = r.miscUsd ?? r.unitPrice * (miscPct / 100)
                       const gp = r.grossProfit ?? r.unitPrice - (r.fixedCostUsd ?? r.unitCost) - misc
                       const gpCny = r.grossProfitCny ?? gp * fx
-                      const totalUsd = r.totalGrossProfitUsd ?? gp * r.qty
                       const totalCny = r.totalGrossProfitCny ?? gpCny * r.qty
                       const allInCny = r.allInCostUsd ?? (r.unitPrice - gp) * fx
                       return (
@@ -1163,14 +1160,8 @@ export default function Sourcing() {
                           <td className="py-1.5 font-semibold text-slate-900">
                             ${r.unitPrice.toFixed(2)}
                           </td>
-                          <td className={`py-1.5 font-medium ${gp >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                            ${gp.toFixed(2)}
-                          </td>
-                          <td className={`py-1.5 font-medium ${gpCny >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                            ¥{gpCny.toFixed(2)}
-                          </td>
-                          <td className={`py-1.5 font-medium ${totalUsd >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                            ${totalUsd.toFixed(2)} / ¥{totalCny.toFixed(2)}
+                          <td className={`py-1.5 font-medium ${totalCny >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                            ¥{totalCny.toFixed(2)}
                           </td>
                           <td className="py-1.5 text-emerald-600">{r.margin.toFixed(0)}%</td>
                         </tr>
