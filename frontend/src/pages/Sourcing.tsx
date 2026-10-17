@@ -923,7 +923,6 @@ export default function Sourcing() {
               setPriceGrid([])
               setSimilar(null)
               setImprintRec(null)
-              setSourcing(null)
               setChatMessages([])
             }}
           >
