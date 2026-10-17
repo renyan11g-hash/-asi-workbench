@@ -3,6 +3,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
+import { syncProductFromDraft } from './products'
 
 /**
  * 选品评估草稿：
@@ -75,12 +76,12 @@ draftsRouter.get('/', async (_req: Request, res: Response) => {
 
 /** 读取单个草稿（含完整表单内容） */
 draftsRouter.get('/:id', async (req: Request, res: Response) => {
-  const row = findDraft(String(req.params.id))
+  const row = findDraft(req.params.id)
   if (!row) throw new AppError(404, '草稿不存在')
   res.json({ draft: rowToDraft(row) })
 })
 
-/** 保存草稿（有 id 则覆盖更新，无 id 则新建） */
+/** 保存草稿（有 id 则覆盖更新，无 id 则新建）；内容变更时同步到已关联的产品 */
 draftsRouter.post('/', async (req: Request, res: Response) => {
   const body = upsertSchema.parse(req.body ?? {})
   const now = new Date().toISOString()
@@ -102,12 +103,22 @@ draftsRouter.post('/', async (req: Request, res: Response) => {
   }
   const row = findDraft(id)
   if (!row) throw new AppError(500, '草稿保存失败')
-  res.json({ draft: rowToDraft(row) })
+  // 评估库草稿数据变更 → 同步 source/evaluation 到关联产品（评估库 → 产品库）
+  let syncedProductId: string | null = null
+  if (body.content) {
+    try {
+      const synced = syncProductFromDraft(id, rowToDraft(row).content)
+      syncedProductId = synced?.id ?? null
+    } catch {
+      // 同步失败不影响草稿保存本身
+    }
+  }
+  res.json({ draft: rowToDraft(row), syncedProductId })
 })
 
 /** 删除草稿 */
 draftsRouter.delete('/:id', async (req: Request, res: Response) => {
-  const info = db.prepare('DELETE FROM drafts WHERE id = ?').run(String(req.params.id))
+  const info = db.prepare('DELETE FROM drafts WHERE id = ?').run(req.params.id)
   if (!info.changes) throw new AppError(404, '草稿不存在')
   res.json({ ok: true })
 })

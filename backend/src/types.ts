@@ -176,6 +176,8 @@ export type ProductStatus = 'sourced' | 'listed' | 'archived' | 'trashed'
 
 export interface Product {
   id: string
+  /** 关联的选品评估草稿 id（评估库 ↔ 产品库 同步） */
+  draftId: string | null
   source: SourceInfo
   evaluation: Evaluation | null
   listing: Listing | null

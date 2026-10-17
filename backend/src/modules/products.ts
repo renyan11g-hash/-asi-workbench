@@ -44,6 +44,8 @@ const createSchema = z.object({
   evaluation: z.any().nullable().optional(),
   listing: z.any().nullable().optional(),
   status: z.enum(['sourced', 'listed', 'archived']).optional(),
+  /** 关联的选品评估草稿 id：同一草稿重复保存时更新已关联产品，避免重复建品 */
+  draftId: z.string().max(100).optional(),
 })
 
 const updateSchema = z.object({
@@ -83,6 +85,7 @@ function toSourceInfo(s: SourceInput): SourceInfo {
 
 interface Row {
   id: string
+  draft_id: string | null
   source_title: string
   source_url: string
   description: string
@@ -127,6 +130,7 @@ const parseJson = <T>(v: string | null, fallback: T): T => {
 function rowToProduct(r: Row): Product {
   return {
     id: r.id,
+    draftId: r.draft_id ?? null,
     source: {
       sourceTitle: r.source_title,
       sourceUrl: r.source_url,
@@ -559,22 +563,120 @@ function decodeEntities(s: string): string {
     .replace(/\\u([0-9a-fA-F]{4})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)))
 }
 
-// ---------- 创建 ----------
+/** 统一的产品行更新（PATCH / 草稿同步 / 同草稿重复保存 共用） */
+function updateProductRow(
+  id: string,
+  source: SourceInfo,
+  evaluation: Evaluation | null,
+  listing: Listing | null,
+  status: string,
+  now: string
+): void {
+  db.prepare(
+    `UPDATE products SET source_title=?, source_url=?, description=?, source_keywords=?, amazon_title=?,
+      price_cny=?, price_max_cny=?, moq=?, supplier=?, material_cn=?, colors_cn=?, size_cn=?, weight_g=?,
+      carton_l_cm=?, carton_w_cm=?, carton_h_cm=?, pcs_per_carton=?, carton_gw_kg=?,
+      images=?, category=?, notes=?, score=?, verdict=?, evaluation=?, listing=?, status=?, updated_at=? WHERE id=?`
+  ).run(
+    source.sourceTitle,
+    source.sourceUrl,
+    source.description,
+    JSON.stringify(source.sourceKeywords ?? []),
+    source.amazonTitle,
+    source.priceCny ?? null,
+    source.priceMaxCny ?? null,
+    source.moq ?? null,
+    source.supplier,
+    source.materialCn,
+    source.colorsCn,
+    source.sizeCn,
+    source.weightG ?? null,
+    source.cartonLCm ?? null,
+    source.cartonWCm ?? null,
+    source.cartonHCm ?? null,
+    source.pcsPerCarton ?? null,
+    source.cartonGwKg ?? null,
+    JSON.stringify(source.images ?? []),
+    source.category,
+    source.notes,
+    evaluation?.score ?? null,
+    evaluation?.verdict ?? null,
+    evaluation ? JSON.stringify(evaluation) : null,
+    listing ? JSON.stringify(listing) : null,
+    status,
+    now,
+    id
+  )
+}
+
+/**
+ * 评估库草稿更新 → 同步 source/evaluation 到关联产品（draft_id）。
+ * 供 drafts 模块在保存草稿时调用：评估库改数据，产品库同步更新。
+ */
+export function syncProductFromDraft(
+  draftId: string,
+  content: Record<string, unknown>
+): Product | null {
+  const linked = db
+    .prepare('SELECT id FROM products WHERE draft_id = ?')
+    .get(draftId) as { id: string } | undefined
+  if (!linked) return null
+  const current = findProduct(linked.id)
+  const c = content as { source?: Partial<SourceInfo>; evaluation?: Evaluation | null }
+  if (!c.source) return current
+  const source = toSourceInfo({ ...current.source, ...c.source } as SourceInput)
+  const evaluation = c.evaluation === undefined ? current.evaluation : (c.evaluation ?? null)
+  updateProductRow(
+    linked.id,
+    source,
+    evaluation,
+    current.listing,
+    current.status,
+    new Date().toISOString()
+  )
+  return findProduct(linked.id)
+}
+
+// ---------- 创建（带 draftId 且已存在关联产品时改为更新，避免重复建品） ----------
 productsRouter.post('/', async (req: Request, res: Response) => {
   const body = createSchema.parse(req.body ?? {})
-  const id = randomUUID()
   const now = new Date().toISOString()
   const evaluation = (body.evaluation ?? null) as Evaluation | null
   const listing = (body.listing ?? null) as Listing | null
   const s = toSourceInfo(body.source)
+
+  // 同一评估草稿重复保存 → 直接更新已关联的产品（评估库 ↔ 产品库 同步）
+  if (body.draftId) {
+    const linked = db
+      .prepare('SELECT id FROM products WHERE draft_id = ?')
+      .get(body.draftId) as { id: string } | undefined
+    if (linked) {
+      const existingRow = db.prepare('SELECT status FROM products WHERE id = ?').get(linked.id) as
+        | { status: string }
+        | undefined
+      updateProductRow(
+        linked.id,
+        s,
+        evaluation,
+        listing,
+        body.status ?? existingRow?.status ?? 'sourced',
+        now
+      )
+      res.json({ product: findProduct(linked.id), updated: true })
+      return
+    }
+  }
+
+  const id = randomUUID()
   db.prepare(
-    `INSERT INTO products (id, source_title, source_url, description, source_keywords, amazon_title,
+    `INSERT INTO products (id, draft_id, source_title, source_url, description, source_keywords, amazon_title,
       price_cny, price_max_cny, moq, supplier, material_cn, colors_cn, size_cn, weight_g,
       carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg,
       images, category, notes, score, verdict, evaluation, listing, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
+    body.draftId ?? null,
     s.sourceTitle,
     s.sourceUrl,
     s.description,
@@ -630,41 +732,7 @@ productsRouter.patch('/:id', async (req: Request, res: Response) => {
         : null
   const status = patch.status ?? current.status
 
-  db.prepare(
-    `UPDATE products SET source_title=?, source_url=?, description=?, source_keywords=?, amazon_title=?,
-      price_cny=?, price_max_cny=?, moq=?, supplier=?, material_cn=?, colors_cn=?, size_cn=?, weight_g=?,
-      carton_l_cm=?, carton_w_cm=?, carton_h_cm=?, pcs_per_carton=?, carton_gw_kg=?,
-      images=?, category=?, notes=?, score=?, verdict=?, evaluation=?, listing=?, status=?, updated_at=? WHERE id=?`
-  ).run(
-    source.sourceTitle,
-    source.sourceUrl,
-    source.description,
-    JSON.stringify(source.sourceKeywords ?? []),
-    source.amazonTitle,
-    source.priceCny ?? null,
-    source.priceMaxCny ?? null,
-    source.moq ?? null,
-    source.supplier,
-    source.materialCn,
-    source.colorsCn,
-    source.sizeCn,
-    source.weightG ?? null,
-    source.cartonLCm ?? null,
-    source.cartonWCm ?? null,
-    source.cartonHCm ?? null,
-    source.pcsPerCarton ?? null,
-    source.cartonGwKg ?? null,
-    JSON.stringify(source.images ?? []),
-    source.category,
-    source.notes,
-    evaluation?.score ?? null,
-    evaluation?.verdict ?? null,
-    evaluation ? JSON.stringify(evaluation) : null,
-    listing ? JSON.stringify(listing) : null,
-    status,
-    new Date().toISOString(),
-    id
-  )
+  updateProductRow(id, source, evaluation, listing, status, new Date().toISOString())
   res.json({ product: findProduct(id) })
 })
 

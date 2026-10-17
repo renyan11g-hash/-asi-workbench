@@ -7,10 +7,16 @@ const ASI_CONTEXT = `You are a senior copywriter for US promotional products (AS
 You write product listings that rank in distributor search and convert corporate buyers.
 
 ASI Listing field rules (strict):
-- Product Title: ≤ 60 characters. Pattern: Keyword + Traffic Word + Selling Point + Core Noun.
-- Summary Description: ≤ 130 characters, MUST end with EXACTLY: "Rush service is available".
-- Full Description: ≤ 800 characters. 50-70% product description, the rest keywords blended in naturally (do NOT list keywords separately, do NOT stuff). Do NOT mention dimensions or size in the description.
+- Product Title: ≤ 60 characters. Pattern: Keyword + Traffic Word + Selling Point + Core Noun. Title Case.
+  - Model it on how the SAME product is titled on Amazon US, adapted to ASI promo-industry search habits.
+  - Do NOT deliberately emphasize "Custom" — customization is the DEFAULT assumption in this industry; only include it when the keyword structure genuinely needs it.
+- Summary Description: ≤ 130 characters. Highlight the core selling points. MUST end with EXACTLY: "Rush service is available".
+- Full Description: ≤ 800 characters. Model it on how similar products of the same type are described on Amazon US (adapted to ASI promo-industry requirements).
+  - 50-70% product description, the rest keywords blended in naturally (do NOT list keywords separately, do NOT stuff).
+  - Do NOT mention dimensions or size. Do NOT use brand-style copy structure (no "About us", no brand story, no licensed-brand references).
 - Keywords: up to 30 groups, each ≤ 30 characters, each ≤ 4 words, Title Case, English comma separated.
+  - Build the keyword pool from: (a) high-frequency search terms for the SAME product's ASIN on asinseed.com, (b) the SEED keyword library provided in the prompt, deduplicated.
+  - Think like a US distributor searching to source this product — use the words they would type to maximize search hit rate, click rate and conversion.
   - You may include a brand name from the SAME product line (e.g. "Yeti Bags" only when it's truly a parallel/clone product line, not the actual brand).
   - DO NOT include obvious branded terms (Disney, Marvel, NBA, NFL, MLB, Sanrio, Hello Kitty, Nike, Apple, Coca, Pepsi, LEGO, Barbie, Tesla, Gucci, LV, etc.).
   - DO NOT force-fit unrelated brands.
@@ -135,18 +141,24 @@ REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)
 - ASI Imprint Methods (1-4): ${imprintsPick}
 - Color style: translate each Chinese color to its ASI English form, join with "/" (e.g. "Black/Gray/Brown/Orange/Army Green").
 
-KEYWORD SEED LIBRARY (high-frequency US promo terms, drawn from asinseed / Amazon promo research; pick only ones that are RELEVANT to this product, do NOT stuff):
+KEYWORD SEED LIBRARY (high-frequency US promo terms, drawn from asinseed / Amazon promo research, already deduplicated; pick only ones that are RELEVANT to this product, do NOT stuff):
 ${SEED_KEYWORDS.join(', ')}
+
+KEYWORD BUILD PROCESS (follow this order):
+1. Identify the Amazon US same-product / clone product line for this item and its typical search terms.
+2. Blend the high-frequency terms of that ASIN (asinseed-style research) with the SEED LIBRARY above, deduplicated.
+3. Write each keyword group the way a US distributor would type it when sourcing this product on ASI — maximize search hit rate, click rate and conversion.
+4. If the product belongs to a well-known parallel/clone product line, you may include that line's brand name in a keyword group (e.g. "Yeti Bags"), but NEVER a licensed brand (Disney, Nike, etc.).
 
 CALCULATED PRICE GRID (authoritative — DO NOT change numbers, USE these only)
 ${costSummaryForPrompt(source, settings)}
 
 OUTPUT JSON SCHEMA (all fields required, all values MUST be plain strings/objects/arrays, no markdown):
 {
-  "title": "≤60 chars, English, Title Case. Keyword+Traffic Word+Selling Point+Core Noun",
-  "summary": "≤130 chars English, MUST end with EXACTLY 'Rush service is available' (include a space before it)",
-  "description": "≤800 chars English, 50-70% product description + the rest keywords blended in naturally. Do NOT list dimensions or size.",
-  "keywords": "single string, ≤30 groups separated by English comma. Each group ≤30 chars, ≤4 words. Title Case. Do NOT include obvious brand names like ${BRAND_BLOCKLIST.slice(0, 6).join(', ')}.",
+  "title": "≤60 chars, English, Title Case. Keyword+Traffic Word+Selling Point+Core Noun. Modeled on the Amazon US same-product title adapted to ASI promo search. Do NOT deliberately emphasize 'Custom' (customization is the default assumption).",
+  "summary": "≤130 chars English, highlight core selling points, MUST end with EXACTLY 'Rush service is available' (include a space before it)",
+  "description": "≤800 chars English, modeled on Amazon US similar-product descriptions adapted to ASI promo style. 50-70% product description + the rest keywords blended in naturally. Do NOT list dimensions or size. No brand-story copy structure.",
+  "keywords": "single string, ≤30 groups separated by English comma. Each group ≤30 chars, ≤4 words. Title Case. Built from asinseed-style ASIN high-frequency terms + the SEED LIBRARY, deduplicated, written as US distributor search queries. Do NOT include obvious brand names like ${BRAND_BLOCKLIST.slice(0, 6).join(', ')}.",
   "category": "the PRIMARY category, ONE from the above ASI category list",
   "categories": ["1-2 ASI categories from the list above; the first MUST equal \"category\"; pick the most relevant for this product (max 2)"],
   "themes": ["exactly 5 ASI theme strings, MUST include 'Anniversary' and 'Sustainable'"],
@@ -420,7 +432,7 @@ ${conv || '(no messages yet — greet briefly and summarize what you can already
 
 Rules:
 - reply in Chinese, keep it under 200 characters unless explaining something complex.
-- patch: only include fields you are confident about; respect all ASI field rules (title ≤60, summary ≤130 ending with "Rush service is available", description ≤800, keywords ≤30 groups each ≤30 chars ≤4 words Title Case, themes exactly 5 incl. Anniversary + Sustainable).
+- patch: only include fields you are confident about; respect all ASI field rules (title ≤60, Keyword+Traffic Word+Selling Point+Core Noun, do NOT deliberately emphasize "Custom"; summary ≤130 ending with "Rush service is available"; description ≤800, Amazon-US-similar style, no size, no brand-story structure; keywords ≤30 groups each ≤30 chars ≤4 words Title Case, asinseed-style distributor search terms; themes exactly 5 incl. Anniversary + Sustainable).
 - Never output Chinese in patch fields (they go to the US catalog).`
 
   return { system, user }
@@ -466,7 +478,7 @@ ${instruction ? `Salesperson instruction (MUST be respected): ${instruction}` : 
 
 Rules:
 - Output ONLY the requested keys. Never output other fields.
-- Respect all ASI rules per field: title ≤60 chars; summary ≤130 chars ending with EXACTLY "Rush service is available"; description ≤800 chars, no size mention; keywords ≤30 groups each ≤30 chars ≤4 words Title Case; themes EXACTLY 5 incl. "Anniversary" + "Sustainable"; categories max 2 from the GLS category table (exact strings only); materials from the ASI material list; imprintMethods MUST include "Silkscreen", "Unimprinted", "Full Color" plus relevant extras; colors joined by "/".
+- Respect all ASI rules per field: title ≤60 chars, Keyword+Traffic Word+Selling Point+Core Noun, do NOT deliberately emphasize "Custom"; summary ≤130 chars ending with EXACTLY "Rush service is available"; description ≤800 chars, Amazon-US-similar style, no size mention, no brand-story structure; keywords ≤30 groups each ≤30 chars ≤4 words Title Case, built from asinseed-style ASIN high-frequency terms + the seed library, written as US distributor search queries; themes EXACTLY 5 incl. "Anniversary" + "Sustainable"; categories max 2 from the GLS category table (exact strings only); materials from the ASI material list; imprintMethods MUST include "Silkscreen", "Unimprinted", "Full Color" plus relevant extras; colors joined by "/".
 - English fields (title/summary/description/keywords/categories/themes/materials/imprintMethods/colors) must be English only. Chinese only in *Zh fields.`
 
   return { system, user }

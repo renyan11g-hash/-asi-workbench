@@ -481,6 +481,13 @@ export default function Sourcing() {
     }
   }
 
+  /** 阶梯数量自定义：直接改预览价格表某档的数量 */
+  const setGridQty = (idx: number, qty: number) => {
+    setPriceGrid((grid) =>
+      grid.map((r, i) => (i === idx ? { ...r, qty: Math.max(1, Math.round(qty) || 1) } : r))
+    )
+  }
+
   const save = async (then: 'library' | 'listing') => {
     const payload = buildSource()
     if (!payload.sourceTitle.trim()) {
@@ -493,6 +500,8 @@ export default function Sourcing() {
         source: payload,
         evaluation,
         status: 'sourced',
+        // 关联当前评估草稿：同一草稿再次保存时更新原产品，评估库改动也会同步过来
+        draftId: currentDraftId,
       })
       // 草稿已落到产品库，清掉 localStorage 草稿避免下次误恢复
       ;['source', 'evaluation', 'priceGrid', 'keywordsText', 'imageText'].forEach((k) =>
@@ -500,7 +509,7 @@ export default function Sourcing() {
       )
       setDraftBanner(null)
       qc.invalidateQueries({ queryKey: ['products'] })
-      toast.success('已保存到产品库')
+      toast.success(product.draftId ? '已同步更新产品库中的关联产品' : '已保存到产品库')
       if (then === 'listing') navigate(`/listing/${product.id}`)
       else navigate('/library')
     } catch (err) {
@@ -1307,7 +1316,7 @@ export default function Sourcing() {
             {priceGrid.length > 0 && (
               <SectionCard
                 title="ASI 标准价格表"
-                hint={`汇率 ${settings?.settings.fxRate ?? '-'}，空运 ¥${settings?.settings.airRateCnyPerKg ?? 50}/kg，海运 ¥${settings?.settings.seaRateCnyPerKg ?? 20}/kg，计费重取 max(体积重, 毛重)`}
+                hint={`汇率 ${settings?.settings.fxRate ?? '-'}，空运 ¥${settings?.settings.airRateCnyPerKg ?? 50}/kg，海运 ¥${settings?.settings.seaRateCnyPerKg ?? 20}/kg，计费重取 max(体积重, 毛重)。数量可直接改`}
               >
                 <table className="w-full text-xs">
                   <thead>
@@ -1322,9 +1331,18 @@ export default function Sourcing() {
                     </tr>
                   </thead>
                   <tbody>
-                    {priceGrid.map((r) => (
-                      <tr key={r.qty} className="border-t border-slate-100">
-                        <td className="py-1.5 text-slate-600">{r.qty}</td>
+                    {priceGrid.map((r, idx) => (
+                      <tr key={idx} className="border-t border-slate-100">
+                        <td className="py-1">
+                          <Input
+                            className="h-7 w-20 text-xs"
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={r.qty}
+                            onChange={(e) => setGridQty(idx, Number(e.target.value || 0))}
+                          />
+                        </td>
                         <td className="py-1.5 text-slate-500">
                           {r.shipping === 'air' ? '空运' : '海运'}
                         </td>

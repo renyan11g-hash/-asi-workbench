@@ -433,23 +433,22 @@ export const ILOVECARGO_RULES = [
  *  注意：这是「可参考词」而非「必选词」，与产品强相关才用。
  */
 export const SEED_KEYWORDS: readonly string[] = [
-  // 核心
-  'Custom', 'Personalized', 'Customized', 'Customizable', 'Personalization',
-  'Personalised', 'Branded', 'Logo', 'Printed', 'Bulk', 'Blank',
-  // 卖点
-  'High Quality', 'Premium', 'Durable', 'Portable', 'Lightweight', 'Useful',
-  'Practical', 'Multipurpose', 'Modern', 'Simple', 'Creative', 'Unique', 'Nice',
-  'Brilliant', 'Natural', 'Top', 'Best', 'Ultra',
-  // 商业
-  'Promotional', 'Giveaway', 'Advertising', 'Wholesale', 'Gift', 'Gifts', 'Product',
-  'Products', 'Cheap', 'Budget', 'Universal', 'Personal',
+  // 用户词库核心（unique / custom / best / high quality / luxury / most popular ...）
+  'Unique', 'Custom', 'Best', 'High Quality', 'Luxury', 'Most Popular',
+  'Cheap', 'Durable', 'In Stock', 'Portable', 'Wholesale', 'Promotional',
+  'Branded', 'Printed', 'Logo', 'Gift', 'Customized', 'Bulk', 'Customizable',
+  'Personalized', 'Nice', 'Blank', 'Amazon',
+  // 用户词库扩展（连写词拆分：unique creative practical / custom item budget / ...）
+  'Creative', 'Practical', 'Item', 'Budget', 'Universal', 'Advertising',
+  'Giveaway', 'Brilliant', 'Top', 'Gifts', 'Premium', 'Natural', 'Useful',
+  'Personal', 'Personalization', 'Multipurpose', 'Product', 'Products',
+  'Good', 'New', 'Promotions', 'Ultra', 'Modern', 'Simple',
   // 商务 / 场景
   'Corporate', 'Trade Show', 'Employee', 'Campaign', 'Welcome Kit', 'Office',
-  'New', 'Good', 'Promotions', 'Item', 'Top Advertising',
   // 库存 / 物流
-  'In Stock', 'Free Shipping', 'Fast Shipping',
+  'Free Shipping', 'Fast Shipping',
   // ASI 平台高频
-  'Amazon', 'Amazon Prime',
+  'Amazon Prime',
 ]
 
 /** 已知品牌词黑名单（出现即在 Description/Title/Keywords 中剔除，避免被当成违规主体） */

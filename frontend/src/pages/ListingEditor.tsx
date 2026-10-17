@@ -603,16 +603,26 @@ export default function ListingEditor() {
     }
   }
 
-  const setPrice = (qty: number, price: number) => {
+  // 按行索引更新，避免数量可编辑后出现重复 qty 匹配错行
+  const setPrice = (idx: number, price: number) => {
     if (!listing) return
-    const grid = listing.priceGrid.map((r) =>
-      r.qty === qty
+    const grid = listing.priceGrid.map((r, i) =>
+      i === idx
         ? {
             ...r,
             unitPrice: price,
             margin: r.unitCost > 0 ? (1 - r.unitCost / price) * 100 : 0,
           }
         : r
+    )
+    patch({ priceGrid: grid })
+  }
+
+  /** 阶梯数量自定义：直接改某档的数量 */
+  const setQty = (idx: number, qty: number) => {
+    if (!listing) return
+    const grid = listing.priceGrid.map((r, i) =>
+      i === idx ? { ...r, qty: Math.max(1, Math.round(qty) || 1) } : r
     )
     patch({ priceGrid: grid })
   }
@@ -824,7 +834,9 @@ export default function ListingEditor() {
           <div>
             <div className="text-xs text-slate-500">采购单价 / MOQ</div>
             <div className="mt-0.5 font-medium text-slate-800">
-              ¥{product.source.priceCny} · {product.source.moq || '—'} 件
+              ¥{product.source.priceCny}
+              {product.source.priceMaxCny ? ` ~ ¥${product.source.priceMaxCny}` : ''} ·{' '}
+              {product.source.moq || '—'} 件
             </div>
           </div>
           <div>
@@ -839,8 +851,41 @@ export default function ListingEditor() {
             <div className="mt-0.5 font-medium text-slate-800">
               {product.source.cartonLCm ? `${product.source.cartonLCm}×${product.source.cartonWCm}×${product.source.cartonHCm} cm` : '—'}{' '}
               · {product.source.pcsPerCarton || '—'} pcs
+              {product.source.cartonGwKg ? ` · ${product.source.cartonGwKg} kg` : ''}
             </div>
           </div>
+          <div>
+            <div className="text-xs text-slate-500">颜色</div>
+            <div className="mt-0.5 font-medium text-slate-800">{product.source.colorsCn || '—'}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">尺寸 / 规格</div>
+            <div className="mt-0.5 font-medium text-slate-800">{product.source.sizeCn || '—'}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">供应商</div>
+            <div className="mt-0.5 font-medium text-slate-800">{product.source.supplier || '—'}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">类目</div>
+            <div className="mt-0.5 font-medium text-slate-800">{product.source.category || '—'}</div>
+          </div>
+          {(product.source.sourceKeywords ?? []).length > 0 && (
+            <div className="sm:col-span-2 lg:col-span-4">
+              <div className="text-xs text-slate-500">1688 关键词</div>
+              <div className="mt-0.5 font-medium text-slate-800">
+                {(product.source.sourceKeywords ?? []).join('、')}
+              </div>
+            </div>
+          )}
+          {product.source.notes && (
+            <div className="sm:col-span-2 lg:col-span-4">
+              <div className="text-xs text-slate-500">备注</div>
+              <div className="mt-0.5 whitespace-pre-wrap font-medium text-slate-800">
+                {product.source.notes}
+              </div>
+            </div>
+          )}
         </div>
         {product.source.sourceUrl && (
           <a
@@ -1394,7 +1439,7 @@ export default function ListingEditor() {
           <div className="space-y-4 lg:col-span-4">
             <SectionCard
               title="阶梯报价 (8C · 前 4 空运 / 后 4 海运)"
-              hint="售价可直接改，毛利自动重算。空运 1.4×→1.32×（自动抬升以保证海运第一档 < 空运最后一档），海运 1.4×→1.25×"
+              hint="数量、售价均可直接改，毛利自动重算。空运 1.4×→1.32×（自动抬升以保证海运第一档 < 空运最后一档），海运 1.4×→1.25×"
               right={
                 <Button variant="ghost" size="sm" onClick={reprice}>
                   <RefreshCw className="mr-1 h-3 w-3" /> 重算
@@ -1413,9 +1458,18 @@ export default function ListingEditor() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(listing.priceGrid ?? []).map((r: PriceRow) => (
-                    <tr key={r.qty} className="border-t border-slate-100">
-                      <td className="py-1.5 text-slate-600">{r.qty}</td>
+                  {(listing.priceGrid ?? []).map((r: PriceRow, idx: number) => (
+                    <tr key={idx} className="border-t border-slate-100">
+                      <td className="py-1">
+                        <Input
+                          className="h-7 w-20 text-xs"
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={r.qty}
+                          onChange={(e) => setQty(idx, Number(e.target.value || 0))}
+                        />
+                      </td>
                       <td className="py-1.5">
                         <span
                           className={`rounded px-1.5 py-0.5 text-[10px] ${
@@ -1435,7 +1489,7 @@ export default function ListingEditor() {
                           type="number"
                           step="0.01"
                           value={r.unitPrice}
-                          onChange={(e) => setPrice(r.qty, Number(e.target.value || 0))}
+                          onChange={(e) => setPrice(idx, Number(e.target.value || 0))}
                         />
                       </td>
                       <td

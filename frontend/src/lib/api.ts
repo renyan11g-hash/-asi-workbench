@@ -45,6 +45,8 @@ export const api = {
     evaluation?: Evaluation | null
     listing?: Listing | null
     status?: ProductStatus
+    /** 关联的评估草稿 id：同一草稿重复保存时更新已关联产品，避免重复建品 */
+    draftId?: string | null
   }): Promise<Product> {
     const { data } = await apiClient.post<{ product: Product }>('/products', payload)
     return data.product
