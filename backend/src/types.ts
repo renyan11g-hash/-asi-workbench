@@ -43,6 +43,14 @@ export interface SimilarResearch {
   }>
   /** ASI / PPAI / SAGE 分销商同类候选 */
   asiItems: Array<{ title: string; brand?: string; url?: string; note?: string }>
+  /** 亚马逊同类商品的搜索流量词（asinseed 风格反查结果） */
+  amazonSearchTerms?: string[]
+  /** ASI 分销商搜索流量词 */
+  asiSearchTerms?: string[]
+  /** 高置信度 ASIN 候选（可直接到 asinseed 反查关键词） */
+  likelyAsins?: string[]
+  /** 竞品品牌（关键词可借用其品牌名组合） */
+  competingBrands?: string[]
   /** 给业务侧的关键词、ASIN、上架策略建议 */
   suggestions: string[]
   referenceTitles?: string[]
@@ -57,7 +65,15 @@ export interface PriceRow {
   unitCostCny: number
   unitCost: number
   unitPrice: number
-  /** 该档利润率（0-1） */
+  /** 固定成本（USD/件）= 商品 + 运费 + 印刷 + 样品摊销（不含杂费） */
+  fixedCostUsd: number
+  /** 杂费（USD/件）= 售价 × miscFeePct% */
+  miscUsd: number
+  /** 全口径成本（USD/件）= fixedCostUsd + miscUsd */
+  allInCostUsd: number
+  /** 毛利润（USD/件）= 售价 − 全口径成本 */
+  grossProfit: number
+  /** 该档毛利率（0-1） */
   margin: number
   /** 运输方式 */
   shipping: 'air' | 'sea'
@@ -220,6 +236,12 @@ export interface Settings {
   qtyLevelsMode: 'auto' | 'manual'
   /** 6 档运输分段：前 N 档空运、后 6-N 档海运（默认 3） */
   airQtyLevels: number
+  /** 印刷成本（¥/件，默认 1.5） */
+  printCostCny: number
+  /** 样品费（¥，整单一次，摊入首档；默认 300） */
+  sampleFeeCny: number
+  /** 杂费比例（% 售价：手续费 3% + 损耗 1% + 汇率缓冲 1%，默认 5） */
+  miscFeePct: number
   // 业务默认
   defaultImprintMethods: string[]
   /** 拼写检查：标题关键词、卖点、默认印花 */
@@ -242,6 +264,9 @@ export const DEFAULT_SETTINGS: Settings = {
   qtyLevels: [50, 100, 250, 500, 1000, 2500, 5000, 10000],
   qtyLevelsMode: 'auto',
   airQtyLevels: 4,
+  printCostCny: 1.5,
+  sampleFeeCny: 300,
+  miscFeePct: 5,
   defaultImprintMethods: ['Silkscreen', 'Laser Engraved'],
   targetCategories: [],
 }

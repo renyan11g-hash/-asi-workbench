@@ -6,7 +6,6 @@ import {
   Bot,
   CheckCircle2,
   CloudUpload,
-  Compass,
   Copy,
   FolderOpen,
   History,
@@ -139,21 +138,6 @@ export default function Sourcing() {
   useDraft('sourcing:imageText', imageText)
 
   // ---------- 新功能状态 ----------
-  const [busySuggest, setBusySuggest] = useState(false)
-  const [sourcing, setSourcing] = useState<{
-    directions: Array<{
-      product: string
-      why: string
-      search1688: string[]
-      category: string
-      expectedUnitCostCny: number | null
-      expectedSellUsd: { min: number; max: number } | null
-      risks: string[]
-    }>
-    keywords1688: string[]
-    tips: string[]
-  } | null>(null)
-  const [suggestInput, setSuggestInput] = useState({ category: '', keywords: '', budgetCny: '', notes: '' })
   const [busyImprint, setBusyImprint] = useState(false)
   const [imprintRec, setImprintRec] = useState<{
     recommendations: Array<{ id: string; nameZh: string; why: string; pros: string[]; cons: string[]; bestFor: string }>
@@ -198,6 +182,7 @@ export default function Sourcing() {
           priceGrid,
           keywordsText,
           imageText,
+          similar,
         },
       })
       setCurrentDraftId(r.draft.id)
@@ -234,12 +219,14 @@ export default function Sourcing() {
         priceGrid?: PriceRow[]
         keywordsText?: string
         imageText?: string
+        similar?: Record<string, unknown> | null
       }
       if (c.source) setSource(c.source)
       if (c.evaluation !== undefined) setEvaluation(c.evaluation ?? null)
       if (c.priceGrid) setPriceGrid(c.priceGrid)
       if (c.keywordsText !== undefined) setKeywordsText(c.keywordsText ?? '')
       if (c.imageText !== undefined) setImageText(c.imageText ?? '')
+      if (c.similar !== undefined) setSimilar(c.similar ?? null)
       setCurrentDraftId(draft.id)
       setCloudSavedAt(draft.updatedAt)
       setDraftDialogOpen(false)
@@ -274,25 +261,6 @@ export default function Sourcing() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  /** 1688 选品方向推荐（AI） */
-  const runSourcingSuggest = async () => {
-    setBusySuggest(true)
-    try {
-      const r = await api.sourcingSuggest({
-        category: suggestInput.category || undefined,
-        keywords: suggestInput.keywords || undefined,
-        budgetCny: suggestInput.budgetCny ? Number(suggestInput.budgetCny) : undefined,
-        notes: suggestInput.notes || undefined,
-      })
-      setSourcing(r)
-      toast.success(`已生成 ${r.directions?.length ?? 0} 个选品方向`)
-    } catch (err) {
-      toast.error(getErrorMessage(err))
-    } finally {
-      setBusySuggest(false)
-    }
-  }
 
   /** 印刷方式推荐（本地规则引擎，秒出） */
   const runImprintRecommend = async () => {
@@ -499,6 +467,8 @@ export default function Sourcing() {
       const product = await api.createProduct({
         source: payload,
         evaluation,
+        // 市场调研结果随产品落库：链接生成时自动注入为关键词流量词来源
+        similar,
         status: 'sourced',
         // 关联当前评估草稿：同一草稿再次保存时更新原产品，评估库改动也会同步过来
         draftId: currentDraftId,
@@ -623,139 +593,6 @@ export default function Sourcing() {
       <div className="grid gap-5 lg:grid-cols-12">
       <div className="space-y-4 lg:col-span-7">
         <SectionCard
-          title="1688 选品方向推荐（AI 自动搜寻）"
-          hint="不知道卖什么？填几个条件，AI 推荐适合美国促销礼品市场、能吸引买家下单的选品方向，并给出 1688 搜索词"
-          right={
-            <Button size="sm" onClick={runSourcingSuggest} disabled={busySuggest}>
-              {busySuggest ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Compass className="mr-1 h-3.5 w-3.5" />}
-              {busySuggest ? '推荐中…' : '生成选品方向'}
-            </Button>
-          }
-        >
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="目标类目（可选）">
-              <select
-                className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
-                value={suggestInput.category}
-                onChange={(e) => setSuggestInput((s) => ({ ...s, category: e.target.value }))}
-              >
-                <option value="">不限</option>
-                {GLS_CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="预算（¥/件，可选）">
-              <Input
-                className={inputCls}
-                type="number"
-                min={0}
-                step="0.5"
-                placeholder="如 15"
-                value={suggestInput.budgetCny}
-                onChange={(e) => setSuggestInput((s) => ({ ...s, budgetCny: e.target.value }))}
-              />
-            </Field>
-            <Field label="偏好关键词（可选）">
-              <Input
-                className={inputCls}
-                placeholder="如 保温杯 帆布袋"
-                value={suggestInput.keywords}
-                onChange={(e) => setSuggestInput((s) => ({ ...s, keywords: e.target.value }))}
-              />
-            </Field>
-          </div>
-
-          {sourcing && (
-            <div className="mt-3 space-y-3">
-              {sourcing.directions?.map((d, i) => (
-                <div key={i} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-sm font-semibold text-slate-800">
-                      {i + 1}. {d.product}
-                    </div>
-                    <div className="flex items-center gap-2 text-[11px]">
-                      {d.expectedUnitCostCny != null && (
-                        <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">成本 ≈ ¥{d.expectedUnitCostCny}</span>
-                      )}
-                      {d.expectedSellUsd && (
-                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">
-                          售价 ${d.expectedSellUsd.min}–${d.expectedSellUsd.max}
-                        </span>
-                      )}
-                      {d.category && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">{d.category}</span>}
-                    </div>
-                  </div>
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-slate-600">{d.why}</p>
-                  {d.search1688?.length > 0 && (
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      <span className="text-[11px] text-slate-500">1688 搜索：</span>
-                      {d.search1688.map((k, j) => (
-                        <a
-                          key={j}
-                          href={`https://search.1688.com/kq/-6D3O${encodeURIComponent(k)}.html`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="rounded border border-orange-200 bg-orange-50 px-1.5 py-0.5 text-[11px] text-orange-700 hover:bg-orange-100"
-                        >
-                          {k} ↗
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                  {d.risks?.length > 0 && (
-                    <p className="mt-1.5 text-[11px] text-rose-600">风险：{d.risks.join('；')}</p>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="mt-1 h-7 text-xs text-blue-600"
-                    onClick={() => {
-                      set('sourceTitle', d.product)
-                      set('category', d.category || '')
-                      setKeywordsText([...(d.search1688 ?? [])].join(', '))
-                      toast.success('已填入表单，补充箱规等信息后即可评估')
-                    }}
-                  >
-                    <Wand2 className="mr-1 h-3 w-3" /> 填入下方表单
-                  </Button>
-                </div>
-              ))}
-              {sourcing.keywords1688?.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[11px] text-slate-500">通用搜索词：</span>
-                  {sourcing.keywords1688.map((k, i) => (
-                    <a
-                      key={i}
-                      href={`https://search.1688.com/kq/-6D3O${encodeURIComponent(k)}.html`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-200"
-                    >
-                      {k} ↗
-                    </a>
-                  ))}
-                </div>
-              )}
-              {sourcing.tips?.length > 0 && (
-                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
-                  <div className="mb-1 text-[11px] font-semibold text-amber-800">选品/成交要点</div>
-                  <ul className="space-y-0.5">
-                    {sourcing.tips.map((t, i) => (
-                      <li key={i} className="text-[12px] leading-relaxed text-amber-800">
-                        · {t}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
-        </SectionCard>
-
-        <SectionCard
           title="1688 商品信息"
           hint="信息越完整，AI 评估与英文链接质量越高。箱规和数量决定第一级"
           right={
@@ -783,26 +620,6 @@ export default function Sourcing() {
                   placeholder="如：定制logo不锈钢保温杯 20oz 真空保温"
                   value={source.sourceTitle}
                   onChange={(e) => set('sourceTitle', e.target.value)}
-                />
-              </Field>
-            </div>
-            <div className="sm:col-span-2">
-              <Field label="1688 详细描述" hint="复制详情页正文：参数/材质/尺寸/卖点全部保留，AI 据此判断可印与合规">
-                <Textarea
-                  className="min-h-[120px] text-xs leading-relaxed"
-                  placeholder="杯身采用 304 不锈钢，双层真空，容量 20oz（≈590ml），可激光雕刻 logo，可选颜色 12 种..."
-                  value={source.description}
-                  onChange={(e) => set('description', e.target.value)}
-                />
-              </Field>
-            </div>
-            <div className="sm:col-span-2">
-              <Field label="1688 关键词（可选）" hint="一行一个或逗号分隔，来自 1688 详情页标签">
-                <Textarea
-                  className="min-h-[64px] text-xs"
-                  placeholder="保温杯, 真空杯, 不锈钢杯, 定制水杯"
-                  value={keywordsText}
-                  onChange={(e) => setKeywordsText(e.target.value)}
                 />
               </Field>
             </div>
@@ -875,25 +692,6 @@ export default function Sourcing() {
                 step="0.01"
                 value={source.priceCny || ''}
                 onChange={(e) => set('priceCny', Number(e.target.value || 0))}
-              />
-            </Field>
-            <Field label="价格上限（¥）" hint="1688 区间报价时可填">
-              <Input
-                className={inputCls}
-                type="number"
-                min={0}
-                step="0.01"
-                value={source.priceMaxCny ?? ''}
-                onChange={(e) => set('priceMaxCny', e.target.value ? Number(e.target.value) : null)}
-              />
-            </Field>
-            <Field label="起订量 MOQ（件）">
-              <Input
-                className={inputCls}
-                type="number"
-                min={0}
-                value={source.moq || ''}
-                onChange={(e) => set('moq', Number(e.target.value || 0))}
               />
             </Field>
             <Field label="单件重量（g）" required hint="决定体积重与计费重">
@@ -1316,7 +1114,7 @@ export default function Sourcing() {
             {priceGrid.length > 0 && (
               <SectionCard
                 title="ASI 标准价格表"
-                hint={`汇率 ${settings?.settings.fxRate ?? '-'}，空运 ¥${settings?.settings.airRateCnyPerKg ?? 50}/kg，海运 ¥${settings?.settings.seaRateCnyPerKg ?? 20}/kg，计费重取 max(体积重, 毛重)。数量可直接改`}
+                hint={`汇率 ${settings?.settings.fxRate ?? '-'}，空运 ¥${settings?.settings.airRateCnyPerKg ?? 50}/kg，海运 ¥${settings?.settings.seaRateCnyPerKg ?? 20}/kg，计费重取 max(体积重, 毛重)。全成本 = 商品+运费+印刷¥${settings?.settings.printCostCny ?? 1.5}+样品费¥${settings?.settings.sampleFeeCny ?? 300}摊首档+杂费${settings?.settings.miscFeePct ?? 5}%售价。数量可直接改`}
               >
                 <table className="w-full text-xs">
                   <thead>
@@ -1324,37 +1122,50 @@ export default function Sourcing() {
                       <th className="pb-2">数量</th>
                       <th className="pb-2">运输</th>
                       <th className="pb-2">计费重</th>
-                      <th className="pb-2">成本 ¥</th>
+                      <th className="pb-2">商品+运费 ¥</th>
+                      <th className="pb-2">全成本 ¥</th>
                       <th className="pb-2">倍率</th>
                       <th className="pb-2">建议售价</th>
+                      <th className="pb-2">毛利 $</th>
                       <th className="pb-2">毛利率</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {priceGrid.map((r, idx) => (
-                      <tr key={idx} className="border-t border-slate-100">
-                        <td className="py-1">
-                          <Input
-                            className="h-7 w-20 text-xs"
-                            type="number"
-                            min="1"
-                            step="1"
-                            value={r.qty}
-                            onChange={(e) => setGridQty(idx, Number(e.target.value || 0))}
-                          />
-                        </td>
-                        <td className="py-1.5 text-slate-500">
-                          {r.shipping === 'air' ? '空运' : '海运'}
-                        </td>
-                        <td className="py-1.5 text-slate-500">{r.billableKg} kg</td>
-                        <td className="py-1.5 text-slate-500">¥{r.unitCostCny.toFixed(2)}</td>
-                        <td className="py-1.5 text-slate-500">×{r.markupRate}</td>
-                        <td className="py-1.5 font-semibold text-slate-900">
-                          ${r.unitPrice.toFixed(2)}
-                        </td>
-                        <td className="py-1.5 text-emerald-600">{r.margin.toFixed(0)}%</td>
-                      </tr>
-                    ))}
+                    {priceGrid.map((r, idx) => {
+                      const fx = settings?.settings.fxRate ?? 6.7
+                      const miscPct = settings?.settings.miscFeePct ?? 5
+                      const misc = r.miscUsd ?? r.unitPrice * (miscPct / 100)
+                      const gp = r.grossProfit ?? r.unitPrice - (r.fixedCostUsd ?? r.unitCost) - misc
+                      const allInCny = r.allInCostUsd ?? (r.unitPrice - gp) * fx
+                      return (
+                        <tr key={idx} className="border-t border-slate-100">
+                          <td className="py-1">
+                            <Input
+                              className="h-7 w-20 text-xs"
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={r.qty}
+                              onChange={(e) => setGridQty(idx, Number(e.target.value || 0))}
+                            />
+                          </td>
+                          <td className="py-1.5 text-slate-500">
+                            {r.shipping === 'air' ? '空运' : '海运'}
+                          </td>
+                          <td className="py-1.5 text-slate-500">{r.billableKg} kg</td>
+                          <td className="py-1.5 text-slate-500">¥{r.unitCostCny.toFixed(2)}</td>
+                          <td className="py-1.5 text-slate-500">¥{allInCny.toFixed(2)}</td>
+                          <td className="py-1.5 text-slate-500">×{r.markupRate}</td>
+                          <td className="py-1.5 font-semibold text-slate-900">
+                            ${r.unitPrice.toFixed(2)}
+                          </td>
+                          <td className={`py-1.5 font-medium ${gp >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                            ${gp.toFixed(2)}
+                          </td>
+                          <td className="py-1.5 text-emerald-600">{r.margin.toFixed(0)}%</td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
                 <p className="mt-2 text-[11px] text-slate-400">

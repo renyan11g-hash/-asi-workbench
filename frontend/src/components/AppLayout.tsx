@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
+  Compass,
   FolderOpen,
   LayoutDashboard,
   Package,
@@ -13,7 +14,8 @@ import { cn } from '@/lib/utils'
 
 const NAV = [
   { to: '/', label: '概览', icon: LayoutDashboard, end: true },
-  { to: '/sourcing', label: '选品评估', icon: SearchCheck, end: false },
+  { to: '/sourcing-suggest', label: '选品预估', icon: Compass, end: false },
+  { to: '/sourcing', label: '产品评估', icon: SearchCheck, end: false },
   { to: '/evaluations', label: '评估库', icon: FolderOpen, end: false },
   { to: '/library', label: '产品库', icon: Package, end: false },
   { to: '/settings', label: '设置', icon: SettingsIcon, end: false },
@@ -21,7 +23,8 @@ const NAV = [
 
 const TITLES: Record<string, { title: string; sub: string }> = {
   '/': { title: '工作台概览', sub: '选品进度、链接产出与利润概览' },
-  '/sourcing': { title: '1688 选品评估', sub: '粘贴商品信息，判断它值不值得做成美国 ASI 促销礼品' },
+  '/sourcing-suggest': { title: '选品预估', sub: 'AI 自动搜寻适合美国促销礼品市场的选品方向与 1688 搜索词' },
+  '/sourcing': { title: '产品评估', sub: '填入商品信息，判断它值不值得做成美国 ASI 促销礼品' },
   '/evaluations': { title: '评估库', sub: '选品评估草稿集中存放，随时载入继续编辑' },
   '/library': { title: '产品库', sub: '所有已保存的选品与生成的英文链接' },
   '/settings': { title: '设置', sub: 'AI 接口、成本参数与报价规则' },

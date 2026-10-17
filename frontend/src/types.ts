@@ -38,6 +38,14 @@ export interface SimilarResearch {
   categoryGuess?: string
   amazonItems: SimilarItem[]
   asiItems: SimilarItem[]
+  /** 亚马逊同类商品的搜索流量词（asinseed 风格反查结果） */
+  amazonSearchTerms?: string[]
+  /** ASI 分销商搜索流量词 */
+  asiSearchTerms?: string[]
+  /** 高置信度 ASIN 候选 */
+  likelyAsins?: string[]
+  /** 竞品品牌 */
+  competingBrands?: string[]
   suggestions: string[]
   referenceTitles?: string[]
   priceRangeUsd?: { min?: number | null; max?: number | null }
@@ -49,6 +57,14 @@ export interface PriceRow {
   billableKg: number
   unitCostCny: number
   unitCost: number
+  /** 固定成本（USD/件）= 商品 + 运费 + 印刷 + 样品摊销（不含杂费） */
+  fixedCostUsd?: number
+  /** 杂费（USD/件）= 售价 × miscFeePct% */
+  miscUsd?: number
+  /** 全口径成本（USD/件） */
+  allInCostUsd?: number
+  /** 毛利润（USD/件） */
+  grossProfit?: number
   unitPrice: number
   margin: number
   shipping: 'air' | 'sea'
@@ -163,6 +179,12 @@ export interface Settings {
   markupSea: number
   midStrategy: 'linear' | 'random'
   airQtyLevels: number
+  /** 印刷成本（¥/件，默认 1.5） */
+  printCostCny?: number
+  /** 样品费（¥，整单一次，摊入首档；默认 300） */
+  sampleFeeCny?: number
+  /** 杂费比例（% 售价，默认 5） */
+  miscFeePct?: number
   rounding: 'none' | 'cent05' | 'end99'
   qtyLevels: number[]
   /** 档位模式：auto=首档 数量×售价 > $200 自动选 30/50/100 整数档 */

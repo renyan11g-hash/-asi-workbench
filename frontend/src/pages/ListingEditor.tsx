@@ -45,7 +45,7 @@ import {
 } from '@/components/ui/primitives'
 import EvaluationChat from '@/components/EvaluationChat'
 import { api, getErrorMessage, listingToText } from '@/lib/api'
-import { useProduct } from '@/hooks/use-data'
+import { useProduct, useSettings } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
 import { Listing, PriceRow, SimilarResearch, SourceInfo } from '@/types'
 import { ASI_IMPRINT_METHODS, ASI_MATERIALS, ASI_THEMES } from '@/constants/asi'
@@ -456,6 +456,8 @@ export default function ListingEditor() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const { data: product, isLoading } = useProduct(id)
+  const { data: settingsResp } = useSettings()
+  const settings = settingsResp?.settings
 
   const [listing, setListing] = useState<Listing | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -606,15 +608,21 @@ export default function ListingEditor() {
   // 按行索引更新，避免数量可编辑后出现重复 qty 匹配错行
   const setPrice = (idx: number, price: number) => {
     if (!listing) return
-    const grid = listing.priceGrid.map((r, i) =>
-      i === idx
-        ? {
-            ...r,
-            unitPrice: price,
-            margin: r.unitCost > 0 ? (1 - r.unitCost / price) * 100 : 0,
-          }
-        : r
-    )
+    const miscPct = settings?.miscFeePct ?? 5
+    const grid = listing.priceGrid.map((r, i) => {
+      if (i !== idx) return r
+      const fixed = r.fixedCostUsd ?? r.unitCost
+      const misc = (miscPct / 100) * price
+      const gp = price - fixed - misc
+      return {
+        ...r,
+        unitPrice: price,
+        miscUsd: misc,
+        allInCostUsd: fixed + misc,
+        grossProfit: gp,
+        margin: price > 0 ? (gp / price) * 100 : 0,
+      }
+    })
     patch({ priceGrid: grid })
   }
 
@@ -1133,7 +1141,7 @@ export default function ListingEditor() {
                 <div className="sm:col-span-2">
                   <Field
                     label={`Themes（已选 ${listing.themes.length} / ${LIMITS.themes}，必含 Anniversary + Sustainable）`}
-                    hint="复制格式为「英文逗号隔开」"
+                    hint="复制格式为「每行一个（段落符号分隔），粘贴后词与词各占一行」"
                   >
                     <div className="flex max-h-44 flex-wrap gap-1.5 overflow-y-auto rounded-md border border-slate-200 p-2">
                       {ASI_THEMES.map((t) => {
@@ -1155,7 +1163,7 @@ export default function ListingEditor() {
                       })}
                     </div>
                     <div className="mt-2">
-                      <CopyBtn text={listing.themes.join(', ')} />
+                      <CopyBtn text={listing.themes.join('\n')} />
                     </div>
                   </Field>
                 </div>
@@ -1454,11 +1462,16 @@ export default function ListingEditor() {
                     <th className="pb-2">计费</th>
                     <th className="pb-2">×倍率</th>
                     <th className="pb-2">售价 $</th>
-                    <th className="pb-2">毛利</th>
+                    <th className="pb-2">毛利 $</th>
+                    <th className="pb-2">毛利率</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(listing.priceGrid ?? []).map((r: PriceRow, idx: number) => (
+                  {(listing.priceGrid ?? []).map((r: PriceRow, idx: number) => {
+                    const miscPct = settings?.miscFeePct ?? 5
+                    const misc = r.miscUsd ?? r.unitPrice * (miscPct / 100)
+                    const gp = r.grossProfit ?? r.unitPrice - (r.fixedCostUsd ?? r.unitCost) - misc
+                    return (
                     <tr key={idx} className="border-t border-slate-100">
                       <td className="py-1">
                         <Input
@@ -1494,13 +1507,21 @@ export default function ListingEditor() {
                       </td>
                       <td
                         className={`py-1.5 font-medium ${
+                          gp >= 0 ? 'text-emerald-600' : 'text-red-500'
+                        }`}
+                      >
+                        ${gp.toFixed(2)}
+                      </td>
+                      <td
+                        className={`py-1.5 font-medium ${
                           r.margin >= 30 ? 'text-emerald-600' : 'text-amber-600'
                         }`}
                       >
                         {r.margin.toFixed(0)}%
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
               <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
@@ -1575,6 +1596,67 @@ export default function ListingEditor() {
                   <div className="mt-0.5 text-slate-800">{listing.keywordsZh || '—'}</div>
                 </div>
               </div>
+            </SectionCard>
+
+            <SectionCard
+              title="源信息一览（评估时填写）"
+              hint="1688 商品原始资料，无需返回评估库即可核对"
+            >
+              <div className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
+                {(() => {
+                  const s = product.source
+                  const rows: Array<[string, React.ReactNode]> = [
+                    ['1688 标题', s.sourceTitle || '—'],
+                    [
+                      '1688 链接',
+                      s.sourceUrl ? (
+                        <a
+                          href={s.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="break-all text-blue-600 hover:underline"
+                        >
+                          {s.sourceUrl} ↗
+                        </a>
+                      ) : (
+                        '—'
+                      ),
+                    ],
+                    ['供应商 / 店铺', s.supplier || '—'],
+                    ['类目', s.category || '—'],
+                    ['采购单价', s.priceCny ? `¥${s.priceCny}` : '—'],
+                    ['材质（中文）', s.materialCn || '—'],
+                    ['颜色（中文）', s.colorsCn || '—'],
+                    ['产品尺寸 / 规格', s.sizeCn || '—'],
+                    ['单件重量', s.weightG != null ? `${s.weightG} g` : '—'],
+                    [
+                      '箱规（L×W×H）',
+                      s.cartonLCm != null && s.cartonWCm != null && s.cartonHCm != null
+                        ? `${s.cartonLCm} × ${s.cartonWCm} × ${s.cartonHCm} cm`
+                        : '—',
+                    ],
+                    ['每箱数量', s.pcsPerCarton != null ? `${s.pcsPerCarton} 件` : '—'],
+                    ['箱规毛重', s.cartonGwKg != null ? `${s.cartonGwKg} kg` : '—'],
+                    ['亚马逊参考标题', s.amazonTitle || '—'],
+                    ['1688 关键词', (s.sourceKeywords ?? []).join(', ') || '—'],
+                    ['产品图片', `${(s.images ?? []).length} 张`],
+                  ]
+                  return rows.map(([k, v], i) => (
+                    <div key={i} className={k === '1688 标题' || k === '亚马逊参考标题' ? 'sm:col-span-2' : ''}>
+                      <div className="text-slate-500">{k}</div>
+                      <div className="mt-0.5 break-words text-slate-800">{v}</div>
+                    </div>
+                  ))
+                })()}
+              </div>
+              {product.source.notes && (
+                <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="text-[11px] font-semibold text-slate-500">备注</div>
+                  <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-slate-700">
+                    {product.source.notes}
+                  </p>
+                </div>
+              )}
             </SectionCard>
 
             {product.evaluation && (

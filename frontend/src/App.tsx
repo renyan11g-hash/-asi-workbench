@@ -6,6 +6,7 @@ import { PageTransition } from "@/components/PageTransition";
 import { AppLayout } from "@/components/AppLayout";
 import Dashboard from "./pages/Dashboard";
 import Sourcing from "./pages/Sourcing";
+import SourcingSuggest from "./pages/SourcingSuggest";
 import Evaluations from "./pages/Evaluations";
 import Library from "./pages/Library";
 import ListingEditor from "./pages/ListingEditor";
@@ -51,9 +52,15 @@ function App() {
                 element={<PageTransition transition="fade"><Dashboard /></PageTransition>}
               />
               <Route
+                path="sourcing-suggest"
+                data-genie-key="SourcingSuggest"
+                data-genie-title="选品预估"
+                element={<PageTransition transition="fade"><SourcingSuggest /></PageTransition>}
+              />
+              <Route
                 path="sourcing"
                 data-genie-key="Sourcing"
-                data-genie-title="1688 选品评估"
+                data-genie-title="产品评估"
                 element={<PageTransition transition="fade"><Sourcing /></PageTransition>}
               />
               <Route

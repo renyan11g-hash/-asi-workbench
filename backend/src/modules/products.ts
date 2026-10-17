@@ -43,6 +43,7 @@ const createSchema = z.object({
   source: sourceSchema,
   evaluation: z.any().nullable().optional(),
   listing: z.any().nullable().optional(),
+  similar: z.any().nullable().optional(),
   status: z.enum(['sourced', 'listed', 'archived']).optional(),
   /** 关联的选品评估草稿 id：同一草稿重复保存时更新已关联产品，避免重复建品 */
   draftId: z.string().max(100).optional(),
@@ -431,11 +432,14 @@ productsRouter.post('/preview/listing', async (req: Request, res: Response) => {
           })
         )
         .optional(),
+      similar: z.any().nullable().optional(),
     })
     .parse(req.body ?? {})
   const source = toSourceInfo(body.source)
   const settings = loadSettings()
-  const listing = await runAi(() => generateListing(source, settings, body.answers as ListingAnswer[] | undefined))
+  const listing = await runAi(() =>
+    generateListing(source, settings, body.answers as ListingAnswer[] | undefined, (body.similar ?? null) as SimilarResearch | null)
+  )
   res.json({ listing })
 })
 
@@ -570,7 +574,8 @@ function updateProductRow(
   evaluation: Evaluation | null,
   listing: Listing | null,
   status: string,
-  now: string
+  now: string,
+  similar?: SimilarResearch | null
 ): void {
   db.prepare(
     `UPDATE products SET source_title=?, source_url=?, description=?, source_keywords=?, amazon_title=?,
@@ -607,6 +612,13 @@ function updateProductRow(
     now,
     id
   )
+  // 市场调研结果（看图找类似）只在显式传入时覆盖，避免同步流程意外清空
+  if (similar !== undefined) {
+    db.prepare('UPDATE products SET similar=? WHERE id=?').run(
+      similar ? JSON.stringify(similar) : null,
+      id
+    )
+  }
 }
 
 /**
@@ -643,6 +655,7 @@ productsRouter.post('/', async (req: Request, res: Response) => {
   const now = new Date().toISOString()
   const evaluation = (body.evaluation ?? null) as Evaluation | null
   const listing = (body.listing ?? null) as Listing | null
+  const similar = body.similar === undefined ? undefined : ((body.similar ?? null) as SimilarResearch | null)
   const s = toSourceInfo(body.source)
 
   // 同一评估草稿重复保存 → 直接更新已关联的产品（评估库 ↔ 产品库 同步）
@@ -660,7 +673,8 @@ productsRouter.post('/', async (req: Request, res: Response) => {
         evaluation,
         listing,
         body.status ?? existingRow?.status ?? 'sourced',
-        now
+        now,
+        similar
       )
       res.json({ product: findProduct(linked.id), updated: true })
       return
@@ -672,8 +686,8 @@ productsRouter.post('/', async (req: Request, res: Response) => {
     `INSERT INTO products (id, draft_id, source_title, source_url, description, source_keywords, amazon_title,
       price_cny, price_max_cny, moq, supplier, material_cn, colors_cn, size_cn, weight_g,
       carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg,
-      images, category, notes, score, verdict, evaluation, listing, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      images, category, notes, score, verdict, evaluation, listing, similar, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     body.draftId ?? null,
@@ -702,6 +716,7 @@ productsRouter.post('/', async (req: Request, res: Response) => {
     evaluation?.verdict ?? null,
     evaluation ? JSON.stringify(evaluation) : null,
     listing ? JSON.stringify(listing) : null,
+    similar ? JSON.stringify(similar) : null,
     body.status ?? (listing ? 'listed' : 'sourced'),
     now,
     now
@@ -878,7 +893,7 @@ productsRouter.post('/:id/listing', async (req: Request, res: Response) => {
     })
     .parse(req.body ?? {})
   const listing = await runAi(() =>
-    generateListing(current.source, settings, body.answers as ListingAnswer[] | undefined)
+    generateListing(current.source, settings, body.answers as ListingAnswer[] | undefined, current.similar)
   )
   db.prepare('UPDATE products SET listing=?, status=?, updated_at=? WHERE id=?').run(
     JSON.stringify(listing),

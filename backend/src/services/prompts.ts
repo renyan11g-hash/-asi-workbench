@@ -1,4 +1,4 @@
-import { Settings, SourceInfo, Evaluation, Listing } from '../types'
+import { Settings, SourceInfo, Evaluation, Listing, SimilarResearch } from '../types'
 import { ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { costSummaryForPrompt, convertUnits } from './pricing'
@@ -92,7 +92,8 @@ Be brutally honest. The 'issues' list must be CONCRETE and actionable (e.g. '仅
 export function buildListingPrompt(
   source: SourceInfo,
   settings: Settings,
-  answers?: ListingAnswer[]
+  answers?: ListingAnswer[],
+  similar?: SimilarResearch | null
 ) {
   const units = convertUnits(source)
   const system = `${ASI_CONTEXT}
@@ -118,6 +119,21 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
         .join('\n')}`
     : ''
 
+  // 方案 A：注入「看图找类似」的市场调研结果，作为 ASIN 流量词的真实来源
+  const similarBlock = ((): string => {
+    if (!similar) return ''
+    const parts: string[] = []
+    if (similar.amazonSearchTerms?.length) parts.push(`- Amazon search terms: ${similar.amazonSearchTerms.join(', ')}`)
+    if (similar.asiSearchTerms?.length) parts.push(`- ASI distributor search terms: ${similar.asiSearchTerms.join(', ')}`)
+    if (similar.likelyAsins?.length) parts.push(`- Likely ASINs: ${similar.likelyAsins.join(', ')}`)
+    if (similar.competingBrands?.length) parts.push(`- Competing brands: ${similar.competingBrands.join(', ')}`)
+    const asins = similar.amazonItems.filter((it) => it.asin).map((it) => `${it.asin} (${it.title})`)
+    if (asins.length) parts.push(`- Amazon same-product ASINs: ${asins.join('; ')}`)
+    if (similar.referenceTitles?.length) parts.push(`- Reference titles: ${similar.referenceTitles.join(' | ')}`)
+    if (!parts.length) return ''
+    return `\n\nMARKET RESEARCH (from the "find similar" analysis of this product's images — treat as the authoritative source for step 1 of the KEYWORD BUILD PROCESS; use these ASINs, search terms and brands as the real traffic-word source, do NOT invent different ones):\n${parts.join('\n')}`
+  })()
+
   const user = `Create an ASI/PPAI compliant product for the US promotional products industry.
 
 1688 SOURCE
@@ -132,7 +148,7 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 - Unit weight: ${source.weightG ?? '?'} g (≈${units.unitWeightLb ?? '?'} lb)
 - Category hint: ${source.category || '(unknown)'}
 - Buyer notes: ${source.notes || '(none)'}
-${answersBlock}
+${answersBlock}${similarBlock}
 
 REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)
 - Categories (up to 2, MUST be from the GLS category table — first 400 of 1620 listed here; if none fits, pick the closest match by keyword): ${categoriesPick}
@@ -145,7 +161,7 @@ KEYWORD SEED LIBRARY (high-frequency US promo terms, drawn from asinseed / Amazo
 ${SEED_KEYWORDS.join(', ')}
 
 KEYWORD BUILD PROCESS (follow this order):
-1. Identify the Amazon US same-product / clone product line for this item and its typical search terms.
+1. Identify the Amazon US same-product / clone product line for this item and its typical search terms. If a MARKET RESEARCH block is present below, USE it as the authoritative source for the same-product ASINs, titles and traffic terms (do not invent different ones).
 2. Blend the high-frequency terms of that ASIN (asinseed-style research) with the SEED LIBRARY above, deduplicated.
 3. Write each keyword group the way a US distributor would type it when sourcing this product on ASI — maximize search hit rate, click rate and conversion.
 4. If the product belongs to a well-known parallel/clone product line, you may include that line's brand name in a keyword group (e.g. "Yeti Bags"), but NEVER a licensed brand (Disney, Nike, etc.).

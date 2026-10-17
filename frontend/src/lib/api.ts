@@ -44,6 +44,8 @@ export const api = {
     source: SourceInfo
     evaluation?: Evaluation | null
     listing?: Listing | null
+    /** 看图找类似 / 市场调研结果（关键词生成会自动注入） */
+    similar?: SimilarResearch | Record<string, unknown> | null
     status?: ProductStatus
     /** 关联的评估草稿 id：同一草稿重复保存时更新已关联产品，避免重复建品 */
     draftId?: string | null
@@ -102,11 +104,12 @@ export const api = {
 
   async previewListing(
     source: SourceInfo,
-    answers?: Array<{ id: string; question: string; answer: string }>
+    answers?: Array<{ id: string; question: string; answer: string }>,
+    similar?: SimilarResearch | Record<string, unknown> | null
   ): Promise<Listing> {
     const { data } = await apiClient.post<{ listing: Listing }>(
       '/products/preview/listing',
-      { source, answers },
+      { source, answers, similar },
       LONG_TIMEOUT
     )
     return data.listing
@@ -375,7 +378,7 @@ export function listingToText(listing: Listing): string {
     `\nKEYWORDS\n${(listing.keywords ?? []).join(', ')}`,
     `\nKEYWORDS (中文参考)\n${listing.keywordsZh || ''}`,
     `\nCATEGORY\n${listing.category}`,
-    `\nTHEMES\n${(listing.themes ?? []).join(', ')}`,
+    `\nTHEMES\n${(listing.themes ?? []).join('\n')}`,
     `\nMATERIAL\n${listing.material}`,
     `\nCOLORS\n${listing.colors}${
       listing.colorChips?.length ? ` (${listing.colorChips.join(' / ')})` : ''

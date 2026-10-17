@@ -560,11 +560,12 @@ function normalizeListing(
 export async function generateListing(
   source: SourceInfo,
   settings: Settings,
-  answers?: ListingAnswer[]
+  answers?: ListingAnswer[],
+  similar?: SimilarResearch | null
 ): Promise<Listing> {
   const { rows } = buildPriceGrid(source, settings)
   if (!settings.aiApiKey?.trim()) return templateListing(source, settings)
-  const { system, user } = buildListingPrompt(source, settings, answers)
+  const { system, user } = buildListingPrompt(source, settings, answers, similar)
   const images = (source.images ?? []).slice(0, 4)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.5, images)
   const listing = normalizeListing(raw, rows, source, settings)
@@ -651,6 +652,11 @@ function normalizeSimilar(raw: Record<string, unknown> | null | undefined): Simi
     categoryGuess: typeof r.categoryGuess === 'string' ? r.categoryGuess.trim() : undefined,
     amazonItems: pickItems(r.amazonItems),
     asiItems: pickItems(r.asiItems) as SimilarResearch['asiItems'],
+    // 方案 A：保留流量词 / ASIN / 竞品品牌，供关键词生成注入
+    amazonSearchTerms: arr(r.amazonSearchTerms),
+    asiSearchTerms: arr(r.asiSearchTerms),
+    likelyAsins: arr(r.likelyAsins),
+    competingBrands: arr(r.competingBrands),
     suggestions: arr(r.suggestions),
     referenceTitles: arr(r.referenceTitles),
     priceRangeUsd: {

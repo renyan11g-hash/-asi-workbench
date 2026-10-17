@@ -308,6 +308,33 @@ export default function SettingsPage() {
               onChange={(e) => patch({ fxRate: Number(e.target.value || 0) })}
             />
           </Field>
+          <Field label="印刷成本（¥/件）" hint="每件固定印刷加工费，默认 1.5">
+            <Input
+              className="h-9 text-sm"
+              type="number"
+              step="0.1"
+              value={form.printCostCny ?? 1.5}
+              onChange={(e) => patch({ printCostCny: Number(e.target.value || 0) })}
+            />
+          </Field>
+          <Field label="样品费（¥/次）" hint="打样费用，摊入报价首档，默认 300">
+            <Input
+              className="h-9 text-sm"
+              type="number"
+              step="10"
+              value={form.sampleFeeCny ?? 300}
+              onChange={(e) => patch({ sampleFeeCny: Number(e.target.value || 0) })}
+            />
+          </Field>
+          <Field label="杂费比例（% 售价）" hint="手续费 3% + 损耗 1% + 汇率缓冲 1%，默认 5">
+            <Input
+              className="h-9 text-sm"
+              type="number"
+              step="0.5"
+              value={form.miscFeePct ?? 5}
+              onChange={(e) => patch({ miscFeePct: Number(e.target.value || 0) })}
+            />
+          </Field>
           <Field label="空运（¥/kg）" hint="前 airQtyLevels 档使用">
             <Input
               className="h-9 text-sm"

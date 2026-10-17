@@ -9,6 +9,18 @@ export interface CostBreakdown {
   actualKg: number
   /** 计费重 = max(体积重, 实际毛重) */
   billableKg: number
+  /** 商品成本（¥/件） */
+  goodsCny: number
+  /** 运费（¥/件）= 计费重 × 费率 ÷ 每箱数量（单独列示） */
+  freightCny: number
+  /** 印刷成本（¥/件） */
+  printCny: number
+  /** 样品费摊销（¥/件，仅首档承担） */
+  sampleCny: number
+  /** 杂费（¥/件）= 售价折 CNY × miscFeePct% */
+  miscCny: number
+  /** 全口径成本（¥/件）= 商品+运费+印刷+样品+杂费 */
+  allInCostCny: number
   unitCostCny: number
   unitPrice: number
   margin: number
@@ -108,9 +120,16 @@ export function buildPriceGrid(
   const actualKg = boxGw > 0 ? boxGw : singleKg * pcs
   const billableKg = Math.max(volumetricKg, actualKg)
 
-  // 每档成本
+  // 每档成本：到岸成本 = 商品 + 运费（运费单独列示，不并入杂费）
   const airUnitCost = billableKg > 0 ? (billableKg * airRate) / pcs + unitPriceCny : unitPriceCny
   const seaUnitCost = billableKg > 0 ? (billableKg * seaRate) / pcs + unitPriceCny : unitPriceCny
+  const airFreightCny = billableKg > 0 ? (billableKg * airRate) / pcs : 0
+  const seaFreightCny = billableKg > 0 ? (billableKg * seaRate) / pcs : 0
+
+  // 毛利润口径（用户确认）：①商品成本 ②运费（单独） ③印刷 ¥1.5/件 ④样品费 ¥300 摊首档 ⑤杂费 = 售价 × 5%
+  const printCny = Number(settings.printCostCny) || 0
+  const sampleFee = Number(settings.sampleFeeCny) || 0
+  const miscPct = Number(settings.miscFeePct) || 0
 
   // 需求 7：默认按「首档 数量×售价 ≥ $200」自动定档；manual 模式才用手填档位
   const firstTierPriceUsd = (airUnitCost * markupAir) / fx
@@ -155,7 +174,15 @@ export function buildPriceGrid(
 
     const rawUsd = (unitCostCny * markup) / fx
     const unitPrice = round2(applyRounding(rawUsd, settings.rounding))
-    const margin = unitPrice > 0 ? 1 - (unitCostCny / fx) / unitPrice : 0
+
+    // 全口径成本：商品 + 运费 + 印刷 + 样品摊销（仅首档） + 杂费（售价 × %）
+    const freightCny = shipping === 'air' ? airFreightCny : seaFreightCny
+    const sampleCny = idx === 0 && qty > 0 ? sampleFee / qty : 0
+    const fixedCostCny = unitPriceCny + freightCny + printCny + sampleCny
+    const miscCny = (miscPct / 100) * unitPrice * fx
+    const allInCostCny = fixedCostCny + miscCny
+    const grossProfit = unitPrice - allInCostCny / fx
+    const margin = unitPrice > 0 ? grossProfit / unitPrice : 0
 
     let note: string | undefined
     if (idx === airQty && seaCount > 0) {
@@ -170,6 +197,12 @@ export function buildPriceGrid(
       volumetricKg: round2(volumetricKg),
       actualKg: round2(actualKg),
       billableKg: round2(billableKg),
+      goodsCny: round2(unitPriceCny),
+      freightCny: round2(freightCny),
+      printCny: round2(printCny),
+      sampleCny: round2(sampleCny),
+      miscCny: round2(miscCny),
+      allInCostCny: round2(allInCostCny),
       unitCostCny: round2(unitCostCny),
       unitPrice,
       margin: Math.round(margin * 1000) / 10,
@@ -183,6 +216,10 @@ export function buildPriceGrid(
       billableKg: bd.billableKg,
       unitCostCny: bd.unitCostCny,
       unitCost: round2(unitCostCny / fx),
+      fixedCostUsd: round2(fixedCostCny / fx),
+      miscUsd: round2(miscCny / fx),
+      allInCostUsd: round2(allInCostCny / fx),
+      grossProfit: round2(grossProfit),
       unitPrice,
       margin: bd.margin,
       shipping,
@@ -209,10 +246,11 @@ export function costSummaryForPrompt(
     `Billable weight: ${breakdowns[0]?.billableKg ?? '?'} kg (volumetric ${breakdowns[0]?.volumetricKg ?? '?'} vs actual ${breakdowns[0]?.actualKg ?? '?'})`,
     `FX: 1 USD = ${settings.fxRate} CNY; air ¥${settings.airRateCnyPerKg}/kg, sea ¥${settings.seaRateCnyPerKg}/kg`,
     `Volumetric divisor: ${settings.volumetricDivisor}; markup air=${settings.markupAir}, sea=${settings.markupSea}; airQtyLevels=${settings.airQtyLevels ?? 3}`,
+    `Extra per-unit costs: print ¥${settings.printCostCny ?? 1.5}; sample fee ¥${settings.sampleFeeCny ?? 300} charged to the first tier only; misc = ${settings.miscFeePct ?? 5}% of the selling price (handling 3% + wastage 1% + FX buffer 1%)`,
     `Calculated price grid (authoritative, USD):`,
     ...breakdowns.map(
       (b, i) =>
-        `  ${b.qty} pcs [${b.shipping.toUpperCase()} mark=${b.markupRate}] cost=¥${b.unitCostCny.toFixed(2)} -> $${rows[i].unitPrice.toFixed(2)} (margin ${b.margin.toFixed(0)}%)`
+        `  ${b.qty} pcs [${b.shipping.toUpperCase()} mark=${b.markupRate}] goods+freight=¥${b.unitCostCny.toFixed(2)} all-in=¥${b.allInCostCny.toFixed(2)} -> $${rows[i].unitPrice.toFixed(2)} (gross profit $${rows[i].grossProfit.toFixed(2)}, margin ${b.margin.toFixed(0)}%)`
     ),
   ]
   return lines.join('\n')
