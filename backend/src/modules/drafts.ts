@@ -76,7 +76,7 @@ draftsRouter.get('/', async (_req: Request, res: Response) => {
 
 /** 读取单个草稿（含完整表单内容） */
 draftsRouter.get('/:id', async (req: Request, res: Response) => {
-  const row = findDraft(req.params.id)
+  const row = findDraft(String(req.params.id))
   if (!row) throw new AppError(404, '草稿不存在')
   res.json({ draft: rowToDraft(row) })
 })
@@ -118,7 +118,7 @@ draftsRouter.post('/', async (req: Request, res: Response) => {
 
 /** 删除草稿 */
 draftsRouter.delete('/:id', async (req: Request, res: Response) => {
-  const info = db.prepare('DELETE FROM drafts WHERE id = ?').run(req.params.id)
+  const info = db.prepare('DELETE FROM drafts WHERE id = ?').run(String(req.params.id))
   if (!info.changes) throw new AppError(404, '草稿不存在')
   res.json({ ok: true })
 })
