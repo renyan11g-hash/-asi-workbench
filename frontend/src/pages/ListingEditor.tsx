@@ -48,7 +48,7 @@ import { api, getErrorMessage, listingToText } from '@/lib/api'
 import { useProduct, useSettings } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
 import { Listing, PriceRow, SimilarResearch, SourceInfo } from '@/types'
-import { ASI_IMPRINT_METHODS, ASI_MATERIALS, ASI_THEMES } from '@/constants/asi'
+import { ASI_CATEGORIES, ASI_IMPRINT_METHODS, ASI_MATERIALS, ASI_THEMES } from '@/constants/asi'
 import { CategoryPicker } from '@/components/CategoryPicker'
 
 function Field({
@@ -293,7 +293,7 @@ const SECTION_FIELDS = {
   summary: ['summary', 'summaryZh'],
   description: ['description', 'descriptionZh'],
   keywords: ['keywords', 'keywordsZh'],
-  category: ['category', 'categories'],
+  category: ['category', 'typeOfProduct', 'categories'],
   material: ['material', 'materials'],
   colors: ['colors', 'colorChips'],
   imprint: ['imprintMethods'],
@@ -1095,6 +1095,24 @@ export default function ListingEditor() {
               }
             >
               <div className="grid gap-4 sm:grid-cols-2">
+                <Field
+                  label="Type of Product（ASI 一级大类，单选）"
+                  hint="从 ASI 28 个一级大类中选出最符合产品的一项；提交表 E 列"
+                  required
+                >
+                  <select
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
+                    value={listing.typeOfProduct ?? ''}
+                    onChange={(e) => patch({ typeOfProduct: e.target.value || undefined })}
+                  >
+                    <option value="">未选择</option>
+                    {ASI_CATEGORIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
                 <Field
                   label="Categories（最多 2 个，从金山文档类目表选择）"
                   hint="数据来自金山文档「Categories」表（1620 项）；第 1 个自动作为主类目"

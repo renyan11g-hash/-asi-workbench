@@ -101,6 +101,8 @@ export interface Listing {
   description: string
   keywords: string[]
   category: string
+  /** Type of Product：ASI 28 个一级大类单选（提交表 E 列） */
+  typeOfProduct?: string
   /** ASI 类目，最多 2 个（从固定 28 项中选） */
   categories?: string[]
   themes: string[]

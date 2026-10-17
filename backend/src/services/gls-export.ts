@@ -321,8 +321,8 @@ export function buildGlsWorkbook(options: GlsExportOptions): ExcelJS.Workbook {
     // D: Full Descrip（≤800 字符）
     row.getCell(COL.fullDescrip).value = (l?.description || '').slice(0, 800)
 
-    // E: Type of Product（ASI 一级大类，单选）
-    row.getCell(COL.typeOfProduct).value = l?.category || p.source.category || 'Other'
+    // E: Type of Product（ASI 一级大类，单选；优先专用字段，回退主类目）
+    row.getCell(COL.typeOfProduct).value = l?.typeOfProduct || l?.category || p.source.category || 'Other'
 
     // F: Product Number（前缀+序号）
     row.getCell(COL.productNumber).value = `${numberPrefix}${String(seq).padStart(3, '0')}`

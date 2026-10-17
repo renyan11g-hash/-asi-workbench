@@ -100,6 +100,8 @@ export interface Listing {
   keywords: string[]
   /** ASI 一级分类（从固定 28 项中选，主显） */
   category: string
+  /** Type of Product：ASI 28 个一级大类单选（提交表 E 列） */
+  typeOfProduct?: string
   /** ASI 分类（最多 2 个，用于提交表 / 多类目平台） */
   categories?: string[]
   /** 5 个 ASI 主题（必含 Anniversary + Sustainable 作为兜底） */

@@ -1,5 +1,6 @@
 import { Evaluation, Listing, PriceRow, Settings, SimilarResearch, SourceInfo } from '../types'
 import {
+  ASI_CATEGORIES,
   ASI_THEMES,
   ASI_MATERIALS,
   ASI_IMPRINT_METHODS,
@@ -422,6 +423,7 @@ function buildSkeletonListing(source: SourceInfo, settings: Settings): Listing {
     ),
     keywords: ['Custom Logo', 'Promotional Product', 'Bulk Giveaway', 'Trade Show', 'Corporate Gift'],
     category,
+    typeOfProduct: category,
     categories: [category],
     themes,
     material,
@@ -512,6 +514,7 @@ function normalizeListing(
     description: String(raw.description ?? '').trim(),
     keywords: cleanKeywordList(raw.keywords ?? (typeof raw.keywords === 'string' ? raw.keywords : '')),
     category: primaryCategory,
+    typeOfProduct: pickEnum(ASI_CATEGORIES, raw.typeOfProduct, primaryCategory),
     categories,
     themes,
     material: pickEnum(ASI_MATERIALS, raw.material, fallbackMaterial),

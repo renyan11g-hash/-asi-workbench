@@ -1,5 +1,5 @@
 import { Settings, SourceInfo, Evaluation, Listing, SimilarResearch } from '../types'
-import { ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
+import { ASI_CATEGORIES, ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { costSummaryForPrompt, convertUnits } from './pricing'
 
@@ -176,6 +176,7 @@ OUTPUT JSON SCHEMA (all fields required, all values MUST be plain strings/object
   "description": "≤800 chars English, modeled on Amazon US similar-product descriptions adapted to ASI promo style. 50-70% product description + the rest keywords blended in naturally. Do NOT list dimensions or size. No brand-story copy structure. NEVER mention colors or color names (color info lives ONLY in the 'colors'/'colorChips' fields). Do NOT specifically state that the logo can be customized / custom logo is available (imprinting is the default assumption; the Imprint Methods field already covers it). Do NOT describe imprint/printing methods or techniques (that info lives ONLY in the 'imprintMethods'/'imprintArea' fields).",
   "keywords": "single string, ≤30 groups separated by English comma. Each group ≤30 chars, ≤4 words. Title Case. Built from asinseed-style ASIN high-frequency terms + the SEED LIBRARY, deduplicated, written as US distributor search queries. Do NOT include obvious brand names like ${BRAND_BLOCKLIST.slice(0, 6).join(', ')}.",
   "category": "the PRIMARY category, ONE from the above ASI category list",
+  "typeOfProduct": "Type of Product: the ONE best-fit ASI top-level category from this exact list: ${ASI_CATEGORIES.join(' | ')}. Pick the single most representative category for this product.",
   "categories": ["1-2 ASI categories from the list above; the first MUST equal \"category\"; pick the most relevant for this product (max 2)"],
   "themes": ["exactly 5 ASI theme strings, MUST include 'Anniversary' and 'Sustainable'"],
   "material": "ONE OR MORE from the above ASI material list, joined by English comma (e.g. 'Stainless Steel, Aluminum'), max 4",
@@ -496,6 +497,7 @@ Rules:
 - Output ONLY the requested keys. Never output other fields.
 - Respect all ASI rules per field: title ≤60 chars, Keyword+Traffic Word+Selling Point+Core Noun, do NOT deliberately emphasize "Custom"; summary ≤130 chars ending with EXACTLY "Rush service is available"; description ≤800 chars, Amazon-US-similar style, no size mention, no brand-story structure; keywords ≤30 groups each ≤30 chars ≤4 words Title Case, built from asinseed-style ASIN high-frequency terms + the seed library, written as US distributor search queries; themes EXACTLY 5 incl. "Anniversary" + "Sustainable"; categories max 2 from the GLS category table (exact strings only); materials from the ASI material list; imprintMethods MUST include "Silkscreen", "Unimprinted", "Full Color" plus relevant extras; colors joined by "/".
 - For title, summary and description: NEVER mention colors or color names (color info lives ONLY in the colors/colorChips fields), do NOT specifically state that the logo can be customized / custom logo printing is available (imprinting is the default assumption; the imprintMethods field already covers it), and do NOT describe imprint/printing methods or techniques (that info lives ONLY in the imprintMethods/imprintArea fields).
+- typeOfProduct: MUST be exactly ONE string from the ASI top-level category list (Apparel & Outerwear | Automotive Accessories | Awards & Trophies | Baby, Toddler, & Child Items | Bags & Luggage | Caps & Hats | Drinkware | Electronics & Tech Products | Equipment and Business Services | Food, Beverage & Tobacco | Health, Beauty & Wellness | Home & Garden | Jewelry and Accessories | Key Chains | Kitchen & Dining | Lanyard, Badges, & Badge Holders | Magnets & Buttons, Stickers & Decals | Party Supplies | Pet Supplies | Publications | School, Office, & Craft Supplies | Signs, Banners, Flags, & Displays | Sports, Fitness, & Outdoors | Storage & Organization | Tools & Hardware | Toys, Games, & Novelties | Writing Instruments | Other).
 - English fields (title/summary/description/keywords/categories/themes/materials/imprintMethods/colors) must be English only. Chinese only in *Zh fields.`
 
   return { system, user }
