@@ -414,7 +414,7 @@ export const ILOVECARGO_RULES = [
     max: LIMITS.summary,
   },
   { key: 'descriptionLen', label: 'Full Description ≤ 800 字符', max: LIMITS.description },
-  { key: 'keywordCount', label: `Keywords ≤ ${LIMITS.keywordMax} 组`, max: LIMITS.keywordMax },
+  { key: 'keywordCount', label: `Keywords = ${LIMITS.keywordMax} 组（每组 ≤30 字符）`, max: LIMITS.keywordMax },
   {
     key: 'themesCount',
     label: `Themes = ${LIMITS.themes}（必含 Anniversary + Sustainable）`,

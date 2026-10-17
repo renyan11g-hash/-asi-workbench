@@ -8,6 +8,7 @@ import {
   DEFAULT_THEMES,
   ILOVECARGO_RULES,
   LIMITS,
+  SEED_KEYWORDS,
   detectColors,
   detectMaterial,
   detectMaterials,
@@ -217,7 +218,7 @@ function cleanKeyword(k: string): string {
   return v
 }
 
-/** 关键词字符串清洗、去重、限 30 组 */
+/** 关键词字符串清洗、去重、限 30 组；不足 30 组时用种子词库 + 属性变体补齐 */
 function cleanKeywordList(input: unknown): string[] {
   const list: string[] = []
   const seen = new Set<string>()
@@ -230,6 +231,26 @@ function cleanKeywordList(input: unknown): string[] {
     seen.add(key)
     list.push(cleaned)
     if (list.length >= LIMITS.keywordMax) break
+  }
+  // 不足 30 组：按相关性顺序补种子词（组合成 ≤4 词的查询组），保证满 30
+  if (list.length < LIMITS.keywordMax) {
+    const fillers = [
+      ...SEED_KEYWORDS,
+      'Promotional Gift', 'Bulk Order', 'Wholesale Bulk', 'Trade Show Giveaway',
+      'Corporate Gift', 'Employee Appreciation', 'Client Gift', 'Event Giveaway',
+      'Business Gift', 'Promo Merch', 'Brand Merchandise', 'Company Swag',
+      'Marketing Giveaway', 'Custom Bulk', 'Bulk Supply', 'Wholesale Price',
+      'Factory Direct', 'OEM Service', 'Fast Lead Time', 'Low MOQ',
+    ]
+    for (const f of fillers) {
+      if (list.length >= LIMITS.keywordMax) break
+      const cleaned = cleanKeyword(f)
+      if (!cleaned) continue
+      const key = cleaned.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      list.push(cleaned)
+    }
   }
   return list
 }
@@ -258,7 +279,8 @@ export function applyQc(listing: Listing): Listing {
   let title = listing.title
   let summary = listing.summary
   let description = listing.description
-  let keywords = listing.keywords.slice(0, LIMITS.keywordMax)
+  // 关键词：上限 30 组；不足 30 组时自动补齐（与 AI 生成规则一致）
+  let keywords = cleanKeywordList(listing.keywords)
 
   if (title.length > LIMITS.title) {
     issues.push(`标题 ${title.length} 字符，超出 ${LIMITS.title} 限制`)
@@ -365,7 +387,7 @@ export function buildIlovecargoReport(
       out.push({ key: rule.key, label: rule.label, ok: v <= rule.max, value: v })
     } else if (rule.key === 'keywordCount') {
       const v = normalized.keywords.length
-      out.push({ key: rule.key, label: rule.label, ok: v <= rule.max, value: v })
+      out.push({ key: rule.key, label: rule.label, ok: v === rule.max, value: v, reason: v !== rule.max ? `实际 ${v} 组，需恰好 ${rule.max} 组` : undefined })
     } else if (rule.key === 'themesCount') {
       const v = normalized.themes.length
       const contains = (rule.requiredContains ?? []).every((c) => normalized.themes.includes(c))

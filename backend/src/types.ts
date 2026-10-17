@@ -96,7 +96,7 @@ export interface Listing {
   summary: string
   /** Full Description：≤800 字符，50-70% 产品描述 + 30-50% 关键词（融入描述），不出现尺寸 */
   description: string
-  /** Keywords：≤30 组，每组 ≤30 字符，≤4 单词，Title Case，英文逗号分隔 */
+  /** Keywords：恰好 30 组，每组 ≤30 字符，≤4 单词，Title Case，英文逗号分隔 */
   keywords: string[]
   /** ASI 一级分类（从固定 28 项中选，主显） */
   category: string
