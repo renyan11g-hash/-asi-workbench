@@ -179,6 +179,32 @@ export const api = {
     return data
   },
 
+  /** 粘贴 1688 链接 → 抓取 + AI 评估一条龙（选品预估页快速评估用） */
+  async quickEvaluate(url: string): Promise<{
+    ok: boolean
+    message: string
+    fetched: {
+      sourceTitle: string
+      sourceKeywords: string[]
+      description: string
+      materialCn: string
+      colorsCn: string
+      sizeCn: string
+      weightG: number | null
+      cartonSpecCm: string
+      pcsPerCarton: number | null
+      cartonGwKg: number | null
+      moq: number | null
+      priceCny: number | null
+    }
+    source: SourceInfo
+    evaluation: Evaluation
+    priceGrid: PriceRow[]
+  }> {
+    const { data } = await apiClient.post('/products/preview/quick-evaluate', { url }, LONG_TIMEOUT)
+    return data
+  },
+
   async refreshFxRate(refresh = false): Promise<{
     ok: boolean
     fxRate: number

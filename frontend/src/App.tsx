@@ -61,7 +61,7 @@ function App() {
               <Route
                 path="sourcing"
                 data-genie-key="Sourcing"
-                data-genie-title="产品评估"
+                data-genie-title="产品信息预填"
                 element={<PageTransition transition="fade"><Sourcing /></PageTransition>}
               />
               <Route

@@ -476,11 +476,28 @@ productsRouter.post('/preview/find-similar', async (req: Request, res: Response)
 })
 
 /**
- * 需求 8：从 1688 链接自动抓取产品资料（标题 / 关键词 / 描述 / 规格参数尽力提取）。
- * 1688 页面有反爬与登录墙，能抓到多少算多少，抓不到的字段返回空并由前端提示用户手填或问商家。
+ * 从 1688 商品页抓取产品资料（标题 / 关键词 / 描述 / 规格参数尽力提取）。
+ * 1688 页面有反爬与登录墙，能抓到多少算多少。/preview/fetch-1688 与 /preview/quick-evaluate 共用。
  */
-productsRouter.post('/preview/fetch-1688', async (req: Request, res: Response) => {
-  const url = String((req.body as Record<string, unknown>)?.url ?? '').trim()
+async function fetch1688Page(url: string): Promise<{
+  ok: boolean
+  found: number
+  message: string
+  fetched: {
+    sourceTitle: string
+    sourceKeywords: string[]
+    description: string
+    materialCn: string
+    colorsCn: string
+    sizeCn: string
+    weightG: number | null
+    cartonSpecCm: string
+    pcsPerCarton: number | null
+    cartonGwKg: number | null
+    moq: number | null
+    priceCny: number | null
+  }
+}> {
   if (!/^https?:\/\/[^/]*\.?1688\.com\//i.test(url)) {
     throw new AppError(400, '请输入 1688 商品链接（如 https://detail.1688.com/offer/xxx.html）')
   }
@@ -525,35 +542,89 @@ productsRouter.post('/preview/fetch-1688', async (req: Request, res: Response) =
     const pcsPerCarton = specHit(/(每箱|装箱)数量|装箱数/, /\d+/)
     const cartonGw = specHit(/(整箱|箱)毛重|毛重/, /\d+(?:\.\d+)?\s*(kg|千克|kg\/箱)?/)
     const moq = specHit(/起批|起订|最少/, /\d+/)
+    // 尽力提取页面价格（¥xx / "price":"x.xx"），仅供快速评估参考，可能不准
+    const priceM = html.match(/[¥￥]\s*(\d{1,5}(?:\.\d{1,2})?)/) ?? html.match(/"price"\s*:\s*"?(\d{1,5}(?:\.\d{1,2})?)"?/)
+    const priceNum = priceM ? Number(priceM[1]) : null
+    const priceCny = priceNum != null && priceNum >= 0.1 && priceNum <= 10000 ? priceNum : null
 
-    const found = [title, keywords, desc, material, colors, size, weight, cartonSpec, pcsPerCarton, cartonGw]
+    const found = [title, keywords, desc, material, colors, size, weight, cartonSpec, pcsPerCarton, cartonGw, priceCny != null ? '1' : '']
       .filter(Boolean).length
-    res.json({
+    const fetched = {
+      sourceTitle: title,
+      sourceKeywords: keywords ? keywords.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : [],
+      description: desc,
+      materialCn: material,
+      colorsCn: colors,
+      sizeCn: size,
+      weightG: /kg|千克/i.test(weight) && !/克(?!千克)/.test(weight) ? Math.round(num(weight) * 1000) : weight ? Math.round(num(weight)) : null,
+      cartonSpecCm: cartonSpec,
+      pcsPerCarton: pcsPerCarton ? Math.round(num(pcsPerCarton)) : null,
+      cartonGwKg: cartonGw ? Math.round(num(cartonGw) * 100) / 100 : null,
+      moq: moq ? Math.round(num(moq)) : null,
+      priceCny,
+    }
+    return {
       ok: found > 0,
-      fetched: {
-        sourceTitle: title,
-        sourceKeywords: keywords ? keywords.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : [],
-        description: desc,
-        materialCn: material,
-        colorsCn: colors,
-        sizeCn: size,
-        weightG: /kg|千克/i.test(weight) && !/克(?!千克)/.test(weight) ? Math.round(num(weight) * 1000) : weight ? Math.round(num(weight)) : null,
-        cartonSpecCm: cartonSpec,
-        pcsPerCarton: pcsPerCarton ? Math.round(num(pcsPerCarton)) : null,
-        cartonGwKg: cartonGw ? Math.round(num(cartonGw) * 100) / 100 : null,
-        moq: moq ? Math.round(num(moq)) : null,
-      },
+      found,
+      fetched,
       message:
         found > 0
           ? `抓到 ${found} 项资料，请核对后补充缺失字段（箱规等建议用「问商家话术」向客服确认）`
           : '页面被 1688 反爬拦截或结构识别失败，请手动填写，或复制「问商家话术」发给客服',
-    })
+    }
   } catch (err) {
     if (err instanceof AppError) throw err
     throw new AppError(502, `抓取失败：${err instanceof Error ? err.message : String(err)}。请手动填写或问商家`)
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * 需求 8：从 1688 链接自动抓取产品资料（标题 / 关键词 / 描述 / 规格参数尽力提取）。
+ */
+productsRouter.post('/preview/fetch-1688', async (req: Request, res: Response) => {
+  const url = String((req.body as Record<string, unknown>)?.url ?? '').trim()
+  const { ok, fetched, message } = await fetch1688Page(url)
+  res.json({ ok, fetched, message })
+})
+
+/**
+ * 链接快速评估：粘贴 1688 链接 → 自动抓取商品资料 → 直接 AI 评估（评分 + 结论 + 建议）。
+ * 供选品预估页「快速评估」使用；抓到多少算多少，缺的字段由产品信息预填页补充。
+ */
+productsRouter.post('/preview/quick-evaluate', async (req: Request, res: Response) => {
+  const url = String((req.body as Record<string, unknown>)?.url ?? '').trim()
+  const grabbed = await fetch1688Page(url)
+  if (!grabbed.ok) {
+    throw new AppError(502, `${grabbed.message}（快速评估需要至少抓到标题或描述）`)
+  }
+  const f = grabbed.fetched
+  // 箱规 "LxWxH" → 长/宽/高（厘米）
+  const carton = f.cartonSpecCm.match(/(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)/)
+  const source = toSourceInfo(
+    sourceSchema.parse({
+      sourceUrl: url,
+      sourceTitle: f.sourceTitle,
+      sourceKeywords: f.sourceKeywords,
+      description: f.description,
+      materialCn: f.materialCn,
+      colorsCn: f.colorsCn,
+      sizeCn: f.sizeCn,
+      weightG: f.weightG ?? undefined,
+      cartonLCm: carton ? Number(carton[1]) : undefined,
+      cartonWCm: carton ? Number(carton[2]) : undefined,
+      cartonHCm: carton ? Number(carton[3]) : undefined,
+      pcsPerCarton: f.pcsPerCarton ?? undefined,
+      cartonGwKg: f.cartonGwKg ?? undefined,
+      moq: f.moq ?? undefined,
+      priceCny: f.priceCny ?? undefined,
+    })
+  )
+  const settings = loadSettings()
+  const evaluation = await runAi(() => evaluateSource(source, settings))
+  const { rows } = buildPriceGrid(source, settings)
+  res.json({ ok: grabbed.ok, fetched: f, source, evaluation, priceGrid: rows, message: grabbed.message })
 })
 
 function decodeEntities(s: string): string {

@@ -2,19 +2,21 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowRight,
+  ClipboardList,
   Compass,
   Lightbulb,
   Loader2,
   SearchCheck,
   Wand2,
+  Zap,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { SectionCard } from '@/components/ui/primitives'
+import { ScoreRing, SectionCard, VerdictBadge } from '@/components/ui/primitives'
 import { api, getErrorMessage } from '@/lib/api'
-import { EMPTY_SOURCE, SourceInfo } from '@/types'
+import { EMPTY_SOURCE, Evaluation, PriceRow, SourceInfo } from '@/types'
 import { GLS_CATEGORIES } from '@/constants/gls-categories'
 
 function Field({
@@ -40,7 +42,7 @@ const inputCls = 'h-9 text-sm'
 const SOURCE_DRAFT_KEY = 'asi-draft:sourcing:source'
 const KEYWORDS_DRAFT_KEY = 'asi-draft:sourcing:keywordsText'
 
-/** 把选品方向写入产品评估页的 localStorage 草稿（与 useDraft 相同格式），再跳转 */
+/** 把选品方向写入产品信息预填页的 localStorage 草稿（与 useDraft 相同格式），再跳转 */
 function prefillSourcingDraft(d: {
   product: string
   category: string
@@ -85,11 +87,37 @@ interface SourcingResult {
   tips: string[]
 }
 
+/** /preview/quick-evaluate 的返回：抓取资料 + AI 评估 + 价格表 */
+interface QuickResult {
+  ok: boolean
+  message: string
+  fetched: {
+    sourceTitle: string
+    sourceKeywords: string[]
+    description: string
+    materialCn: string
+    colorsCn: string
+    sizeCn: string
+    weightG: number | null
+    cartonSpecCm: string
+    pcsPerCarton: number | null
+    cartonGwKg: number | null
+    moq: number | null
+    priceCny: number | null
+  }
+  source: SourceInfo
+  evaluation: Evaluation
+  priceGrid: PriceRow[]
+}
+
 export default function SourcingSuggest() {
   const navigate = useNavigate()
   const [busy, setBusy] = useState(false)
   const [sourcing, setSourcing] = useState<SourcingResult | null>(null)
   const [input, setInput] = useState({ category: '', keywords: '', budgetCny: '', notes: '' })
+  const [quickUrl, setQuickUrl] = useState('')
+  const [quickBusy, setQuickBusy] = useState(false)
+  const [quick, setQuick] = useState<QuickResult | null>(null)
 
   const run = async () => {
     setBusy(true)
@@ -109,6 +137,50 @@ export default function SourcingSuggest() {
     }
   }
 
+  /** 粘贴链接 → 抓取 + AI 评估一条龙 */
+  const runQuick = async () => {
+    const url = quickUrl.trim()
+    if (!url) {
+      toast.error('请先粘贴 1688 商品链接')
+      return
+    }
+    setQuickBusy(true)
+    try {
+      const r = await api.quickEvaluate(url)
+      setQuick(r)
+      toast.success(`评估完成：${r.evaluation.score} 分`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setQuickBusy(false)
+    }
+  }
+
+  /** 把抓到的资料带入「产品信息预填」页，继续补全尺寸 / 材质 / 箱规等 */
+  const goPrefill = () => {
+    if (!quick) return
+    let base: Partial<SourceInfo> = {}
+    try {
+      const raw = localStorage.getItem(SOURCE_DRAFT_KEY)
+      if (raw) base = (JSON.parse(raw)?.value ?? {}) as Partial<SourceInfo>
+    } catch {
+      /* 忽略损坏的旧草稿 */
+    }
+    const next: SourceInfo = {
+      ...EMPTY_SOURCE,
+      ...base,
+      ...quick.source,
+      category: base.category || quick.source.category || '',
+    }
+    const meta = { savedAt: new Date().toISOString(), bytes: JSON.stringify(next).length }
+    localStorage.setItem(SOURCE_DRAFT_KEY, JSON.stringify({ value: next, meta }))
+    // 清掉上一次的评估结果草稿，避免新旧商品混淆
+    localStorage.removeItem('asi-draft:sourcing:evaluation')
+    localStorage.removeItem('asi-draft:sourcing:priceGrid')
+    toast.success('已带入抓取到的商品信息，请补全尺寸、材质、箱规、价格后正式评估')
+    navigate('/sourcing')
+  }
+
   return (
     <div className="mx-auto max-w-4xl space-y-4">
       {/* 流程说明 */}
@@ -116,7 +188,7 @@ export default function SourcingSuggest() {
         <span className="font-semibold">工作流程：</span>
         <span className="rounded bg-white px-2 py-0.5 font-medium">① 选品预估（本页，AI 找方向）</span>
         <ArrowRight className="h-3 w-3" />
-        <span className="rounded bg-white px-2 py-0.5">② 产品评估（填入商品信息，AI 评估）</span>
+        <span className="rounded bg-white px-2 py-0.5">② 产品信息预填（补全尺寸材质箱规，正式评估）</span>
         <ArrowRight className="h-3 w-3" />
         <span className="rounded bg-white px-2 py-0.5">③ 生成英文链接 → 产品库</span>
         <Button
@@ -125,9 +197,84 @@ export default function SourcingSuggest() {
           className="ml-auto h-7 border-blue-300 bg-white text-xs"
           onClick={() => navigate('/sourcing')}
         >
-          <SearchCheck className="mr-1 h-3 w-3" /> 直接去产品评估
+          <SearchCheck className="mr-1 h-3 w-3" /> 直接去产品信息预填
         </Button>
       </div>
+
+      {/* ② 粘贴链接快速评估（抓取 + AI 评分一条龙） */}
+      <SectionCard
+        title="粘贴 1688 链接，快速评估（AI 抓取 + 打分）"
+        hint="只需一条商品链接：自动抓取商品资料并评估是否值得做；之后再到「产品信息预填」补充尺寸、材质、箱规等细节"
+        right={
+          <Button size="sm" onClick={runQuick} disabled={quickBusy}>
+            {quickBusy ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Zap className="mr-1 h-3.5 w-3.5" />
+            )}
+            {quickBusy ? '评估中…' : '快速评估'}
+          </Button>
+        }
+      >
+        <Field label="1688 商品链接">
+          <Input
+            className={inputCls}
+            placeholder="https://detail.1688.com/offer/xxxxx.html"
+            value={quickUrl}
+            onChange={(e) => setQuickUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !quickBusy) void runQuick()
+            }}
+          />
+        </Field>
+        {quick && (
+          <div className="mt-3 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="flex items-start gap-3">
+              <ScoreRing score={quick.evaluation.score} />
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <VerdictBadge verdict={quick.evaluation.verdict} score={quick.evaluation.score} />
+                  {quick.fetched.priceCny != null && (
+                    <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700">
+                      页面价 ≈ ¥{quick.fetched.priceCny}（请核实）
+                    </span>
+                  )}
+                  {quick.fetched.moq != null && (
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
+                      起批 {quick.fetched.moq} 件
+                    </span>
+                  )}
+                </div>
+                <p className="truncate text-sm font-medium text-slate-800">
+                  {quick.fetched.sourceTitle || '（未抓到标题）'}
+                </p>
+                <p className="text-[13px] leading-relaxed text-slate-600">{quick.evaluation.summary}</p>
+              </div>
+            </div>
+            {quick.evaluation.risks?.length ||
+            quick.evaluation.cons?.length ||
+            quick.evaluation.suggestions?.length ? (
+              <ul className="space-y-0.5">
+                {[
+                  ...(quick.evaluation.risks ?? []).map((t) => ({ t: `风险：${t}`, cls: 'text-rose-600' })),
+                  ...(quick.evaluation.cons ?? []).map((t) => ({ t: `劣势：${t}`, cls: 'text-amber-700' })),
+                  ...(quick.evaluation.suggestions ?? []).map((t) => ({ t: `建议：${t}`, cls: 'text-slate-700' })),
+                ].map((it, i) => (
+                  <li key={i} className={`text-[12px] leading-relaxed ${it.cls}`}>
+                    · {it.t}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="outline" onClick={goPrefill}>
+                <ClipboardList className="mr-1 h-3.5 w-3.5" /> 去补全产品信息（产品信息预填）
+              </Button>
+              <span className="text-[11px] text-slate-400">{quick.message}</span>
+            </div>
+          </div>
+        )}
+      </SectionCard>
 
       <SectionCard
         title="1688 选品方向推荐（AI 自动搜寻）"
@@ -231,11 +378,11 @@ export default function SourcingSuggest() {
                   className="mt-1 h-7 text-xs text-blue-600"
                   onClick={() => {
                     prefillSourcingDraft(d)
-                    toast.success('已填入产品评估表单，补充箱规等信息后即可评估')
+                    toast.success('已填入产品信息预填表单，补充尺寸、材质、箱规等信息后即可评估')
                     navigate('/sourcing')
                   }}
                 >
-                  <Wand2 className="mr-1 h-3 w-3" /> 填入产品评估表单
+                  <Wand2 className="mr-1 h-3 w-3" /> 填入产品信息预填表单
                 </Button>
               </div>
             ))}
