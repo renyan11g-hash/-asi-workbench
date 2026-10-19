@@ -137,7 +137,7 @@ export default function SourcingSuggest() {
     }
   }
 
-  /** 粘贴链接 → 抓取 + AI 评估一条龙 */
+  /** 粘贴链接 → 抓取（多通道反爬兜底）+ AI 评估一条龙 */
   const runQuick = async () => {
     const url = quickUrl.trim()
     if (!url) {
@@ -227,6 +227,7 @@ export default function SourcingSuggest() {
             }}
           />
         </Field>
+
         {quick && (
           <div className="mt-3 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
             <div className="flex items-start gap-3">

@@ -179,7 +179,7 @@ export const api = {
     return data
   },
 
-  /** 粘贴 1688 链接 → 抓取 + AI 评估一条龙（选品预估页快速评估用） */
+  /** 粘贴 1688 链接 → 抓取（多通道反爬兜底）+ AI 评估一条龙（选品预估页快速评估用） */
   async quickEvaluate(url: string): Promise<{
     ok: boolean
     message: string

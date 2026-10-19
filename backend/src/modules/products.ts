@@ -475,46 +475,113 @@ productsRouter.post('/preview/find-similar', async (req: Request, res: Response)
   res.json({ similar: result })
 })
 
-/**
- * 从 1688 商品页抓取产品资料（标题 / 关键词 / 描述 / 规格参数尽力提取）。
- * 1688 页面有反爬与登录墙，能抓到多少算多少。/preview/fetch-1688 与 /preview/quick-evaluate 共用。
- */
-async function fetch1688Page(url: string): Promise<{
-  ok: boolean
-  found: number
-  message: string
-  fetched: {
-    sourceTitle: string
-    sourceKeywords: string[]
-    description: string
-    materialCn: string
-    colorsCn: string
-    sizeCn: string
-    weightG: number | null
-    cartonSpecCm: string
-    pcsPerCarton: number | null
-    cartonGwKg: number | null
-    moq: number | null
-    priceCny: number | null
-  }
-}> {
-  if (!/^https?:\/\/[^/]*\.?1688\.com\//i.test(url)) {
-    throw new AppError(400, '请输入 1688 商品链接（如 https://detail.1688.com/offer/xxx.html）')
-  }
+/** 抓取提取出的商品资料（抓到多少算多少，缺失字段为空值） */
+interface GrabbedFetched {
+  sourceTitle: string
+  sourceKeywords: string[]
+  description: string
+  materialCn: string
+  colorsCn: string
+  sizeCn: string
+  weightG: number | null
+  cartonSpecCm: string
+  pcsPerCarton: number | null
+  cartonGwKg: number | null
+  moq: number | null
+  priceCny: number | null
+}
+
+/** 统计抓到几项有效资料 */
+function countFound(g: GrabbedFetched): number {
+  return [
+    g.sourceTitle,
+    g.sourceKeywords.join(''),
+    g.description,
+    g.materialCn,
+    g.colorsCn,
+    g.sizeCn,
+    g.weightG != null ? '1' : '',
+    g.cartonSpecCm,
+    g.pcsPerCarton != null ? '1' : '',
+    g.cartonGwKg != null ? '1' : '',
+    g.priceCny != null ? '1' : '',
+  ].filter(Boolean).length
+}
+
+/** 通道②：r.jina.ai 免费渲染抓取（海外渲染集群 + 页面缓存，可绕过 1688 对服务器 IP 的反爬）；失败返回 null */
+async function grabViaJina(url: string): Promise<GrabbedFetched | null> {
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 15000)
+  const timer = setTimeout(() => ctrl.abort(), 20000)
+  try {
+    const r = await fetch('https://r.jina.ai/' + url, {
+      signal: ctrl.signal,
+      headers: { 'X-Return-Format': 'text' },
+    })
+    if (!r.ok) return null
+    const text = await r.text()
+    if (!text || text.length < 300) return null
+    const num = (s: string) => Number(s.replace(/[^\d.]/g, ''))
+    const specHit = (labelRe: RegExp, valRe: RegExp): string => {
+      const m = text.match(new RegExp(labelRe.source + '[^<>|]{0,80}?' + valRe.source, 'i'))
+      return m ? m[0].replace(/<[^>]+>/g, ' ').replace(/\|/g, ' ').replace(/\s+/g, ' ').trim() : ''
+    }
+    const title = (text.match(/^Title:\s*(.+)$/m)?.[1] ?? '').replace(/[-–—|｜]\s*1688\.com.*$/i, '').trim()
+    const body = text
+      .replace(/^Title:.*$/m, '')
+      .replace(/^URL Source:.*$/m, '')
+      .replace(/^Markdown Content:\s*/m, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    const material = specHit(/材\s*质/, /[\u4e00-\u9fa5A-Za-z0-9+、\/]{2,20}/)
+    const colors = specHit(/颜\s*色/, /[\u4e00-\u9fa5A-Za-z、,，\/]{2,40}/)
+    const size = specHit(/尺\s*寸/, /[\d.]+\s*[xX×*]\s*[\d.]+(cm|毫米|mm)?[^<>|]{0,20}/)
+    const weight = specHit(/(单件)?重\s*量|单重/, /\d+(?:\.\d+)?\s*(g|克|kg|千克)/)
+    const cartonSpec = specHit(/箱规|装箱尺寸|外箱尺寸/, /\d+(?:\.\d+)?\s*[xX×*]\s*\d+(?:\.\d+)?\s*[xX×*]\s*\d+(?:\.\d+)?/)
+    const pcsPerCarton = specHit(/(每箱|装箱)数量|装箱数/, /\d+/)
+    const cartonGw = specHit(/(整箱|箱)毛重|毛重/, /\d+(?:\.\d+)?\s*(kg|千克|kg\/箱)?/)
+    const moq = specHit(/起批|起订|最少/, /\d+/)
+    const priceM = text.match(/[¥￥]\s*(\d{1,5}(?:\.\d{1,2})?)/)
+    const priceNum = priceM ? Number(priceM[1]) : null
+    const priceCny = priceNum != null && priceNum >= 0.1 && priceNum <= 10000 ? priceNum : null
+    const info: GrabbedFetched = {
+      sourceTitle: title,
+      sourceKeywords: [],
+      description: body.slice(0, 1200),
+      materialCn: material,
+      colorsCn: colors,
+      sizeCn: size,
+      weightG: /kg|千克/i.test(weight) && !/克(?!千克)/.test(weight) ? Math.round(num(weight) * 1000) : weight ? Math.round(num(weight)) : null,
+      cartonSpecCm: cartonSpec,
+      pcsPerCarton: pcsPerCarton ? Math.round(num(pcsPerCarton)) : null,
+      cartonGwKg: cartonGw ? Math.round(num(cartonGw) * 100) / 100 : null,
+      moq: moq ? Math.round(num(moq)) : null,
+      priceCny,
+    }
+    return info.sourceTitle || info.description ? info : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 抓取单个 1688 页面并提取资料；网络/HTTP 失败返回 null（由上层重试其他候选链接） */
+async function grab1688Once(url: string): Promise<GrabbedFetched | null> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 12000)
   try {
     const r = await fetch(url, {
       signal: ctrl.signal,
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.9',
         'Referer': 'https://www.1688.com/',
+        'Upgrade-Insecure-Requests': '1',
       },
     })
-    if (!r.ok) throw new AppError(502, `1688 返回 HTTP ${r.status}（可能有反爬或需要登录），请手动填写或用「问商家话术」向客服索取`)
+    if (!r.ok) return null
     const html = await r.text()
     const pick = (re: RegExp): string => {
       const m = html.match(re)
@@ -547,9 +614,7 @@ async function fetch1688Page(url: string): Promise<{
     const priceNum = priceM ? Number(priceM[1]) : null
     const priceCny = priceNum != null && priceNum >= 0.1 && priceNum <= 10000 ? priceNum : null
 
-    const found = [title, keywords, desc, material, colors, size, weight, cartonSpec, pcsPerCarton, cartonGw, priceCny != null ? '1' : '']
-      .filter(Boolean).length
-    const fetched = {
+    return {
       sourceTitle: title,
       sourceKeywords: keywords ? keywords.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : [],
       description: desc,
@@ -563,21 +628,66 @@ async function fetch1688Page(url: string): Promise<{
       moq: moq ? Math.round(num(moq)) : null,
       priceCny,
     }
-    return {
-      ok: found > 0,
-      found,
-      fetched,
-      message:
-        found > 0
-          ? `抓到 ${found} 项资料，请核对后补充缺失字段（箱规等建议用「问商家话术」向客服确认）`
-          : '页面被 1688 反爬拦截或结构识别失败，请手动填写，或复制「问商家话术」发给客服',
-    }
-  } catch (err) {
-    if (err instanceof AppError) throw err
-    throw new AppError(502, `抓取失败：${err instanceof Error ? err.message : String(err)}。请手动填写或问商家`)
+  } catch {
+    return null
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * 从 1688 抓取产品资料（标题 / 关键词 / 描述 / 规格参数尽力提取）。
+ * 1688 反爬严格（海外服务器 IP 几乎必被拦），多通道兜底：
+ * ① 并行直连（原链接 / 纯净桌面版 / 移动端）→ ② r.jina.ai 渲染抓取（海外渲染集群绕反爬）。
+ */
+async function fetch1688Page(url: string): Promise<{ ok: boolean; found: number; message: string; fetched: GrabbedFetched }> {
+  if (!/^https?:\/\/[^/]*\.?1688\.com\//i.test(url)) {
+    throw new AppError(400, '请输入 1688 商品链接（如 https://detail.1688.com/offer/xxx.html）')
+  }
+  const offerId = url.match(/offer\/(\d+)/)?.[1] ?? ''
+  const clean = offerId ? `https://detail.1688.com/offer/${offerId}.html` : url
+  const mobile = offerId ? `https://m.1688.com/offer/${offerId}.html` : url
+
+  let best: GrabbedFetched | null = null
+  let bestFound = 0
+
+  // 通道①：并行直连三个候选（取命中字段最多的一份）
+  const direct = await Promise.allSettled([grab1688Once(url), grab1688Once(clean), grab1688Once(mobile)])
+  for (const it of direct) {
+    if (it.status !== 'fulfilled' || !it.value) continue
+    const found = countFound(it.value)
+    if (found > bestFound) {
+      best = it.value
+      bestFound = found
+    }
+  }
+
+  // 通道②：jina 渲染抓取（桌面版 + 移动版，绕过对服务器 IP 的反爬）
+  if (bestFound === 0) {
+    for (const u of [clean, mobile]) {
+      const g = await grabViaJina(u)
+      if (!g) continue
+      const found = countFound(g)
+      if (found > bestFound) {
+        best = g
+        bestFound = found
+      }
+      if (bestFound > 0) break
+    }
+  }
+
+  if (bestFound > 0) {
+    return {
+      ok: true,
+      found: bestFound,
+      fetched: best!,
+      message: `抓到 ${bestFound} 项资料，请核对后补充缺失字段（箱规等建议用「问商家话术」向客服确认）`,
+    }
+  }
+  throw new AppError(
+    502,
+    '1688 反爬拦截了服务器抓取（海外 IP 属正常现象），已尝试直连与渲染抓取多通道仍未成功。请稍后重试；或到「产品信息预填」手动填写商品资料后正式评估'
+  )
 }
 
 /**
@@ -590,14 +700,14 @@ productsRouter.post('/preview/fetch-1688', async (req: Request, res: Response) =
 })
 
 /**
- * 链接快速评估：粘贴 1688 链接 → 自动抓取商品资料 → 直接 AI 评估（评分 + 结论 + 建议）。
+ * 链接快速评估：粘贴 1688 链接 → 自动抓取商品资料（多通道反爬兜底）→ 直接 AI 评估（评分 + 结论 + 建议）。
  * 供选品预估页「快速评估」使用；抓到多少算多少，缺的字段由产品信息预填页补充。
  */
 productsRouter.post('/preview/quick-evaluate', async (req: Request, res: Response) => {
   const url = String((req.body as Record<string, unknown>)?.url ?? '').trim()
   const grabbed = await fetch1688Page(url)
   if (!grabbed.ok) {
-    throw new AppError(502, `${grabbed.message}（快速评估需要至少抓到标题或描述）`)
+    throw new AppError(502, `${grabbed.message}（快速评估需要至少抓到标题或描述，请稍后重试）`)
   }
   const f = grabbed.fetched
   // 箱规 "LxWxH" → 长/宽/高（厘米）
@@ -624,7 +734,7 @@ productsRouter.post('/preview/quick-evaluate', async (req: Request, res: Respons
   const settings = loadSettings()
   const evaluation = await runAi(() => evaluateSource(source, settings))
   const { rows } = buildPriceGrid(source, settings)
-  res.json({ ok: grabbed.ok, fetched: f, source, evaluation, priceGrid: rows, message: grabbed.message })
+  res.json({ ok: true, fetched: f, source, evaluation, priceGrid: rows, message: grabbed.message })
 })
 
 function decodeEntities(s: string): string {
