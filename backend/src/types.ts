@@ -278,3 +278,167 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultImprintMethods: ['Silkscreen', 'Laser Engraved'],
   targetCategories: [],
 }
+
+// ========== 订单运营中心相关类型 ==========
+
+/** 客户类型 */
+export type CustomerType = 'distributor' | 'retailer' | 'corporate' | 'individual'
+
+/** 询盘类型 */
+export type InquiryType = 'price_inquiry' | 'custom_quote' | 'sample_request' | 'general_question'
+
+/** 询盘状态 */
+export type InquiryStatus = 'new' | 'responded' | 'quoted' | 'converted' | 'closed'
+
+/** 订单状态 */
+export type OrderStatus = 'pending' | 'confirmed' | 'production' | 'shipped' | 'delivered' | 'cancelled'
+
+/** 付款状态 */
+export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'overdue'
+
+/** 发货状态 */
+export type ShipmentStatus = 'pending' | 'shipped' | 'in_transit' | 'delivered'
+
+/** 售后类型 */
+export type AfterSaleType = 'quality_issue' | 'shipping_issue' | 'return_request' | 'refund_request'
+
+/** 售后状态 */
+export type AfterSaleStatus = 'open' | 'investigating' | 'resolved' | 'closed'
+
+/** 客户信息 */
+export interface Customer {
+  id: string
+  name: string
+  company?: string
+  email: string
+  phone?: string
+  address?: string
+  country?: string
+  type: CustomerType
+  notes?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 询盘记录 */
+export interface Inquiry {
+  id: string
+  customerId: string
+  subject: string
+  content: string
+  type: InquiryType
+  status: InquiryStatus
+  /** 关联的产品ID */
+  productId?: string
+  /** AI分类结果 */
+  aiCategory?: string
+  /** AI生成的回复草稿 */
+  aiDraft?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 订单明细 */
+export interface OrderItem {
+  id: string
+  orderId: string
+  productId: string
+  quantity: number
+  /** 单价（USD） */
+  unitPrice: number
+  /** 小计（USD） */
+  totalPrice: number
+  /** 印刷规格 */
+  imprintSpec?: string
+  createdAt: string
+}
+
+/** 订单信息 */
+export interface Order {
+  id: string
+  customerId: string
+  orderNumber: string
+  status: OrderStatus
+  paymentStatus: PaymentStatus
+  /** 订单总金额（USD） */
+  totalAmount: number
+  /** 定金（USD） */
+  depositAmount?: number
+  /** 尾款（USD） */
+  balanceAmount?: number
+  notes?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 供应商沟通记录 */
+export interface SupplierCommunication {
+  id: string
+  productId: string
+  supplierName: string
+  contactMethod: 'email' | 'phone' | 'wechat' | 'other'
+  content: string
+  response?: string
+  /** 供应商报价（人民币） */
+  priceCny?: number
+  /** 起订量 */
+  moq?: number
+  /** 交货周期 */
+  leadTime?: string
+  createdAt: string
+}
+
+/** 邮件草稿 */
+export interface EmailDraft {
+  id: string
+  inquiryId?: string
+  customerId: string
+  subject: string
+  content: string
+  isAiGenerated: boolean
+  status: 'draft' | 'sent'
+  createdAt: string
+  updatedAt: string
+}
+
+/** 发货记录 */
+export interface Shipment {
+  id: string
+  orderId: string
+  trackingNumber?: string
+  carrier?: string
+  shippingMethod: 'air' | 'sea'
+  status: ShipmentStatus
+  estimatedDelivery?: string
+  actualDelivery?: string
+  notes?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 收款记录 */
+export interface Payment {
+  id: string
+  orderId: string
+  /** 金额（USD） */
+  amount: number
+  paymentMethod: string
+  paymentDate?: string
+  notes?: string
+  createdAt: string
+}
+
+/** 售后记录 */
+export interface AfterSale {
+  id: string
+  orderId: string
+  customerId: string
+  type: AfterSaleType
+  status: AfterSaleStatus
+  description: string
+  resolution?: string
+  /** 退款金额（USD） */
+  refundAmount?: number
+  createdAt: string
+  updatedAt: string
+}

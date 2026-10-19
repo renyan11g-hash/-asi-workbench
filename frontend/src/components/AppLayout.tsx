@@ -6,6 +6,7 @@ import {
   Package,
   SearchCheck,
   Settings as SettingsIcon,
+  ShoppingBag,
   Sparkles,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
@@ -18,6 +19,7 @@ const NAV = [
   { to: '/sourcing', label: '产品评估', icon: SearchCheck, end: false },
   { to: '/evaluations', label: '评估库', icon: FolderOpen, end: false },
   { to: '/library', label: '产品库', icon: Package, end: false },
+  { to: '/order-center', label: '订单运营中心', icon: ShoppingBag, end: false },
   { to: '/settings', label: '设置', icon: SettingsIcon, end: false },
 ]
 
@@ -27,6 +29,7 @@ const TITLES: Record<string, { title: string; sub: string }> = {
   '/sourcing': { title: '产品评估', sub: '填入商品信息，判断它值不值得做成美国 ASI 促销礼品' },
   '/evaluations': { title: '评估库', sub: '选品评估草稿集中存放，随时载入继续编辑' },
   '/library': { title: '产品库', sub: '所有已保存的选品与生成的英文链接' },
+  '/order-center': { title: '订单运营中心', sub: '客户、询盘、订单、供应商沟通与邮件草稿一站式管理' },
   '/settings': { title: '设置', sub: 'AI 接口、成本参数与报价规则' },
 }
 

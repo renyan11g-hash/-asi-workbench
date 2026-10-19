@@ -250,3 +250,143 @@ export const EMPTY_LISTING: Listing = {
   descriptionZh: '',
   keywordsZh: '',
 }
+
+// ========== 订单运营中心相关类型 ==========
+
+export type CustomerType = 'distributor' | 'retailer' | 'corporate' | 'individual'
+
+export type InquiryType = 'price_inquiry' | 'custom_quote' | 'sample_request' | 'general_question'
+
+export type InquiryStatus = 'new' | 'responded' | 'quoted' | 'converted' | 'closed'
+
+export type OrderStatus = 'pending' | 'confirmed' | 'production' | 'shipped' | 'delivered' | 'cancelled'
+
+export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'overdue'
+
+export interface Customer {
+  id: string
+  name: string
+  company?: string
+  email: string
+  phone?: string
+  address?: string
+  country?: string
+  type: CustomerType
+  notes?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Inquiry {
+  id: string
+  customerId: string
+  subject: string
+  content: string
+  type: InquiryType
+  status: InquiryStatus
+  /** 关联的产品ID */
+  productId?: string
+  /** AI分类结果 */
+  aiCategory?: string
+  /** AI生成的回复草稿 */
+  aiDraft?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface OrderItem {
+  id: string
+  orderId: string
+  productId: string
+  quantity: number
+  /** 单价（USD） */
+  unitPrice: number
+  /** 小计（USD） */
+  totalPrice: number
+  /** 印刷规格 */
+  imprintSpec?: string
+  createdAt: string
+}
+
+export interface Order {
+  id: string
+  customerId: string
+  orderNumber: string
+  status: OrderStatus
+  paymentStatus: PaymentStatus
+  /** 订单总金额（USD） */
+  totalAmount: number
+  /** 定金（USD） */
+  depositAmount?: number
+  /** 尾款（USD） */
+  balanceAmount?: number
+  notes?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SupplierCommunication {
+  id: string
+  productId: string
+  supplierName: string
+  contactMethod: 'email' | 'phone' | 'wechat' | 'other'
+  content: string
+  response?: string
+  /** 供应商报价（人民币） */
+  priceCny?: number
+  /** 起订量 */
+  moq?: number
+  /** 交货周期 */
+  leadTime?: string
+  createdAt: string
+}
+
+export interface EmailDraft {
+  id: string
+  inquiryId?: string
+  customerId: string
+  subject: string
+  content: string
+  isAiGenerated: boolean
+  status: 'draft' | 'sent'
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DashboardOverview {
+  customers: { total: number }
+  inquiries: { total: number; new: number; responded: number; converted: number }
+  orders: {
+    total: number
+    pending: number
+    confirmed: number
+    production: number
+    shipped: number
+    unpaid: number
+    totalRevenue: number
+  }
+  products: { total: number }
+}
+
+export interface PendingTasks {
+  newInquiries: Array<{ inquiryId: string; subject: string; customerName: string; createdAt: string }>
+  pendingOrders: Array<{ orderId: string; orderNumber: string; customerName: string; totalAmount: number; createdAt: string }>
+  unpaidOrders: Array<{
+    orderId: string
+    orderNumber: string
+    customerName: string
+    totalAmount: number
+    depositAmount: number | null
+    balanceAmount: number | null
+    createdAt: string
+  }>
+}
+
+export interface PriceComparison {
+  supplierName: string
+  priceCny: number | null
+  moq: number | null
+  leadTime: string | null
+  contactMethod: string
+  createdAt: string
+}

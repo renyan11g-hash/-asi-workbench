@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { PageTransition } from "@/components/PageTransition";
 import { AppLayout } from "@/components/AppLayout";
 import Dashboard from "./pages/Dashboard";
+import OrderCenter from "./pages/OrderCenter";
 import Sourcing from "./pages/Sourcing";
 import SourcingSuggest from "./pages/SourcingSuggest";
 import Evaluations from "./pages/Evaluations";
@@ -80,6 +81,12 @@ function App() {
                 data-genie-key="Listing"
                 data-genie-title="英文链接生成"
                 element={<PageTransition transition="fade"><ListingEditor /></PageTransition>}
+              />
+              <Route
+                path="order-center"
+                data-genie-key="OrderCenter"
+                data-genie-title="订单运营中心"
+                element={<PageTransition transition="fade"><OrderCenter /></PageTransition>}
               />
               <Route
                 path="settings"

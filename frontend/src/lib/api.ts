@@ -1,5 +1,27 @@
 import apiClient, { getErrorMessage } from './api-client'
-import { Evaluation, Listing, PriceRow, Product, ProductStatus, Settings, SimilarResearch, SourceInfo } from '../types'
+import {
+  Customer,
+  CustomerType,
+  DashboardOverview,
+  EmailDraft,
+  Evaluation,
+  Inquiry,
+  InquiryStatus,
+  Listing,
+  Order,
+  OrderItem,
+  OrderStatus,
+  PaymentStatus,
+  PendingTasks,
+  PriceComparison,
+  PriceRow,
+  Product,
+  ProductStatus,
+  Settings,
+  SimilarResearch,
+  SourceInfo,
+  SupplierCommunication,
+} from '../types'
 
 /** AI 生成类接口耗时较长：默认 10 分钟，需与后端 AI_TIMEOUT_MS 保持一致 */
 const LONG_TIMEOUT = { timeout: 600_000 }
@@ -414,4 +436,212 @@ export function listingToText(listing: Listing): string {
     sections.push(`\nQC\n${listing.qc.issues.map((w) => `- ${w}`).join('\n')}`)
   }
   return sections.join('\n')
+}
+
+// ========== 订单运营中心 API ==========
+
+export const orderApi = {
+  // ---------- Dashboard ----------
+  async dashboardOverview(): Promise<DashboardOverview> {
+    const { data } = await apiClient.get<DashboardOverview>('/dashboard/overview')
+    return data
+  },
+
+  async pendingTasks(): Promise<PendingTasks> {
+    const { data } = await apiClient.get<PendingTasks>('/dashboard/pending-tasks')
+    return data
+  },
+
+  // ---------- 客户 ----------
+  async listCustomers(): Promise<Customer[]> {
+    const { data } = await apiClient.get<{ customers: Customer[] }>('/customers')
+    return data.customers
+  },
+
+  async searchCustomers(q: string): Promise<Customer[]> {
+    const { data } = await apiClient.get<{ customers: Customer[] }>('/customers/search', { params: { q } })
+    return data.customers
+  },
+
+  async createCustomer(payload: {
+    name: string
+    company?: string
+    email: string
+    phone?: string
+    address?: string
+    country?: string
+    type: CustomerType
+    notes?: string
+  }): Promise<Customer> {
+    const { data } = await apiClient.post<{ customer: Customer }>('/customers', payload)
+    return data.customer
+  },
+
+  async updateCustomer(
+    id: string,
+    patch: Partial<{
+      name: string
+      company: string
+      email: string
+      phone: string
+      address: string
+      country: string
+      type: CustomerType
+      notes: string
+    }>
+  ): Promise<Customer> {
+    const { data } = await apiClient.put<{ customer: Customer }>(`/customers/${id}`, patch)
+    return data.customer
+  },
+
+  async deleteCustomer(id: string): Promise<void> {
+    await apiClient.delete(`/customers/${id}`)
+  },
+
+  // ---------- 询盘 ----------
+  async listInquiries(params?: { status?: string; customerId?: string }): Promise<Inquiry[]> {
+    const { data } = await apiClient.get<{ inquiries: Inquiry[] }>('/inquiries', { params })
+    return data.inquiries
+  },
+
+  async createInquiry(payload: {
+    customerId: string
+    subject: string
+    content: string
+    type: Inquiry['type']
+    productId?: string
+  }): Promise<Inquiry> {
+    const { data } = await apiClient.post<{ inquiry: Inquiry }>('/inquiries', payload)
+    return data.inquiry
+  },
+
+  async updateInquiryStatus(id: string, status: InquiryStatus): Promise<Inquiry> {
+    const { data } = await apiClient.patch<{ inquiry: Inquiry }>(`/inquiries/${id}/status`, { status })
+    return data.inquiry
+  },
+
+  async categorizeInquiry(id: string): Promise<Inquiry> {
+    const { data } = await apiClient.post<{ inquiry: Inquiry }>(`/inquiries/${id}/ai-categorize`, {})
+    return data.inquiry
+  },
+
+  async deleteInquiry(id: string): Promise<void> {
+    await apiClient.delete(`/inquiries/${id}`)
+  },
+
+  // ---------- 订单 ----------
+  async listOrders(params?: { status?: string; customerId?: string }): Promise<Order[]> {
+    const { data } = await apiClient.get<{ orders: Order[] }>('/orders', { params })
+    return data.orders
+  },
+
+  async createOrder(payload: {
+    customerId: string
+    orderNumber: string
+    status?: OrderStatus
+    paymentStatus?: PaymentStatus
+    totalAmount?: number
+    depositAmount?: number
+    balanceAmount?: number
+    notes?: string
+    items: Array<{ productId: string; quantity: number; unitPrice: number; imprintSpec?: string }>
+  }): Promise<{ order: Order; items: OrderItem[] }> {
+    const { data } = await apiClient.post<{ order: Order; items: OrderItem[] }>('/orders', payload)
+    return data
+  },
+
+  async updateOrderStatus(id: string, status: OrderStatus): Promise<Order> {
+    const { data } = await apiClient.patch<{ order: Order }>(`/orders/${id}/status`, { status })
+    return data.order
+  },
+
+  async updateOrderPaymentStatus(id: string, paymentStatus: PaymentStatus): Promise<Order> {
+    const { data } = await apiClient.patch<{ order: Order }>(`/orders/${id}/payment-status`, { paymentStatus })
+    return data.order
+  },
+
+  async deleteOrder(id: string): Promise<void> {
+    await apiClient.delete(`/orders/${id}`)
+  },
+
+  // ---------- 供应商沟通 ----------
+  async listCommunications(params?: { productId?: string }): Promise<SupplierCommunication[]> {
+    const { data } = await apiClient.get<{ communications: SupplierCommunication[] }>('/supplier-communications', { params })
+    return data.communications
+  },
+
+  async createCommunication(payload: {
+    productId: string
+    supplierName: string
+    contactMethod: SupplierCommunication['contactMethod']
+    content: string
+    response?: string
+    priceCny?: number
+    moq?: number
+    leadTime?: string
+  }): Promise<SupplierCommunication> {
+    const { data } = await apiClient.post<{ communication: SupplierCommunication }>('/supplier-communications', payload)
+    return data.communication
+  },
+
+  async updateCommunication(
+    id: string,
+    patch: Partial<{
+      supplierName: string
+      contactMethod: SupplierCommunication['contactMethod']
+      content: string
+      response: string
+      priceCny: number
+      moq: number
+      leadTime: string
+    }>
+  ): Promise<SupplierCommunication> {
+    const { data } = await apiClient.put<{ communication: SupplierCommunication }>(`/supplier-communications/${id}`, patch)
+    return data.communication
+  },
+
+  async deleteCommunication(id: string): Promise<void> {
+    await apiClient.delete(`/supplier-communications/${id}`)
+  },
+
+  async priceComparison(productId: string): Promise<PriceComparison[]> {
+    const { data } = await apiClient.get<{ comparison: PriceComparison[] }>(
+      `/supplier-communications/product/${productId}/price-comparison`
+    )
+    return data.comparison
+  },
+
+  // ---------- 邮件草稿 ----------
+  async listEmailDrafts(params?: { customerId?: string; inquiryId?: string; status?: string }): Promise<EmailDraft[]> {
+    const { data } = await apiClient.get<{ emailDrafts: EmailDraft[] }>('/email-drafts', { params })
+    return data.emailDrafts
+  },
+
+  async createEmailDraft(payload: {
+    inquiryId?: string
+    customerId: string
+    subject: string
+    content: string
+  }): Promise<EmailDraft> {
+    const { data } = await apiClient.post<{ emailDraft: EmailDraft }>('/email-drafts', payload)
+    return data.emailDraft
+  },
+
+  async generateEmailDraft(payload: {
+    inquiryId?: string
+    customerId: string
+    tone?: 'professional' | 'friendly' | 'formal'
+  }): Promise<EmailDraft> {
+    const { data } = await apiClient.post<{ emailDraft: EmailDraft }>('/email-drafts/ai-generate', payload, LONG_TIMEOUT)
+    return data.emailDraft
+  },
+
+  async markEmailSent(id: string): Promise<EmailDraft> {
+    const { data } = await apiClient.patch<{ emailDraft: EmailDraft }>(`/email-drafts/${id}/send`, {})
+    return data.emailDraft
+  },
+
+  async deleteEmailDraft(id: string): Promise<void> {
+    await apiClient.delete(`/email-drafts/${id}`)
+  },
 }

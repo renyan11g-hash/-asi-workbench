@@ -93,6 +93,147 @@ CREATE TABLE IF NOT EXISTS drafts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
+
+-- 订单运营中心表结构
+CREATE TABLE IF NOT EXISTS customers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  company TEXT,
+  email TEXT NOT NULL,
+  phone TEXT,
+  address TEXT,
+  country TEXT,
+  type TEXT NOT NULL DEFAULT 'individual',
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS inquiries (
+  id TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  content TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'price_inquiry',
+  status TEXT NOT NULL DEFAULT 'new',
+  product_id TEXT,
+  ai_category TEXT,
+  ai_draft TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (customer_id) REFERENCES customers(id),
+  FOREIGN KEY (product_id) REFERENCES products(id)
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+  id TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL,
+  order_number TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'pending',
+  payment_status TEXT NOT NULL DEFAULT 'unpaid',
+  total_amount REAL NOT NULL,
+  deposit_amount REAL,
+  balance_amount REAL,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (customer_id) REFERENCES customers(id)
+);
+
+CREATE TABLE IF NOT EXISTS order_items (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  quantity INTEGER NOT NULL,
+  unit_price REAL NOT NULL,
+  total_price REAL NOT NULL,
+  imprint_spec TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (order_id) REFERENCES orders(id),
+  FOREIGN KEY (product_id) REFERENCES products(id)
+);
+
+CREATE TABLE IF NOT EXISTS supplier_communications (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  supplier_name TEXT NOT NULL,
+  contact_method TEXT NOT NULL DEFAULT 'email',
+  content TEXT NOT NULL,
+  response TEXT,
+  price_cny REAL,
+  moq INTEGER,
+  lead_time TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (product_id) REFERENCES products(id)
+);
+
+CREATE TABLE IF NOT EXISTS email_drafts (
+  id TEXT PRIMARY KEY,
+  inquiry_id TEXT,
+  customer_id TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  content TEXT NOT NULL,
+  is_ai_generated INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (inquiry_id) REFERENCES inquiries(id),
+  FOREIGN KEY (customer_id) REFERENCES customers(id)
+);
+
+CREATE TABLE IF NOT EXISTS shipments (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  tracking_number TEXT,
+  carrier TEXT,
+  shipping_method TEXT NOT NULL DEFAULT 'air',
+  status TEXT NOT NULL DEFAULT 'pending',
+  estimated_delivery TEXT,
+  actual_delivery TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (order_id) REFERENCES orders(id)
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  amount REAL NOT NULL,
+  payment_method TEXT NOT NULL,
+  payment_date TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (order_id) REFERENCES orders(id)
+);
+
+CREATE TABLE IF NOT EXISTS after_sales (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  customer_id TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'quality_issue',
+  status TEXT NOT NULL DEFAULT 'open',
+  description TEXT NOT NULL,
+  resolution TEXT,
+  refund_amount REAL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (order_id) REFERENCES orders(id),
+  FOREIGN KEY (customer_id) REFERENCES customers(id)
+);
+
+-- 订单运营中心索引
+CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
+CREATE INDEX IF NOT EXISTS idx_inquiries_customer ON inquiries(customer_id);
+CREATE INDEX IF NOT EXISTS idx_inquiries_status ON inquiries(status);
+CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+CREATE INDEX IF NOT EXISTS idx_supplier_comm_product ON supplier_communications(product_id);
+CREATE INDEX IF NOT EXISTS idx_email_drafts_customer ON email_drafts(customer_id);
+CREATE INDEX IF NOT EXISTS idx_shipments_order ON shipments(order_id);
+CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id);
+CREATE INDEX IF NOT EXISTS idx_after_sales_order ON after_sales(order_id);
 `)
 
 // 老表结构兼容：缺列则补齐

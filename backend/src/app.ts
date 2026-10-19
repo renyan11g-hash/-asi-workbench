@@ -11,6 +11,12 @@ import { systemRouter } from './modules/system'
 import { productsRouter } from './modules/products'
 import { settingsRouter } from './modules/settings'
 import { draftsRouter } from './modules/drafts'
+import { customersRouter } from './modules/customers'
+import { inquiriesRouter } from './modules/inquiries'
+import { ordersRouter } from './modules/orders'
+import { supplierCommunicationsRouter } from './modules/supplier-communications'
+import { emailDraftsRouter } from './modules/email-drafts'
+import { dashboardRouter } from './modules/dashboard'
 
 export const createApp = (): Application => {
   const app = express()
@@ -36,6 +42,14 @@ export const createApp = (): Application => {
   app.use(`${env.API_PREFIX}/products`, productsRouter)
   app.use(`${env.API_PREFIX}/settings`, settingsRouter)
   app.use(`${env.API_PREFIX}/drafts`, draftsRouter)
+
+  // 订单运营中心
+  app.use(`${env.API_PREFIX}/customers`, customersRouter)
+  app.use(`${env.API_PREFIX}/inquiries`, inquiriesRouter)
+  app.use(`${env.API_PREFIX}/orders`, ordersRouter)
+  app.use(`${env.API_PREFIX}/supplier-communications`, supplierCommunicationsRouter)
+  app.use(`${env.API_PREFIX}/email-drafts`, emailDraftsRouter)
+  app.use(`${env.API_PREFIX}/dashboard`, dashboardRouter)
 
   // 生产环境：托管前端构建产物（单端口部署）
   const staticDir = resolveStaticDir()
