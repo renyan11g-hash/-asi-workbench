@@ -218,42 +218,56 @@ function cleanKeyword(k: string): string {
   return v
 }
 
-/** 关键词字符串清洗、去重、限 30 组；不足 30 组时用种子词库 + 属性变体补齐 */
+/**
+ * 关键词清洗 + 单词级全局去重 + 限 30 组。
+ * 与下游去重工具（把所有词拆开全局去重后再重新打包）对齐：
+ * 任一英文单词在全部 30 组中只允许出现一次，否则该组会被工具拆散，等效于无效关键词。
+ * 不足 30 组时用互不共享单词的填充词补齐。
+ */
 function cleanKeywordList(input: unknown): string[] {
   const list: string[] = []
-  const seen = new Set<string>()
-  const raw = arr(input)
-  for (const s of raw) {
+  const seenGroups = new Set<string>()
+  const seenWords = new Set<string>()
+  const tryPush = (s: string): boolean => {
     const cleaned = cleanKeyword(s)
-    if (!cleaned) continue
-    const key = cleaned.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
+    if (!cleaned) return false
+    const words = cleaned.toLowerCase().split(/\s+/)
+    // 组内单词重复（如 "Cable Cable"）直接丢弃
+    if (new Set(words).size !== words.length) return false
+    if (words.some((w) => seenWords.has(w))) return false
+    seenGroups.add(cleaned.toLowerCase())
+    for (const w of words) seenWords.add(w)
     list.push(cleaned)
-    if (list.length >= LIMITS.keywordMax) break
+    return true
   }
-  // 不足 30 组：按相关性顺序补种子词（组合成 ≤4 词的查询组），保证满 30
+  for (const s of arr(input)) {
+    if (list.length >= LIMITS.keywordMax) break
+    tryPush(s)
+  }
+  // 不足 30 组：用互不共享单词的填充词补齐（填充词库本身已保证单词唯一，按顺序消费）
   if (list.length < LIMITS.keywordMax) {
-    const fillers = [
-      ...SEED_KEYWORDS,
-      'Promotional Gift', 'Bulk Order', 'Wholesale Bulk', 'Trade Show Giveaway',
-      'Corporate Gift', 'Employee Appreciation', 'Client Gift', 'Event Giveaway',
-      'Business Gift', 'Promo Merch', 'Brand Merchandise', 'Company Swag',
-      'Marketing Giveaway', 'Custom Bulk', 'Bulk Supply', 'Wholesale Price',
-      'Factory Direct', 'OEM Service', 'Fast Lead Time', 'Low MOQ',
-    ]
-    for (const f of fillers) {
+    for (const f of KEYWORD_FILLERS) {
       if (list.length >= LIMITS.keywordMax) break
-      const cleaned = cleanKeyword(f)
-      if (!cleaned) continue
-      const key = cleaned.toLowerCase()
-      if (seen.has(key)) continue
-      seen.add(key)
-      list.push(cleaned)
+      tryPush(f)
     }
   }
   return list
 }
+
+/** 补齐用填充词：全部经过单词级唯一性设计，按顺序消费即可填满 30 组 */
+const KEYWORD_FILLERS: readonly string[] = [
+  ...SEED_KEYWORDS,
+  'Promotional Gift', 'Bulk Order', 'Wholesale Merchandise', 'Trade Show Giveaway',
+  'Corporate Appreciation', 'Client Thank You', 'Event Handout', 'Business Swag',
+  'Brand Awareness', 'Marketing Campaign', 'Company swag', 'Employee Recognition',
+  'Trade Fair', 'Expo Souvenir', 'Convention Loot', 'Festival Freebie',
+  'Office Stationery', 'Desk Accessory', 'Travel Companion', 'Outdoor Essential',
+  'Everyday Carry', 'Gift Set', 'Party Favor', 'Stocking Stuffer',
+  'Grand Opening', 'New Hire', 'Safety Award', 'Sales Incentive',
+  'Fundraising Premium', 'Voter Outreach', 'Nonprofit Donor', 'School Spirit',
+  'Fitness Challenge', 'Wellness Program', 'Eco Friendly', 'Reusable Alternative',
+  'Made Sustainably', 'Factory Direct', 'OEM Service', 'Fast Lead Time',
+]
 
 function ensureRushSuffix(s: string): string {
   const trimmed = (s ?? '').trim()
