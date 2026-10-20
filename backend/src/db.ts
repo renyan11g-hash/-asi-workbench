@@ -92,6 +92,21 @@ CREATE TABLE IF NOT EXISTS drafts (
   updated_at TEXT NOT NULL
 );
 
+-- 历史选品：快速评估自动留档（按 url 去重，重复评估覆盖更新）
+CREATE TABLE IF NOT EXISTS sourcing_history (
+  id TEXT PRIMARY KEY,
+  url TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  score INTEGER,
+  verdict TEXT,
+  source TEXT NOT NULL DEFAULT '{}',
+  fetched TEXT NOT NULL DEFAULT '{}',
+  evaluation TEXT NOT NULL DEFAULT '{}',
+  price_grid TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
 
 -- 订单运营中心表结构

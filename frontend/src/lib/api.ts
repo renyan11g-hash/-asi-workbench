@@ -33,6 +33,20 @@ export interface SettingsResponse {
   hasApiKey: boolean
 }
 
+export interface SourcingHistoryItem {
+  id: string
+  url: string
+  title: string
+  score: number | null
+  verdict: string | null
+  source: Partial<SourceInfo>
+  fetched: Record<string, unknown>
+  evaluation: Evaluation
+  priceGrid: PriceRow[]
+  createdAt: string
+  updatedAt: string
+}
+
 export const api = {
   async getSettings(): Promise<SettingsResponse> {
     const { data } = await apiClient.get<SettingsResponse>('/settings')
@@ -202,6 +216,18 @@ export const api = {
     priceGrid: PriceRow[]
   }> {
     const { data } = await apiClient.post('/products/preview/quick-evaluate', { url }, LONG_TIMEOUT)
+    return data
+  },
+
+  /** 历史选品：快速评估记录列表（按更新时间倒序） */
+  async listSourcingHistory(): Promise<{ items: SourcingHistoryItem[] }> {
+    const { data } = await apiClient.get<{ items: SourcingHistoryItem[] }>('/sourcing-history')
+    return data
+  },
+
+  /** 删除一条历史选品记录 */
+  async deleteSourcingHistory(id: string): Promise<{ ok: boolean }> {
+    const { data } = await apiClient.delete<{ ok: boolean }>(`/sourcing-history/${id}`)
     return data
   },
 

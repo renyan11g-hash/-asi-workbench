@@ -1,12 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowRight,
   ClipboardList,
   Compass,
+  History,
   Lightbulb,
   Loader2,
   SearchCheck,
+  Trash2,
   Wand2,
   Zap,
 } from 'lucide-react'
@@ -15,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScoreRing, SectionCard, VerdictBadge } from '@/components/ui/primitives'
-import { api, getErrorMessage } from '@/lib/api'
+import { api, getErrorMessage, SourcingHistoryItem } from '@/lib/api'
 import { EMPTY_SOURCE, Evaluation, PriceRow, SourceInfo } from '@/types'
 import { GLS_CATEGORIES } from '@/constants/gls-categories'
 
@@ -118,6 +120,24 @@ export default function SourcingSuggest() {
   const [quickUrl, setQuickUrl] = useState('')
   const [quickBusy, setQuickBusy] = useState(false)
   const [quick, setQuick] = useState<QuickResult | null>(null)
+  const [history, setHistory] = useState<SourcingHistoryItem[]>([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+
+  /** 拉取历史选品记录 */
+  const loadHistory = async () => {
+    try {
+      const r = await api.listSourcingHistory()
+      setHistory(r.items ?? [])
+    } catch {
+      /* 历史加载失败不打扰主流程 */
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadHistory()
+  }, [])
 
   const run = async () => {
     setBusy(true)
@@ -149,6 +169,7 @@ export default function SourcingSuggest() {
       const r = await api.quickEvaluate(url)
       setQuick(r)
       toast.success(`评估完成：${r.evaluation.score} 分`)
+      void loadHistory()
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
@@ -156,9 +177,34 @@ export default function SourcingSuggest() {
     }
   }
 
+  /** 查看一条历史记录：回填到上方快速评估结果区并滚动到顶部 */
+  const viewHistory = (item: SourcingHistoryItem) => {
+    setQuickUrl(item.url)
+    setQuick({
+      ok: true,
+      message: `历史评估记录（${new Date(item.updatedAt).toLocaleString('zh-CN')}）`,
+      fetched: item.fetched as QuickResult['fetched'],
+      source: item.source as SourceInfo,
+      evaluation: item.evaluation,
+      priceGrid: item.priceGrid ?? [],
+    })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  /** 删除一条历史记录 */
+  const removeHistory = async (id: string) => {
+    try {
+      await api.deleteSourcingHistory(id)
+      setHistory((list) => list.filter((h) => h.id !== id))
+      toast.success('已删除该历史记录')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
   /** 把抓到的资料带入「产品信息预填」页，继续补全尺寸 / 材质 / 箱规等 */
-  const goPrefill = () => {
-    if (!quick) return
+  const goPrefill = (src?: Partial<SourceInfo>) => {
+    if (!src) return
     let base: Partial<SourceInfo> = {}
     try {
       const raw = localStorage.getItem(SOURCE_DRAFT_KEY)
@@ -169,8 +215,8 @@ export default function SourcingSuggest() {
     const next: SourceInfo = {
       ...EMPTY_SOURCE,
       ...base,
-      ...quick.source,
-      category: base.category || quick.source.category || '',
+      ...src,
+      category: base.category || src.category || '',
     }
     const meta = { savedAt: new Date().toISOString(), bytes: JSON.stringify(next).length }
     localStorage.setItem(SOURCE_DRAFT_KEY, JSON.stringify({ value: next, meta }))
@@ -268,7 +314,7 @@ export default function SourcingSuggest() {
               </ul>
             ) : null}
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="outline" onClick={goPrefill}>
+              <Button size="sm" variant="outline" onClick={() => goPrefill(quick.source)}>
                 <ClipboardList className="mr-1 h-3.5 w-3.5" /> 去补全产品信息（产品信息预填）
               </Button>
               <span className="text-[11px] text-slate-400">{quick.message}</span>
@@ -417,6 +463,76 @@ export default function SourcingSuggest() {
                 </ul>
               </div>
             )}
+          </div>
+        )}
+      </SectionCard>
+
+      {/* 历史选品：所有快速评估过的商品自动留档 */}
+      <SectionCard
+        title="历史选品"
+        hint="快速评估过的商品都会自动留档（同一链接重复评估会更新为最新结果），可随时回看或继续预填"
+        right={
+          <Button size="sm" variant="outline" onClick={() => void loadHistory()} disabled={historyLoading}>
+            {historyLoading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <History className="mr-1 h-3.5 w-3.5" />}
+            刷新
+          </Button>
+        }
+      >
+        {historyLoading ? (
+          <p className="py-2 text-sm text-slate-400">加载中…</p>
+        ) : history.length === 0 ? (
+          <p className="py-2 text-sm text-slate-400">还没有记录。在上方粘贴 1688 链接完成一次快速评估，就会自动出现在这里。</p>
+        ) : (
+          <div className="space-y-2">
+            {history.map((h) => (
+              <div key={h.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {h.score != null && <ScoreRing score={h.score} />}
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-slate-800">{h.title || '（未抓到标题）'}</p>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                        <VerdictBadge verdict={h.verdict as never} score={h.score ?? undefined} />
+                        <span className="text-[11px] text-slate-400">
+                          {new Date(h.updatedAt).toLocaleString('zh-CN')}
+                        </span>
+                        {h.url && (
+                          <a
+                            href={h.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[11px] text-blue-600 hover:underline"
+                          >
+                            打开 1688 链接 ↗
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => viewHistory(h)}>
+                      查看结果
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs text-blue-600"
+                      onClick={() => goPrefill(h.source)}
+                    >
+                      <Wand2 className="mr-1 h-3 w-3" /> 去预填
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs text-rose-500 hover:text-rose-600"
+                      onClick={() => void removeHistory(h.id)}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </SectionCard>

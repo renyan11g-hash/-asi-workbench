@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { saveSourcingHistory } from './sourcing-history'
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../db'
@@ -734,6 +735,21 @@ productsRouter.post('/preview/quick-evaluate', async (req: Request, res: Respons
   const settings = loadSettings()
   const evaluation = await runAi(() => evaluateSource(source, settings))
   const { rows } = buildPriceGrid(source, settings)
+  // 自动记录到「历史选品」（按链接去重，重复评估同一链接会覆盖更新）
+  try {
+    saveSourcingHistory({
+      url,
+      title: f.sourceTitle,
+      score: evaluation.score,
+      verdict: evaluation.verdict ?? null,
+      source,
+      fetched: f,
+      evaluation,
+      priceGrid: rows,
+    })
+  } catch {
+    // 历史记录失败不影响评估结果返回
+  }
   res.json({ ok: true, fetched: f, source, evaluation, priceGrid: rows, message: grabbed.message })
 })
 

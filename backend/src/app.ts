@@ -11,6 +11,7 @@ import { systemRouter } from './modules/system'
 import { productsRouter } from './modules/products'
 import { settingsRouter } from './modules/settings'
 import { draftsRouter } from './modules/drafts'
+import { sourcingHistoryRouter } from './modules/sourcing-history'
 import { customersRouter } from './modules/customers'
 import { inquiriesRouter } from './modules/inquiries'
 import { ordersRouter } from './modules/orders'
@@ -42,6 +43,7 @@ export const createApp = (): Application => {
   app.use(`${env.API_PREFIX}/products`, productsRouter)
   app.use(`${env.API_PREFIX}/settings`, settingsRouter)
   app.use(`${env.API_PREFIX}/drafts`, draftsRouter)
+  app.use(`${env.API_PREFIX}/sourcing-history`, sourcingHistoryRouter)
 
   // 订单运营中心
   app.use(`${env.API_PREFIX}/customers`, customersRouter)
