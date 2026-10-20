@@ -80,14 +80,21 @@ interface SourcingResult {
     product: string
     why: string
     search1688: string[]
+    /** 后端用 GBK 编码生成的可打开 1688 搜索链接（与 search1688 一一对应） */
+    search1688Urls?: string[]
     category: string
     expectedUnitCostCny: number | null
     expectedSellUsd: { min: number; max: number } | null
     risks: string[]
   }>
   keywords1688: string[]
+  keywords1688Urls?: string[]
   tips: string[]
 }
+
+/** 浏览器端兜底：无法做 GBK 编码，但仍是新版 s.1688.com 搜索格式 */
+const fallbackSearchUrl = (k: string) =>
+  `https://s.1688.com/selloffer/offer_search.htm?keywords=${encodeURIComponent(k)}`
 
 /** /preview/quick-evaluate 的返回：抓取资料 + AI 评估 + 价格表 */
 interface QuickResult {
@@ -406,7 +413,7 @@ export default function SourcingSuggest() {
                     {d.search1688.map((k, j) => (
                       <a
                         key={j}
-                        href={`https://search.1688.com/kq/-6D3O${encodeURIComponent(k)}.html`}
+                        href={d.search1688Urls?.[j] ?? fallbackSearchUrl(k)}
                         target="_blank"
                         rel="noreferrer"
                         className="rounded border border-orange-200 bg-orange-50 px-1.5 py-0.5 text-[11px] text-orange-700 hover:bg-orange-100"
@@ -439,7 +446,7 @@ export default function SourcingSuggest() {
                 {sourcing.keywords1688.map((k, i) => (
                   <a
                     key={i}
-                    href={`https://search.1688.com/kq/-6D3O${encodeURIComponent(k)}.html`}
+                    href={sourcing.keywords1688Urls?.[i] ?? fallbackSearchUrl(k)}
                     target="_blank"
                     rel="noreferrer"
                     className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-200"

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import iconv from 'iconv-lite'
 import { saveSourcingHistory } from './sourcing-history'
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
@@ -1234,6 +1235,23 @@ productsRouter.post('/assistant', async (req: Request, res: Response) => {
 })
 
 // ---------- 1688 选品自动搜寻（AI 推荐选品方向 + 1688 搜索词） ----------
+
+/**
+ * 生成 1688 搜索链接：s.1688.com 的 keywords 参数要求 GBK 编码（UTF-8 会搜不到/打不开），
+ * 浏览器端无法做 GBK 编码，必须由后端生成后随结果下发。
+ */
+function build1688SearchUrl(keyword: string): string {
+  try {
+    const gbk = iconv.encode(keyword, 'gbk')
+    const encoded = Array.from(gbk)
+      .map((b) => '%' + b.toString(16).toUpperCase().padStart(2, '0'))
+      .join('')
+    return `https://s.1688.com/selloffer/offer_search.htm?keywords=${encoded}`
+  } catch {
+    return `https://s.1688.com/selloffer/offer_search.htm?keywords=${encodeURIComponent(keyword)}`
+  }
+}
+
 productsRouter.post('/sourcing-suggest', async (req: Request, res: Response) => {
   const body = z
     .object({
@@ -1249,5 +1267,14 @@ productsRouter.post('/sourcing-suggest', async (req: Request, res: Response) => 
     .parse(req.body ?? {})
   const settings = loadSettings()
   const result = await runAi(() => suggestSourcing(body, settings))
-  res.json(result)
+  // 把 AI 给出的搜索词转成可直接打开的 1688 搜索链接（GBK 编码）
+  const directions = result.directions.map((d) => ({
+    ...d,
+    search1688Urls: d.search1688.map(build1688SearchUrl),
+  }))
+  res.json({
+    ...result,
+    directions,
+    keywords1688Urls: result.keywords1688.map(build1688SearchUrl),
+  })
 })

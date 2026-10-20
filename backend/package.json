@@ -27,6 +27,7 @@
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "express-async-errors": "^3.1.1",
+    "iconv-lite": "^0.7.3",
     "libsql": "^0.5.29",
     "pino": "^10.1.0",
     "pino-http": "^11.0.0",
