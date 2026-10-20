@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScoreRing, SectionCard, VerdictBadge } from '@/components/ui/primitives'
+import EvaluationChat from '@/components/EvaluationChat'
 import { api, getErrorMessage, SourcingHistoryItem } from '@/lib/api'
 import { EMPTY_SOURCE, Evaluation, PriceRow, SourceInfo } from '@/types'
 import { GLS_CATEGORIES } from '@/constants/gls-categories'
@@ -325,6 +326,18 @@ export default function SourcingSuggest() {
                 <ClipboardList className="mr-1 h-3.5 w-3.5" /> 去补全产品信息（产品信息预填）
               </Button>
               <span className="text-[11px] text-slate-400">{quick.message}</span>
+            </div>
+            {/* 需求：评估结果出来后可直接与 AI 对话，补充信息让 AI 重新评估 */}
+            <div className="border-t border-slate-200 pt-3">
+              <EvaluationChat
+                productId={`quick-eval:${quick.source.sourceUrl || quick.fetched.sourceTitle || 'untitled'}`}
+                evaluation={quick.evaluation}
+                chatFn={async (_id, messages) => {
+                  const r = await api.previewChatEvaluation(quick.source, quick.evaluation, messages)
+                  return { evaluation: r.evaluation }
+                }}
+                onEvaluationUpdated={(e) => setQuick((cur) => (cur ? { ...cur, evaluation: e } : cur))}
+              />
             </div>
           </div>
         )}

@@ -524,8 +524,16 @@ async function grabViaJina(url: string): Promise<GrabbedFetched | null> {
     if (!text || text.length < 300) return null
     const num = (s: string) => Number(s.replace(/[^\d.]/g, ''))
     const specHit = (labelRe: RegExp, valRe: RegExp): string => {
-      const m = text.match(new RegExp(labelRe.source + '[^<>|]{0,80}?' + valRe.source, 'i'))
-      return m ? m[0].replace(/<[^>]+>/g, ' ').replace(/\|/g, ' ').replace(/\s+/g, ' ').trim() : ''
+      // 排除引号/花括号：jina 渲染文本可能混入页面 JSON 片段（如 材质","value":""），防止误当规格值
+      const m = text.match(new RegExp(labelRe.source + String.raw`[^<>"']{0,80}?` + valRe.source, 'i'))
+      return m
+        ? m[0]
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/["'{}\\]/g, ' ')
+            .replace(/\|/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+        : ''
     }
     const title = (text.match(/^Title:\s*(.+)$/m)?.[1] ?? '').replace(/[-–—|｜]\s*1688\.com.*$/i, '').trim()
     const body = text
@@ -1111,6 +1119,7 @@ const REGEN_FIELD_ENUM = [
   'description',
   'keywords',
   'category',
+  'typeOfProduct',
   'categories',
   'themes',
   'material',

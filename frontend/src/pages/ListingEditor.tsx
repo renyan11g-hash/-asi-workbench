@@ -293,7 +293,7 @@ const SECTION_FIELDS = {
   summary: ['summary', 'summaryZh'],
   description: ['description', 'descriptionZh'],
   keywords: ['keywords', 'keywordsZh'],
-  category: ['category', 'typeOfProduct', 'categories'],
+  category: ['category', 'typeOfProduct', 'categories', 'themes', 'material', 'materials'],
   material: ['material', 'materials'],
   colors: ['colors', 'colorChips'],
   imprint: ['imprintMethods'],
@@ -660,7 +660,15 @@ export default function ListingEditor() {
 
   /** 分块 AI：把「重新生成 / AI 对话」返回的字段值合并进当前 listing（不落库，确认后保存） */
   const applyValues = (values: Record<string, unknown>) => {
-    patch(values as Partial<Listing>)
+    // AI 修改 categories/materials 时同步主字段，与手动编辑行为保持一致
+    const v = { ...values }
+    if (Array.isArray(v.categories) && v.categories.length > 0 && !v.category) {
+      v.category = v.categories[0]
+    }
+    if (Array.isArray(v.materials) && v.materials.length > 0 && !v.material) {
+      v.material = v.materials[0]
+    }
+    patch(v as Partial<Listing>)
   }
 
   if (isLoading) {
