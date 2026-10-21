@@ -1582,70 +1582,117 @@ function extractOfferUrls(text: string): string[] {
   return urls
 }
 
-/** 通道①：jina 渲染抓取 Bing 搜索结果（site:detail.1688.com 限定），提取具体 1688 offer 链接；失败返回 [] */
-async function search1688OffersViaBing(query: string): Promise<string[]> {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 25000)
-  try {
-    const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(`site:detail.1688.com ${query}`)}&count=20`
-    const r = await fetch('https://r.jina.ai/' + bingUrl, {
-      signal: ctrl.signal,
-      headers: { 'X-Return-Format': 'text' },
-    })
-    if (!r.ok) return []
-    return extractOfferUrls(await r.text())
-  } catch {
-    return []
-  } finally {
-    clearTimeout(timer)
-  }
-}
+const SEARCH_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
-/** 通道②：Bing 宽搜（不限定 site:，用「1688」关键词），兜底 site: 收录不足的词；失败返回 [] */
-async function search1688OffersViaBingWide(query: string): Promise<string[]> {
+/** 直连抓取文本（跟随重定向）；失败/超时返回 null。搜索与移动端详情共用 */
+async function fetchDirect(url: string, timeoutMs = 20000, extraHeaders: Record<string, string> = {}): Promise<string | null> {
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 25000)
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(`${query} 1688.com 详情`)}&count=20`
-    const r = await fetch('https://r.jina.ai/' + bingUrl, {
+    const r = await fetch(url, {
       signal: ctrl.signal,
-      headers: { 'X-Return-Format': 'text' },
+      redirect: 'follow',
+      headers: {
+        'User-Agent': SEARCH_UA,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        ...extraHeaders,
+      },
     })
-    if (!r.ok) return []
-    return extractOfferUrls(await r.text())
-  } catch {
-    return []
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-/** 通道③：jina 直抓 1688 搜索结果页（GBK 编码 PC 版 selloffer 页），最接近站内真实搜索；失败返回 [] */
-async function search1688ViaJinaSearchPage(query: string): Promise<string[]> {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 45000)
-  try {
-    const r = await fetch('https://r.jina.ai/' + build1688SearchUrl(query), {
-      signal: ctrl.signal,
-      headers: { 'X-Return-Format': 'text' },
-    })
-    if (!r.ok) return []
+    if (!r.ok) return null
     const text = await r.text()
-    if (text.length < 300) return []
-    return extractOfferUrls(text)
+    return text || null
   } catch {
-    return []
+    return null
   } finally {
     clearTimeout(timer)
   }
+}
+
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&/g, '&')
+    .replace(/</g, '<')
+    .replace(/>/g, '>')
+    .replace(/"/g, '"')
+    .replace(/'/g, "'")
+    .replace(/&nbsp;/g, ' ')
+}
+
+/** 360 搜索结果条目（data-mdurl 真实链接 + h3 标题 + 摘要含价格） */
+interface OfferSearchHit {
+  offerId: string
+  url: string
+  title: string
+  desc: string
+  priceCny: number | null
+}
+
+/** 解析 360 搜索结果块：URL 取 data-mdurl，标题取 h3>a（商品卡片回退到纯文本），摘要/价格取 res-desc 或首个 p */
+function parse360Results(html: string): OfferSearchHit[] {
+  const out: OfferSearchHit[] = []
+  const seen = new Set<string>()
+  const clean = (s: string) => decodeHtmlEntities(s.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')).trim()
+  for (const b of html.split(/<li[^>]*class="res-list[^"]*"/).slice(1)) {
+    const url = b.match(/data-mdurl="(https:\/\/detail\.1688\.com\/offer\/(\d{8,})\.html)"/)?.[1]
+    if (!url || seen.has(url)) continue
+    seen.add(url)
+    const offerId = url.match(/offer\/(\d{8,})\.html/)![1]
+    const aStart = b.indexOf('data-mdurl')
+    const around = b.slice(Math.max(0, aStart - 2000), aStart + 3000)
+    let title = clean(around.match(/<h3[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? '')
+    if (!title) {
+      // 商品卡片（1688 广告位）无 h3：标题在纯文本开头，形如「不锈钢 餐盘 …批发-阿里巴巴 价格：￥20.00」
+      const plain = clean(b.replace(/<[^>]+>/g, ' '))
+      const tf = plain.match(/[A-Za-z0-9\u4e00-\u9fa5（）()、，,．.·%％＋+×*/ \-]{8,150}-阿里巴巴/)?.[0]
+      if (tf) title = tf.replace(/\s+/g, '')
+    }
+    const descRaw =
+      b.match(/class="res-desc[^"]*"[^>]*>([\s\S]*?)<\/p>/)?.[1] ??
+      b.match(/class="res-rich[^"]*"[^>]*>([\s\S]*?)<\/div>/)?.[1] ??
+      b.match(/<p[^>]*>([\s\S]{30,300}?)<\/p>/)?.[1] ??
+      ''
+    const desc = clean(descRaw)
+    // 摘要中的价格：￥20.00 / ￥4.37-6.50（取下限）
+    const priceM = desc.match(/[¥￥]\s*(\d{1,5}(?:\.\d{1,2})?)(?:\s*-\s*\d{1,5}(?:\.\d{1,2})?)?/)
+    const priceNum = priceM ? Number(priceM[1]) : null
+    out.push({
+      offerId,
+      url,
+      title,
+      desc,
+      priceCny: priceNum != null && priceNum >= 0.1 && priceNum <= 10000 ? priceNum : null,
+    })
+  }
+  return out
+}
+
+/** 通道①：360 搜索（site:detail.1688.com 限定，实测 6-7 条/词、直连稳定、摘要自带价格）；失败返回 [] */
+async function search1688ViaSo360(query: string): Promise<OfferSearchHit[]> {
+  const text = await fetchDirect(`https://www.so.com/s?q=${encodeURIComponent(`site:detail.1688.com ${query}`)}`)
+  return text ? parse360Results(text) : []
+}
+
+/** 通道②：搜狗搜索（site: 限定，与 360 收录互补，仅提取链接）；失败返回 [] */
+async function search1688OffersViaSogou(query: string): Promise<string[]> {
+  const text = await fetchDirect(`https://www.sogou.com/web?query=${encodeURIComponent(`site:detail.1688.com ${query}`)}`)
+  return text ? extractOfferUrls(text) : []
+}
+
+/** 通道③：Bing 宽搜（不限定 site:，用「1688」关键词），兜底 site: 收录不足的词；失败返回 [] */
+async function search1688OffersViaBingWide(query: string): Promise<string[]> {
+  const text = await fetchDirect(`https://cn.bing.com/search?q=${encodeURIComponent(`${query} 1688.com 详情`)}&count=30`)
+  return text ? extractOfferUrls(text) : []
 }
 
 /** 抓取一个 1688 offer 的简要信息（标题/价格/图/MOQ），复用现有多通道抓取 */
 async function grabOfferBrief(url: string): Promise<ResearchMatch | null> {
   const offerId = url.match(/offer\/(\d+)/)?.[1] ?? ''
   const clean = offerId ? `https://detail.1688.com/offer/${offerId}.html` : url
-  // 先直连（快），失败再 jina（慢但能绕反爬）
-  let g = await grab1688Once(clean)
+  // ① 移动端直连（数据最全）② PC 直连（快）③ jina 兜底
+  let g = offerId ? await grab1688Mobile(offerId) : null
+  if (!g || (!g.sourceTitle && !g.description)) g = await grab1688Once(clean)
   if (!g || (!g.sourceTitle && !g.description)) g = await grabViaJina(clean)
   if (!g || (!g.sourceTitle && !g.description)) return null
   return {
@@ -1707,11 +1754,16 @@ productsRouter.post('/sourcing-research', async (req: Request, res: Response) =>
     )
   )
 
-  // ⑤ 每个方向并行：Bing site:detail.1688.com 搜 offer → 并行抓详情（标题/价格/图/MOQ）
+  // ⑤ 每个方向并行：360/搜狗 site: 搜 offer → 并行抓详情（标题/价格/图/MOQ）
   const directions = await Promise.all(
     research.directions.map(async (d) => {
-      // 方向内也并行：两个搜索词同时搜
-      const urlLists = await Promise.all(d.search1688.slice(0, 2).map((q) => search1688OffersViaBing(q)))
+      // 方向内也并行：两个搜索词同时搜（每词 360 + 搜狗双通道）
+      const urlLists = await Promise.all(
+        d.search1688.slice(0, 2).map(async (q) => {
+          const [so, sg] = await Promise.all([search1688ViaSo360(q), search1688OffersViaSogou(q)])
+          return [...so.map((h) => h.url), ...sg]
+        })
+      )
       const offerUrls: string[] = []
       const seenOffer = new Set<string>()
       for (const list of urlLists) {
@@ -1768,48 +1820,97 @@ function extractSupplierSignals(text: string): string {
   return hits.join('；')
 }
 
-/** 抓取一个 1688 offer 详情并组装候选商家（含信号提取）；失败返回 null */
-async function grabSupplierCandidate(url: string): Promise<SupplierCandidate | null> {
-  const offerId = url.match(/offer\/(\d+)/)?.[1] ?? ''
+/**
+ * 组装候选商家：搜索 snippet（标题+摘要+价格，实测最可靠）为主数据源，
+ * 详情页抓取（移动端直连 → PC 直连 → jina）为尽力增强（成功补 MOQ/图/材质，失败不影响）。
+ */
+async function grabSupplierCandidate(hit: OfferSearchHit): Promise<SupplierCandidate | null> {
+  const offerId = hit.offerId
   if (!offerId) return null
   const clean = `https://detail.1688.com/offer/${offerId}.html`
-  let g = await grab1688Once(clean)
-  if (!g || (!g.sourceTitle && !g.description)) g = await grabViaJina(clean)
-  if (!g || (!g.sourceTitle && !g.description)) return null
-  const rawText = [g.sourceTitle, g.description.slice(0, 600), g.materialCn, g.sizeCn].filter(Boolean).join(' ')
+  // snippet 标题形如「不锈钢餐盘304分格盘...批发-阿里巴巴」，去掉尾部站点名
+  const snippetTitle = hit.title.replace(/[-–—|｜]\s*(阿里巴巴|1688).*$/i, '').trim()
+  const snippetText = `${snippetTitle} ${hit.desc}`
+  // 详情增强（尽力而为，失败静默）
+  const g = await grab1688Mobile(offerId).catch(() => null)
+  const title = g?.sourceTitle || snippetTitle
+  if (!title) return null
+  const rawText = [title, g?.description?.slice(0, 400), g?.materialCn, g?.sizeCn, snippetText].filter(Boolean).join(' ')
   return {
     offerId,
     url: clean,
-    title: g.sourceTitle || g.description.slice(0, 60),
-    priceCny: g.priceCny,
-    moq: g.moq,
-    image: g.image,
+    title,
+    priceCny: g?.priceCny ?? hit.priceCny,
+    moq: g?.moq ?? null,
+    image: g?.image ?? '',
     raw: extractSupplierSignals(rawText),
+  }
+}
+
+/** 移动端 m.1688.com 直连抓取（UA 伪装 iPhone；页面含规格 JSON 与销量信号） */
+async function grab1688Mobile(offerId: string): Promise<GrabbedFetched | null> {
+  const html = await fetchDirect(`https://m.1688.com/offer/${offerId}.html`, 15000, {
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+    'Referer': 'https://m.1688.com/',
+  })
+  if (!html || html.length < 5000) return null
+  const title =
+    (html.match(/<title>([^<]{5,150})<\/title>/)?.[1] ?? '').replace(/[-–—|｜]\s*(阿里巴巴|1688).*$/i, '').trim() ||
+    (html.match(/"subject"\s*:\s*"([^"]{5,150})"/)?.[1] ?? '')
+  if (!title) return null
+  // 规格字段在页面 JSON 中形如 "name":"材质","value":"玻璃"
+  const jsonField = (name: string): string => {
+    const m = html.match(new RegExp(`"name"\\s*:\\s*"${name}"\\s*,\\s*(?:"[^"]+"\\s*:\\s*"[^"]*"\\s*,\\s*)*"value"\\s*:\\s*"([^"]{1,60})"`))
+    return m ? m[1] : ''
+  }
+  const material = jsonField('材质') || jsonField('主材质')
+  const colors = jsonField('颜色') || jsonField('颜色分类')
+  const size = jsonField('尺寸') || jsonField('规格') || jsonField('直径')
+  const priceM = html.match(/[¥￥]\s*(\d{1,5}(?:\.\d{1,2})?)/) ?? html.match(/"price"\s*:\s*"?(\d{1,5}(?:\.\d{1,2})?)"?/)
+  const priceNum = priceM ? Number(priceM[1]) : null
+  const priceCny = priceNum != null && priceNum >= 0.1 && priceNum <= 10000 ? priceNum : null
+  const moqM = html.match(/(\d+)\s*件起批/) ?? html.match(/"beginAmount"\s*:\s*(\d+)/)
+  const moq = moqM ? Number(moqM[1]) : null
+  const image = html.match(/"(https?:\/\/cbu01\.alicdn\.com\/img\/ibank\/[^"]+?\.(?:jpg|png|webp))"/)?.[1] ?? ''
+  const desc = html.match(/name="description"\s+content="([^"]{10,300})"/)?.[1] ?? ''
+  return {
+    sourceTitle: title,
+    sourceKeywords: [],
+    description: desc,
+    materialCn: material,
+    colorsCn: colors,
+    sizeCn: size,
+    weightG: null,
+    cartonSpecCm: '',
+    pcsPerCarton: null,
+    cartonGwKg: null,
+    moq,
+    priceCny,
+    image,
   }
 }
 
 /**
  * 多通道 1688 offer 搜索（带兜底，结果越多越好）：
- * 第 1 词：site: → 宽搜 → jina 直抓搜索页；若仍不足 4 条，继续用下一个词。
- * 返回去重后的 offer 链接列表（保序，宽泛词在前 = 相关度优先）。
+ * 每词并行 360 site:（结构化：标题+摘要+价格）+ 搜狗 site:（仅链接），不足再 Bing 宽搜，仍不足换下一个词。
+ * 返回去重后的搜索命中列表（保序，宽泛词在前 = 相关度优先）。
  */
-async function search1688OffersMultiChannel(queries: string[]): Promise<string[]> {
-  const all: string[] = []
+async function search1688OffersMultiChannel(queries: string[]): Promise<OfferSearchHit[]> {
+  const all: OfferSearchHit[] = []
   const seen = new Set<string>()
-  const pushAll = (list: string[]) => {
-    for (const u of list) {
-      if (!seen.has(u)) {
-        seen.add(u)
-        all.push(u)
-      }
-    }
+  const pushUrl = (u: string, hit?: OfferSearchHit) => {
+    if (seen.has(u)) return
+    seen.add(u)
+    all.push(hit ?? { offerId: u.match(/offer\/(\d{8,})\.html/)![1], url: u, title: '', desc: '', priceCny: null })
   }
   for (const q of queries.slice(0, 5)) {
-    // 三通道逐词降级；第一轮并行 site: + 搜索页直抓（最快的两条路），不够再宽搜
-    const [site, page] = await Promise.all([search1688OffersViaBing(q), search1688ViaJinaSearchPage(q)])
-    pushAll(site)
-    pushAll(page)
-    if (all.length < 4) pushAll(await search1688OffersViaBingWide(q))
+    const [so, sg] = await Promise.all([search1688ViaSo360(q), search1688OffersViaSogou(q)])
+    for (const h of so) pushUrl(h.url, h)
+    for (const u of sg) pushUrl(u)
+    if (all.length < 4) {
+      const wide = await search1688OffersViaBingWide(q)
+      for (const u of wide) pushUrl(u)
+    }
     if (all.length >= 8) break // 足够了，停止后续词
   }
   return all
@@ -1818,8 +1919,8 @@ async function search1688OffersMultiChannel(queries: string[]): Promise<string[]
 /**
  * POST /sourcing-by-image —— 以图找源：
  * ① AI 识图（1-6 张图，产品识别 + 1688 中文搜索词长短混合 + 合规要点）
- * ② 多通道搜 offer 链接（Bing site: → jina 直抓 1688 搜索页 → Bing 宽搜，逐词降级）
- * ③ 并行抓 offer 详情（标题/价格/MOQ/图 + 实力/销量/资质信号）
+ * ② 多通道搜 offer 链接（360 site: + 搜狗 site: 并行 → Bing 宽搜，逐词降级）
+ * ③ 并行抓 offer 详情（移动端直连 → PC 直连 → jina；标题/价格/MOQ/图 + 实力/销量/资质信号）
  * ④ AI 按现货/定制/实力/销量/跨境/合规打分排序
  */
 productsRouter.post('/sourcing-by-image', async (req: Request, res: Response) => {
@@ -1838,18 +1939,18 @@ productsRouter.post('/sourcing-by-image', async (req: Request, res: Response) =>
     throw new AppError(502, 'AI 未能从图片识别出可搜索的产品，请换一张更清晰的产品图（单产品、正面照最佳）')
   }
 
-  // ② 多通道搜索 offer 链接（长短词逐个尝试，直到足够）
-  const offerUrls = await search1688OffersMultiChannel(identified.search1688)
-  if (offerUrls.length === 0) {
+  // ② 多通道搜索 offer（长短词逐个尝试，直到足够；360 snippet 自带标题与价格）
+  const hits = await search1688OffersMultiChannel(identified.search1688)
+  if (hits.length === 0) {
     throw new AppError(502, `1688 搜索「${identified.search1688[0]}」没有找到商品链接，请稍后重试或补充说明`)
   }
 
-  // ③ 并行抓 offer 详情（最多 12 个，控制耗时）
+  // ③ 组装候选商家（snippet 为主 + 详情页尽力增强；最多 12 个，控制耗时）
   const candidates = (
-    await Promise.all(offerUrls.slice(0, 12).map((u) => grabSupplierCandidate(u)))
+    await Promise.all(hits.slice(0, 12).map((h) => grabSupplierCandidate(h)))
   ).filter((c): c is SupplierCandidate => c !== null)
   if (candidates.length === 0) {
-    throw new AppError(502, '1688 商品详情抓取失败（反爬拦截），请稍后重试')
+    throw new AppError(502, '1688 商品候选组装失败，请稍后重试')
   }
 
   // ④ AI 排序（现货/定制/实力/销量/跨境/合规）
