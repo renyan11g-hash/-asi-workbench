@@ -5,10 +5,9 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
-import { AiError } from '../services/ai'
-import { callChatJson } from '../services/ai'
-import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, identifyImageProduct, rankSuppliers, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
-import type { ResearchMatch, SupplierCandidate } from '../services/workbench'
+import { AiError, callChatJson } from '../services/ai'
+import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
+import type { ResearchMatch } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
 import { buildPriceGrid } from '../services/pricing'
 import { buildGlsWorkbook } from '../services/gls-export'
@@ -1680,12 +1679,6 @@ async function search1688OffersViaSogou(query: string): Promise<string[]> {
   return text ? extractOfferUrls(text) : []
 }
 
-/** 通道③：Bing 宽搜（不限定 site:，用「1688」关键词），兜底 site: 收录不足的词；失败返回 [] */
-async function search1688OffersViaBingWide(query: string): Promise<string[]> {
-  const text = await fetchDirect(`https://cn.bing.com/search?q=${encodeURIComponent(`${query} 1688.com 详情`)}&count=30`)
-  return text ? extractOfferUrls(text) : []
-}
-
 /** 抓取一个 1688 offer 的简要信息（标题/价格/图/MOQ），复用现有多通道抓取 */
 async function grabOfferBrief(url: string): Promise<ResearchMatch | null> {
   const offerId = url.match(/offer\/(\d+)/)?.[1] ?? ''
@@ -1790,63 +1783,6 @@ productsRouter.post('/sourcing-research', async (req: Request, res: Response) =>
   })
 })
 
-// ---------- 以图找源（上传产品图片 → AI 识图 → 1688 搜商家 → 抓详情 → AI 排序） ----------
-
-/** 从 1688 页面文本提取商家实力/销量/资质信号（供 AI 排序） */
-function extractSupplierSignals(text: string): string {
-  const hits: string[] = []
-  const add = (label: string, re: RegExp) => {
-    const m = text.match(re)
-    if (m) hits.push(label + (m[1] ? `:${m[0].slice(0, 40)}` : ''))
-  }
-  // 店铺实力标签
-  if (/实力商家|实力工厂/.test(text)) hits.push('实力商家')
-  if (/超级工厂/.test(text)) hits.push('超级工厂')
-  if (/源头工厂|工厂直供|自产自销|生产厂家/.test(text)) hits.push('源头工厂')
-  if (/跨境专供|跨境专属|跨境货源/.test(text)) hits.push('跨境专供')
-  if (/现货|速发|48小时|24小时|当天发货/.test(text)) hits.push('现货速发')
-  if (/支持定制|来图定制|logo定制|定制logo|OEM|ODM/i.test(text)) hits.push('支持定制')
-  if (/一件代发/.test(text)) hits.push('一件代发')
-  // 销量信号
-  add('成交', /(?:近\d+日|近\d+个月)?(?:成交|已售|销量)[^\d]{0,6}[\d.]+\s*(?:万|千)?[件笔单]?/)
-  add('回头率', /回头率[:：]?\s*[\d.]+%?/)
-  add('复购', /复购率[:：]?\s*[\d.]+%?/)
-  // 资质/检测
-  if (/检测报告|质检报告|SGS|FDA|食品级|LFGB/.test(text)) hits.push('有检测/资质标注')
-  if (/UN38\.3|MSDS|空运鉴定/.test(text)) hits.push('电池运输报告')
-  if (/CE|FCC|UL|CPC|ASTM/i.test(text)) hits.push('认证标注')
-  // 店铺年限
-  add('店铺年限', /(?:入驻|经营|开店)[^\d]{0,4}\d+\s*年/)
-  return hits.join('；')
-}
-
-/**
- * 组装候选商家：搜索 snippet（标题+摘要+价格，实测最可靠）为主数据源，
- * 详情页抓取（移动端直连 → PC 直连 → jina）为尽力增强（成功补 MOQ/图/材质，失败不影响）。
- */
-async function grabSupplierCandidate(hit: OfferSearchHit): Promise<SupplierCandidate | null> {
-  const offerId = hit.offerId
-  if (!offerId) return null
-  const clean = `https://detail.1688.com/offer/${offerId}.html`
-  // snippet 标题形如「不锈钢餐盘304分格盘...批发-阿里巴巴」，去掉尾部站点名
-  const snippetTitle = hit.title.replace(/[-–—|｜]\s*(阿里巴巴|1688).*$/i, '').trim()
-  const snippetText = `${snippetTitle} ${hit.desc}`
-  // 详情增强（尽力而为，失败静默）
-  const g = await grab1688Mobile(offerId).catch(() => null)
-  const title = g?.sourceTitle || snippetTitle
-  if (!title) return null
-  const rawText = [title, g?.description?.slice(0, 400), g?.materialCn, g?.sizeCn, snippetText].filter(Boolean).join(' ')
-  return {
-    offerId,
-    url: clean,
-    title,
-    priceCny: g?.priceCny ?? hit.priceCny,
-    moq: g?.moq ?? null,
-    image: g?.image ?? '',
-    raw: extractSupplierSignals(rawText),
-  }
-}
-
 /** 移动端 m.1688.com 直连抓取（UA 伪装 iPhone；页面含规格 JSON 与销量信号） */
 async function grab1688Mobile(offerId: string): Promise<GrabbedFetched | null> {
   const html = await fetchDirect(`https://m.1688.com/offer/${offerId}.html`, 15000, {
@@ -1889,130 +1825,3 @@ async function grab1688Mobile(offerId: string): Promise<GrabbedFetched | null> {
     image,
   }
 }
-
-/**
- * 多通道 1688 offer 搜索（带兜底，结果越多越好）：
- * 每词并行 360 site:（结构化：标题+摘要+价格）+ 搜狗 site:（仅链接），不足再 Bing 宽搜，仍不足换下一个词。
- * 返回去重后的搜索命中列表（保序，宽泛词在前 = 相关度优先）。
- */
-async function search1688OffersMultiChannel(queries: string[]): Promise<OfferSearchHit[]> {
-  const all: OfferSearchHit[] = []
-  const seen = new Set<string>()
-  const pushUrl = (u: string, hit?: OfferSearchHit) => {
-    if (seen.has(u)) return
-    seen.add(u)
-    all.push(hit ?? { offerId: u.match(/offer\/(\d{8,})\.html/)![1], url: u, title: '', desc: '', priceCny: null })
-  }
-  for (const q of queries.slice(0, 5)) {
-    const [so, sg] = await Promise.all([search1688ViaSo360(q), search1688OffersViaSogou(q)])
-    for (const h of so) pushUrl(h.url, h)
-    for (const u of sg) pushUrl(u)
-    if (all.length < 4) {
-      const wide = await search1688OffersViaBingWide(q)
-      for (const u of wide) pushUrl(u)
-    }
-    if (all.length >= 8) break // 足够了，停止后续词
-  }
-  return all
-}
-
-/**
- * POST /sourcing-by-image —— 以图找源：
- * ① AI 识图（1-6 张图，产品识别 + 1688 中文搜索词长短混合 + 合规要点）
- * ② 多通道搜 offer 链接（360 site: + 搜狗 site: 并行 → Bing 宽搜，逐词降级）
- * ③ 并行抓 offer 详情（移动端直连 → PC 直连 → jina；标题/价格/MOQ/图 + 实力/销量/资质信号）
- * ④ AI 按现货/定制/实力/销量/跨境/合规打分排序
- */
-productsRouter.post('/sourcing-by-image', async (req: Request, res: Response) => {
-  const body = z
-    .object({
-      images: z.array(z.string().min(32)).min(1).max(6),
-      notes: z.string().optional(),
-      budgetCny: z.coerce.number().nullable().optional(),
-    })
-    .parse(req.body ?? {})
-  const settings = loadSettings()
-
-  // ① AI 识图（唯一一次视觉调用，支持多图）
-  const identified = await runAi(() => identifyImageProduct(body.images, settings, body.notes))
-  if (!identified.productName || identified.search1688.length === 0) {
-    throw new AppError(502, 'AI 未能从图片识别出可搜索的产品，请换一张更清晰的产品图（单产品、正面照最佳）')
-  }
-
-  // ② 多通道搜索 offer（长短词逐个尝试，直到足够；360 snippet 自带标题与价格）
-  const hits = await search1688OffersMultiChannel(identified.search1688)
-  if (hits.length === 0) {
-    throw new AppError(502, `1688 搜索「${identified.search1688[0]}」没有找到商品链接，请稍后重试或补充说明`)
-  }
-
-  // ③ 组装候选商家（snippet 为主 + 详情页尽力增强；最多 12 个，控制耗时）
-  const candidates = (
-    await Promise.all(hits.slice(0, 12).map((h) => grabSupplierCandidate(h)))
-  ).filter((c): c is SupplierCandidate => c !== null)
-  if (candidates.length === 0) {
-    throw new AppError(502, '1688 商品候选组装失败，请稍后重试')
-  }
-
-  // ④ AI 排序（现货/定制/实力/销量/跨境/合规）
-  const rank = await runAi(() =>
-    rankSuppliers(
-      {
-        productName: identified.productName,
-        compliance: identified.compliance,
-        budgetCny: body.budgetCny,
-        notes: body.notes,
-        candidates,
-      },
-      settings
-    )
-  )
-
-  res.json({
-    ok: true,
-    identified,
-    candidatesCount: candidates.length,
-    ...rank,
-  })
-})
-
-/**
- * POST /sourcing-by-image/chat —— 以图找源后续对话：
- * AI 带着识图结果 + 排序结果回答追问（如"第 2 家为什么分低""帮我对比前 3 家"）。
- */
-productsRouter.post('/sourcing-by-image/chat', async (req: Request, res: Response) => {
-  const body = z
-    .object({
-      context: z.object({
-        identified: z.unknown(),
-        ranked: z.array(z.unknown()).default([]),
-      }),
-      messages: z
-        .array(
-          z.object({
-            role: z.enum(['user', 'assistant']),
-            content: z.string().min(1),
-          })
-        )
-        .min(1)
-        .max(30),
-    })
-    .parse(req.body ?? {})
-  const settings = loadSettings()
-
-  const system = `你是 1688 以图找源助手。用户刚完成一次以图找源：下面是识图结果与商家排序结果（JSON）。
-基于这些数据回答追问：对比商家、解释评分理由、分析合规风险、建议谈判要点、推荐更适合的方向等。
-要求：中文回答，简洁务实；引用具体商家时用其标题或序号；数据里没有的信息要说明需向商家核实，不要编造。
-
-【识图结果】
-${JSON.stringify(body.context.identified)}
-
-【商家排序】
-${JSON.stringify(body.context.ranked)}`
-
-  const reply = await runAi(() =>
-    callChatJson<Record<string, unknown>>(settings, system, body.messages.map((m) => `${m.role === 'user' ? '用户' : '助手'}: ${m.content}`).join('\n'), 0.6).then(
-      (r) => String(r.reply ?? r.content ?? JSON.stringify(r))
-    )
-  )
-  res.json({ ok: true, reply })
-})

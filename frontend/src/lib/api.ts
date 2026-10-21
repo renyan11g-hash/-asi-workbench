@@ -376,52 +376,6 @@ export const api = {
     return data
   },
 
-  /** 以图找源后续对话：AI 带着识图与排序结果回答追问 */
-  async sourcingImageChat(payload: {
-    context: { identified: unknown; ranked: unknown[] }
-    messages: Array<{ role: 'user' | 'assistant'; content: string }>
-  }): Promise<{ ok: boolean; reply: string }> {
-    const { data } = await apiClient.post('/products/sourcing-by-image/chat', payload, LONG_TIMEOUT)
-    return data
-  },
-
-  /** 以图找源：上传产品图片（1-6 张，base64 dataURL 或 https URL）→ AI 识图 → 1688 多通道搜商家 → AI 按现货/定制/实力/销量/跨境/合规排序 */
-  async sourcingByImage(payload: {
-    images: string[]
-    notes?: string
-    budgetCny?: number
-  }): Promise<{
-    ok: boolean
-    identified: {
-      productName: string
-      productEn: string
-      category: string
-      features: string[]
-      search1688: string[]
-      compliance: string[]
-      keywords: string[]
-    }
-    candidatesCount: number
-    ranked: Array<{
-      offerId: string
-      url: string
-      title: string
-      priceCny: number | null
-      moq: number | null
-      image: string
-      score: number
-      verdict: string
-      reasons: string[]
-      risks: string[]
-      complianceNote: string
-    }>
-    summary: string
-    tips: string[]
-  }> {
-    const { data } = await apiClient.post('/products/sourcing-by-image', payload, LONG_TIMEOUT)
-    return data
-  },
-
   // ---------- 服务端草稿（选品评估防丢失） ----------
   async listDrafts(): Promise<
     Array<{ id: string; title: string; createdAt: string; updatedAt: string }>
