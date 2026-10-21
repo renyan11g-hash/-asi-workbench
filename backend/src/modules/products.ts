@@ -1568,7 +1568,21 @@ async function buildImprintQuery(
   return kw && !/[\u4e00-\u9fa5]/.test(kw) ? kw : 'best selling promotional products'
 }
 
-/** jina 渲染抓取 Bing 搜索结果（site:detail.1688.com 限定），提取具体 1688 offer 链接；失败返回 [] */
+/** 从任意文本提取 1688 offer 链接（兼容 detail/m/redirect 形式，去重保序） */
+function extractOfferUrls(text: string): string[] {
+  const urls: string[] = []
+  const seen = new Set<string>()
+  for (const m of text.matchAll(/offer\/(\d{8,})\.html/g)) {
+    const u = `https://detail.1688.com/offer/${m[1]}.html`
+    if (!seen.has(u)) {
+      seen.add(u)
+      urls.push(u)
+    }
+  }
+  return urls
+}
+
+/** 通道①：jina 渲染抓取 Bing 搜索结果（site:detail.1688.com 限定），提取具体 1688 offer 链接；失败返回 [] */
 async function search1688OffersViaBing(query: string): Promise<string[]> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 25000)
@@ -1579,18 +1593,46 @@ async function search1688OffersViaBing(query: string): Promise<string[]> {
       headers: { 'X-Return-Format': 'text' },
     })
     if (!r.ok) return []
+    return extractOfferUrls(await r.text())
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 通道②：Bing 宽搜（不限定 site:，用「1688」关键词），兜底 site: 收录不足的词；失败返回 [] */
+async function search1688OffersViaBingWide(query: string): Promise<string[]> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 25000)
+  try {
+    const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(`${query} 1688.com 详情`)}&count=20`
+    const r = await fetch('https://r.jina.ai/' + bingUrl, {
+      signal: ctrl.signal,
+      headers: { 'X-Return-Format': 'text' },
+    })
+    if (!r.ok) return []
+    return extractOfferUrls(await r.text())
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 通道③：jina 直抓 1688 搜索结果页（GBK 编码 PC 版 selloffer 页），最接近站内真实搜索；失败返回 [] */
+async function search1688ViaJinaSearchPage(query: string): Promise<string[]> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 45000)
+  try {
+    const r = await fetch('https://r.jina.ai/' + build1688SearchUrl(query), {
+      signal: ctrl.signal,
+      headers: { 'X-Return-Format': 'text' },
+    })
+    if (!r.ok) return []
     const text = await r.text()
-    // 提取 offer 链接（去重，保序）
-    const urls: string[] = []
-    const seen = new Set<string>()
-    for (const m of text.matchAll(/https?:\/\/detail\.1688\.com\/offer\/(\d+)\.html/g)) {
-      const u = `https://detail.1688.com/offer/${m[1]}.html`
-      if (!seen.has(u)) {
-        seen.add(u)
-        urls.push(u)
-      }
-    }
-    return urls
+    if (text.length < 300) return []
+    return extractOfferUrls(text)
   } catch {
     return []
   } finally {
@@ -1747,40 +1789,57 @@ async function grabSupplierCandidate(url: string): Promise<SupplierCandidate | n
 }
 
 /**
+ * 多通道 1688 offer 搜索（带兜底，结果越多越好）：
+ * 第 1 词：site: → 宽搜 → jina 直抓搜索页；若仍不足 4 条，继续用下一个词。
+ * 返回去重后的 offer 链接列表（保序，宽泛词在前 = 相关度优先）。
+ */
+async function search1688OffersMultiChannel(queries: string[]): Promise<string[]> {
+  const all: string[] = []
+  const seen = new Set<string>()
+  const pushAll = (list: string[]) => {
+    for (const u of list) {
+      if (!seen.has(u)) {
+        seen.add(u)
+        all.push(u)
+      }
+    }
+  }
+  for (const q of queries.slice(0, 5)) {
+    // 三通道逐词降级；第一轮并行 site: + 搜索页直抓（最快的两条路），不够再宽搜
+    const [site, page] = await Promise.all([search1688OffersViaBing(q), search1688ViaJinaSearchPage(q)])
+    pushAll(site)
+    pushAll(page)
+    if (all.length < 4) pushAll(await search1688OffersViaBingWide(q))
+    if (all.length >= 8) break // 足够了，停止后续词
+  }
+  return all
+}
+
+/**
  * POST /sourcing-by-image —— 以图找源：
- * ① AI 识图（产品识别 + 1688 中文搜索词 + 合规要点）
- * ② 并行用多个搜索词经 Bing site:detail.1688.com 搜 offer 链接
+ * ① AI 识图（1-6 张图，产品识别 + 1688 中文搜索词长短混合 + 合规要点）
+ * ② 多通道搜 offer 链接（Bing site: → jina 直抓 1688 搜索页 → Bing 宽搜，逐词降级）
  * ③ 并行抓 offer 详情（标题/价格/MOQ/图 + 实力/销量/资质信号）
  * ④ AI 按现货/定制/实力/销量/跨境/合规打分排序
  */
 productsRouter.post('/sourcing-by-image', async (req: Request, res: Response) => {
   const body = z
     .object({
-      images: z.array(z.string().min(32)).min(1).max(3),
+      images: z.array(z.string().min(32)).min(1).max(6),
       notes: z.string().optional(),
       budgetCny: z.coerce.number().nullable().optional(),
     })
     .parse(req.body ?? {})
   const settings = loadSettings()
 
-  // ① AI 识图（唯一一次视觉调用）
+  // ① AI 识图（唯一一次视觉调用，支持多图）
   const identified = await runAi(() => identifyImageProduct(body.images, settings, body.notes))
   if (!identified.productName || identified.search1688.length === 0) {
     throw new AppError(502, 'AI 未能从图片识别出可搜索的产品，请换一张更清晰的产品图（单产品、正面照最佳）')
   }
 
-  // ② 多搜索词并行搜 1688 offer 链接（Bing site: 通道）
-  const urlLists = await Promise.all(identified.search1688.slice(0, 4).map((q) => search1688OffersViaBing(q)))
-  const offerUrls: string[] = []
-  const seenOffer = new Set<string>()
-  for (const list of urlLists) {
-    for (const u of list) {
-      if (!seenOffer.has(u)) {
-        seenOffer.add(u)
-        offerUrls.push(u)
-      }
-    }
-  }
+  // ② 多通道搜索 offer 链接（长短词逐个尝试，直到足够）
+  const offerUrls = await search1688OffersMultiChannel(identified.search1688)
   if (offerUrls.length === 0) {
     throw new AppError(502, `1688 搜索「${identified.search1688[0]}」没有找到商品链接，请稍后重试或补充说明`)
   }
@@ -1813,4 +1872,46 @@ productsRouter.post('/sourcing-by-image', async (req: Request, res: Response) =>
     candidatesCount: candidates.length,
     ...rank,
   })
+})
+
+/**
+ * POST /sourcing-by-image/chat —— 以图找源后续对话：
+ * AI 带着识图结果 + 排序结果回答追问（如"第 2 家为什么分低""帮我对比前 3 家"）。
+ */
+productsRouter.post('/sourcing-by-image/chat', async (req: Request, res: Response) => {
+  const body = z
+    .object({
+      context: z.object({
+        identified: z.unknown(),
+        ranked: z.array(z.unknown()).default([]),
+      }),
+      messages: z
+        .array(
+          z.object({
+            role: z.enum(['user', 'assistant']),
+            content: z.string().min(1),
+          })
+        )
+        .min(1)
+        .max(30),
+    })
+    .parse(req.body ?? {})
+  const settings = loadSettings()
+
+  const system = `你是 1688 以图找源助手。用户刚完成一次以图找源：下面是识图结果与商家排序结果（JSON）。
+基于这些数据回答追问：对比商家、解释评分理由、分析合规风险、建议谈判要点、推荐更适合的方向等。
+要求：中文回答，简洁务实；引用具体商家时用其标题或序号；数据里没有的信息要说明需向商家核实，不要编造。
+
+【识图结果】
+${JSON.stringify(body.context.identified)}
+
+【商家排序】
+${JSON.stringify(body.context.ranked)}`
+
+  const reply = await runAi(() =>
+    callChatJson<Record<string, unknown>>(settings, system, body.messages.map((m) => `${m.role === 'user' ? '用户' : '助手'}: ${m.content}`).join('\n'), 0.6).then(
+      (r) => String(r.reply ?? r.content ?? JSON.stringify(r))
+    )
+  )
+  res.json({ ok: true, reply })
 })

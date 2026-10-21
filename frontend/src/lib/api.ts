@@ -376,7 +376,16 @@ export const api = {
     return data
   },
 
-  /** 以图找源：上传产品图片（base64 dataURL）→ AI 识图 → 1688 搜商家 → AI 按现货/定制/实力/销量/跨境/合规排序 */
+  /** 以图找源后续对话：AI 带着识图与排序结果回答追问 */
+  async sourcingImageChat(payload: {
+    context: { identified: unknown; ranked: unknown[] }
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  }): Promise<{ ok: boolean; reply: string }> {
+    const { data } = await apiClient.post('/products/sourcing-by-image/chat', payload, LONG_TIMEOUT)
+    return data
+  },
+
+  /** 以图找源：上传产品图片（1-6 张，base64 dataURL 或 https URL）→ AI 识图 → 1688 多通道搜商家 → AI 按现货/定制/实力/销量/跨境/合规排序 */
   async sourcingByImage(payload: {
     images: string[]
     notes?: string

@@ -615,29 +615,29 @@ Rules:
 }
 
 /**
- * 以图找源 ①：AI 识图 —— 从产品图片识别产品、生成 1688 中文搜索词、
+ * 以图找源 ①：AI 识图 —— 从产品图片（1-6 张）识别产品、生成 1688 中文搜索词、
  * 给出该产品的合规要点（接触食品→FDA/食品级检测报告；带电池→UL/UN38.3/FCC；
  * 儿童相关→CPC/ASTM；接触皮肤→加州 65 等）。
  */
 export function buildImageIdentifyPrompt(input: { notes?: string }) {
   const system = `You are a product-sourcing expert for the US promotional products (ASI) market.
-You receive ONE product photo. Identify the product and produce practical Chinese 1688.com search queries to find the SAME product from suppliers.
+You receive product photo(s) (1-6 images of the SAME product: main shot, angles, details, packaging, use scenes). Identify the product and produce practical Chinese 1688.com search queries to find the SAME or SIMILAR products from suppliers.
 Respond with STRICT JSON only (no markdown, no commentary):
 {
   "productName": "<Chinese product name, e.g. 竹木盖双层饭盒>",
   "productEn": "<short English name, e.g. bamboo lid bento box>",
   "category": "<one GLS/ASI category in English, e.g. FOOD CONTAINERS>",
   "features": ["<Chinese: 2-5 key visual features: material, structure, color, use case>"],
-  "search1688": ["<3-4 practical Chinese 1688 search queries for THIS product, e.g. 竹盖饭盒 木质 双层 保温 饭盒工厂 — concrete product terms, never English>"],
+  "search1688": ["<5 practical Chinese 1688 search queries, MIXED lengths: 1-2 BROAD terms (2-4 chars, e.g. 饭盒 / 便当盒), 2-3 MEDIUM terms (product+material, e.g. 竹盖饭盒 / 双层便当盒), 1-2 SPECIFIC terms (full features, e.g. 竹木盖双层分格饭盒). Broad terms guarantee results; specific terms guarantee relevance. Concrete Chinese only, never English>"],
   "compliance": ["<Chinese: 0-4 compliance/certification points for selling this in the US, e.g. 接触食品需 FDA 食品级检测报告 / 带电池需 UN38.3 空运报告 / 儿童用品需 CPC 证书 / 无特殊合规要求>"],
   "keywords": ["<Chinese: 2-4 filter keywords the buyer cares about, e.g. 可定制logo 现货 跨境专属>"]
 }
 Rules:
-- search1688 queries MUST be concrete Chinese product terms a 1688 supplier would list under (material + product + variant, e.g. 不锈钢吸管杯 保温). Never English.
+- search1688: order from BROAD to SPECIFIC. Broad queries like 饭盒 or 便当盒 will definitely have results on 1688; the engine tries them in order until enough results found. Never use overly long 4+ word combinations as the FIRST query.
 - compliance: think about food contact (FDA food-grade test report), batteries (UN38.3, UL, FCC), children (CPC/ASTM F963), skin contact (California Prop 65), electronics (FCC). If none apply, output 无特殊合规要求.
-- If the photo contains multiple variants, identify the MAIN product shown.`
+- If multiple variants appear across photos, identify the MAIN product and mention variants in features.`
 
-  const user = `Identify this product photo for 1688 sourcing.${input.notes ? `\nBuyer notes: ${input.notes}` : ''}`
+  const user = `Identify this product for 1688 sourcing based on the photo(s).${input.notes ? `\nBuyer notes: ${input.notes}` : ''}`
 
   return { system, user }
 }
