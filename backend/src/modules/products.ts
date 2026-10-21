@@ -1312,12 +1312,15 @@ interface ImprintCard {
   shipDays: string
 }
 
-/** 直连抓取 4imprint 搜索页 HTML（Render 海外 IP 可行；fetch 默认跟随 301 → /search/search） */
-async function fetch4imprintHtml(query: string): Promise<string> {
+/**
+ * 直连抓取 4imprint 产品详情页（静态 HTML，og: 标签齐全）：
+ * og:title / og:image / 价格列表（量越大越便宜，min-max 即区间）/ data-rating。
+ */
+async function fetchImprintDetail(alias: string): Promise<ImprintCard | null> {
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 20000)
+  const timer = setTimeout(() => ctrl.abort(), 15000)
   try {
-    const r = await fetch(`https://www.4imprint.com/search?q=${encodeURIComponent(query)}`, {
+    const r = await fetch(`https://www.4imprint.com/product/${alias}`, {
       signal: ctrl.signal,
       headers: {
         'User-Agent':
@@ -1326,56 +1329,243 @@ async function fetch4imprintHtml(query: string): Promise<string> {
         'Accept-Language': 'en-US,en;q=0.9',
       },
     })
-    if (!r.ok) throw new AppError(502, `4imprint 搜索页返回 ${r.status}，请稍后重试`)
+    if (!r.ok) return null
     const html = await r.text()
-    if (html.length < 5000) throw new AppError(502, '4imprint 搜索页内容异常（可能被反爬拦截），请稍后重试')
-    return html
-  } catch (err) {
-    if (err instanceof AppError) throw err
-    throw new AppError(502, '4imprint 搜索页抓取失败（网络超时或被拦截），请稍后重试')
+    const name = decodeEntities(html.match(/og:title["']\s*content=["']([^"']+)["']/i)?.[1] ?? '').trim()
+    if (!name) return null
+    const image = html.match(/og:image["']\s*content=["']([^"']+)["']/i)?.[1] ?? ''
+    const rating = Number(html.match(/data-rating="([\d.]+)"/)?.[1] ?? '') || null
+    // 详情页价格从高到低排列（量越大越便宜），min/max 即价格区间
+    const prices = [...html.matchAll(/\$([\d]{1,3}(?:\.\d{1,2})?)/g)]
+      .map((m) => Number(m[1]))
+      .filter((n) => n >= 0.1 && n <= 500)
+    const priceFrom = prices.length ? Math.min(...prices) : null
+    const priceTo = prices.length ? Math.max(...prices) : null
+    return {
+      name,
+      url: `https://www.4imprint.com/product/${alias}`,
+      image,
+      priceFrom,
+      priceTo,
+      rating,
+      category: '',
+      orderMin: '',
+      shipDays: '',
+    }
+  } catch {
+    return null
   } finally {
     clearTimeout(timer)
   }
 }
 
-/** 解析 4imprint 搜索页产品卡片：data-name/data-alias/data-price 锚点 + itemPrice/orderMin/shipDays/ratingStars2020 */
-function parse4imprintCards(html: string): ImprintCard[] {
-  const cards: ImprintCard[] = []
+/** 从 jina 渲染文本 / Bing 结果中提取 4imprint 产品 alias（去重保序） */
+function extractImprintAliases(text: string): string[] {
+  const aliases: string[] = []
   const seen = new Set<string>()
-  // 锚点：<a ... data-name="..." data-alias="..." data-price="0.3800" ...>，后跟 img 与价格/起订/评分区块
-  const anchorRe = /<a\b[^>]*\bdata-name="([^"]+)"[^>]*\bdata-alias="([^"]+)"[^>]*\bdata-price="([\d.]+)"[^>]*>([\s\S]{0,2500}?)(?=<a\b[^>]*\bdata-name=|<\/li>|<\/ul>|<\/section>|$)/gi
-  for (const m of html.matchAll(anchorRe)) {
-    const name = decodeEntities(m[1]).trim()
-    const alias = m[2].trim()
-    if (!name || !alias || seen.has(alias)) continue
-    const chunk = m[4]
-    // 卡片内首张产品图（cdn.4imprint.com/prod/250/xxx.webp）
-    const img = chunk.match(/cdn\.4imprint\.com\/prod\/\d+\/[\w.-]+\.(?:webp|jpg|jpeg|png)/i)?.[0] ?? ''
-    // "Prices from $0.38 to $0.57" → 价格区间
-    const priceTxt = chunk.match(/Prices from\s*\$([\d.]+)(?:\s*to\s*\$([\d.]+))?/i)
-    const priceFrom = priceTxt ? Number(priceTxt[1]) : Number(m[3]) || null
-    const priceTo = priceTxt?.[2] ? Number(priceTxt[2]) : priceFrom
-    // 评分 data-rating="4.2"
-    const ratingTxt = chunk.match(/data-rating="([\d.]+)"/)
-    const rating = ratingTxt ? Number(ratingTxt[1]) : null
-    // "Order as few as 500" / "Ships within 3 days"
-    const orderMin = decodeEntities(chunk.match(/orderMin[^>]*>([^<]{1,60})</i)?.[1] ?? '').trim()
-    const shipDays = decodeEntities(chunk.match(/shipDays[^>]*>([^<]{1,60})</i)?.[1] ?? '').trim()
-    cards.push({
-      name,
-      url: `https://www.4imprint.com/product/${alias}`,
-      image: img ? `https://${img}` : '',
-      priceFrom,
-      priceTo,
-      rating,
-      category: decodeEntities(m[0].match(/data-category="([^"]*)"/)?.[1] ?? '').trim(),
-      orderMin,
-      shipDays,
-    })
+  for (const m of text.matchAll(/4imprint\.com\/product\/([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/g)) {
+    const alias = m[1]
+    // 排除明显非产品路径（如 /product/ 索引页）
+    if (!alias || alias.length < 3 || seen.has(alias)) continue
     seen.add(alias)
-    if (cards.length >= 24) break
+    aliases.push(alias)
   }
-  return cards
+  return aliases
+}
+
+/**
+ * 通道①（主）：jina 渲染 4imprint 搜索页。
+ * 4imprint 的 /search?q= 是 JS 渲染壳页面（静态 HTML 忽略搜索词、返回默认推荐列表），
+ * 必须经 jina 渲染集群执行 JS 后才能拿到真实搜索结果（Render 端 jina 已验证可用）。
+ */
+async function fetch4imprintViaJina(query: string): Promise<string[]> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 40000)
+  try {
+    const url = `https://www.4imprint.com/search?q=${encodeURIComponent(query)}&sortby=bestselling`
+    const r = await fetch('https://r.jina.ai/' + url, {
+      signal: ctrl.signal,
+      headers: { 'X-Return-Format': 'text' },
+    })
+    if (!r.ok) return []
+    return extractImprintAliases(await r.text())
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 通道②（兜底）：jina 渲染 Bing 站内搜索（site:4imprint.com/product），提取产品 alias */
+async function fetch4imprintViaBing(query: string): Promise<string[]> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 30000)
+  try {
+    const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(`site:4imprint.com/product ${query}`)}&count=20`
+    const r = await fetch('https://r.jina.ai/' + bingUrl, {
+      signal: ctrl.signal,
+      headers: { 'X-Return-Format': 'text' },
+    })
+    if (!r.ok) return []
+    return extractImprintAliases(await r.text())
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 中文关键词 → 4imprint 英文搜索词内置词典（零 AI 调用，毫秒级）。
+ * 覆盖常见促销品品类；未命中的词才走 AI 翻译兜底。
+ */
+const KEYWORD_EN_DICT: Array<[RegExp, string]> = [
+  [/数据线|充电线/, 'charging cable'],
+  [/充电宝/, 'power bank'],
+  [/无线充/, 'wireless charger'],
+  [/耳机/, 'earbuds'],
+  [/音箱|音响/, 'bluetooth speaker'],
+  [/手机支架|手机座|手机托/, 'phone stand'],
+  [/U盘|优盘|闪存/, 'usb flash drive'],
+  [/围裙/, 'apron'],
+  [/帆布袋|帆布包|托特包/, 'canvas tote bag'],
+  [/手提袋|购物袋|袋子/, 'tote bag'],
+  [/双肩包|背包/, 'backpack'],
+  [/保温杯|保温壶|焖烧/, 'insulated tumbler'],
+  [/吸管杯/, 'tumbler with straw'],
+  [/水杯|水瓶|水壶/, 'water bottle'],
+  [/马克杯|咖啡杯|杯子/, 'coffee mug'],
+  [/钥匙扣|钥匙链/, 'keychain'],
+  [/挂绳|证件带|吊绳/, 'lanyard'],
+  [/棒球帽|鸭舌帽|帽子|帽/, 'cap'],
+  [/T恤|文化衫|polo衫/i, 't-shirt'],
+  [/雨伞|阳伞|伞/, 'umbrella'],
+  [/钢笔|圆珠笔|签字笔|笔/, 'pen'],
+  [/笔记本|记事本|本子/, 'notebook'],
+  [/贴纸/, 'sticker'],
+  [/冰箱贴|磁贴/, 'magnet'],
+  [/毛巾|浴巾/, 'towel'],
+  [/杯垫/, 'coaster'],
+  [/餐垫|桌垫/, 'placemat'],
+  [/开瓶器/, 'bottle opener'],
+  [/保温袋|冰包|午餐袋|冷藏袋/, 'cooler bag'],
+  [/野餐垫|野餐毯/, 'picnic blanket'],
+  [/毛毯|毯子|盖毯/, 'blanket'],
+  [/折叠凳|折叠椅|马扎/, 'folding chair'],
+  [/手电筒|电筒|照明/, 'flashlight'],
+  [/风扇|扇子/, 'hand fan'],
+  [/鼠标垫/, 'mousepad'],
+  [/徽章|胸针|勋章/, 'lapel pin'],
+  [/口罩/, 'face mask'],
+  [/防晒/, 'sunscreen'],
+  [/消毒|洗手液/, 'hand sanitizer'],
+  [/工具|扳手|螺丝刀/, 'tool kit'],
+  [/野餐/, 'picnic'],
+  [/瑜伽|健身|运动/, 'fitness'],
+  [/宠物|狗|猫/, 'pet'],
+  [/玩具/, 'toy'],
+  [/解压|捏捏/, 'stress ball'],
+  [/收纳|整理/, 'organizer'],
+  [/钱包|卡包/, 'wallet'],
+  [/腕带|手环/, 'wristband'],
+  [/冰袖|袖套/, 'arm sleeves'],
+  [/坐垫|靠垫|抱枕/, 'cushion'],
+  [/行李牌|登机牌/, 'luggage tag'],
+  [/化妆包|洗漱包/, 'cosmetic bag'],
+  [/雨衣|雨披/, 'rain poncho'],
+  [/太阳镜|墨镜/, 'sunglasses'],
+  [/飞盘/, 'frisbee'],
+  [/跳绳/, 'jump rope'],
+  [/冰袋|冰垫/, 'ice pack'],
+  [/砧板|菜板/, 'cutting board'],
+  [/烧烤|烤肉/, 'bbq'],
+  [/野营|露营/, 'camping'],
+]
+
+/** GLS 英文类目 → 4imprint 搜索词映射（类目本身是英文，直接映射更精准） */
+const CATEGORY_QUERY_DICT: Array<[RegExp, string]> = [
+  [/apron/i, 'apron'],
+  [/tote|bag|pouch|sack/i, 'tote bag'],
+  [/mug|cup|tumbler|drinkware|bottle/i, 'tumbler'],
+  [/pen|pencil|marker|writing/i, 'pen'],
+  [/notebook|journal|notepad|pad/i, 'notebook'],
+  [/keychain|key tag|keyring/i, 'keychain'],
+  [/lanyard/i, 'lanyard'],
+  [/umbrella/i, 'umbrella'],
+  [/cap|hat|visor|headwear|bandana/i, 'cap'],
+  [/shirt|tee|apparel|polo|hoodie|jacket|wearable/i, 't-shirt'],
+  [/cable|charging|charger|tech|electronic|usb|computer/i, 'charging cable'],
+  [/earbud|headphone|audio|music/i, 'earbuds'],
+  [/speaker/i, 'bluetooth speaker'],
+  [/phone|mobile/i, 'phone stand'],
+  [/power/i, 'power bank'],
+  [/sticker|decal/i, 'sticker'],
+  [/magnet/i, 'magnet'],
+  [/towel/i, 'towel'],
+  [/blanket|throw|quilt/i, 'blanket'],
+  [/chair|stool|seat|folding/i, 'folding chair'],
+  [/fan/i, 'hand fan'],
+  [/flashlight|light|lantern|candle/i, 'flashlight'],
+  [/tool|hardware|measure|level|screwdriver/i, 'tool kit'],
+  [/first aid|medical|health|safety/i, 'first aid kit'],
+  [/kitchen|cook|barbecue|bbq|grill|food/i, 'bbq'],
+  [/picnic|outdoor|camping|beach/i, 'picnic'],
+  [/sport|fitness|gym|exercise|yoga|game|toy|recreation/i, 'fitness'],
+  [/pet|dog|cat|animal/i, 'pet'],
+  [/wallet|card holder/i, 'wallet'],
+  [/backpack|luggage|travel/i, 'backpack'],
+  [/cooler|ice/i, 'cooler bag'],
+  [/straw/i, 'reusable straw'],
+  [/opener/i, 'bottle opener'],
+  [/sun|eyewear|glass/i, 'sunglasses'],
+  [/rain|poncho/i, 'rain poncho'],
+  [/glove|mitt/i, 'gloves'],
+  [/sock/i, 'socks'],
+  [/badge|pin|lapel|award|trophy|medal/i, 'lapel pin'],
+  [/flag|banner|sign|display/i, 'flag'],
+  [/calendar|planner|calendar/i, 'planner'],
+  [/sticky|note|memo/i, 'sticky notes'],
+  [/desk|office|stationery|executive/i, 'desk accessories'],
+  [/clock|watch/i, 'clock'],
+  [/candy|mint|food/i, 'food gifts'],
+  [/auto|car|vehicle|automotive/i, 'car accessories'],
+  [/garden|plant|seed/i, 'garden'],
+  [/3-d|3d|novelty/i, 'novelty'],
+]
+
+/**
+ * 构建 4imprint 英文搜索词（毫秒级，几乎不调 AI）：
+ * ① 中文关键词词典命中 → 用词典；② GLS 英文类目映射命中 → 用映射；
+ * ③ 都未命中 → AI 翻译兜底（仅此时调 AI）。
+ */
+async function buildImprintQuery(
+  body: { category?: string; keywords?: string },
+  settings: ReturnType<typeof loadSettings>
+): Promise<string> {
+  const kw = (body.keywords ?? '').trim()
+  const cat = (body.category ?? '').trim()
+  if (kw) {
+    for (const [re, en] of KEYWORD_EN_DICT) {
+      if (re.test(kw)) return en
+    }
+  }
+  if (cat) {
+    for (const [re, en] of CATEGORY_QUERY_DICT) {
+      if (re.test(cat)) return en
+    }
+    // 类目未命中映射：类目本身是英文，取主词（去连字符后缀）直接搜
+    const main = cat.split(/[-–]/)[0].trim()
+    if (main.length >= 3 && /^[A-Za-z0-9 &]+$/.test(main)) return main.toLowerCase()
+  }
+  if (kw && /[\u4e00-\u9fa5]/.test(kw)) {
+    try {
+      const en = await runAi(() => researchQueryEn(kw, settings))
+      if (en) return en
+    } catch {
+      /* AI 翻译失败继续兜底 */
+    }
+  }
+  return kw && !/[\u4e00-\u9fa5]/.test(kw) ? kw : 'best selling promotional products'
 }
 
 /** jina 渲染抓取 Bing 搜索结果（site:detail.1688.com 限定），提取具体 1688 offer 链接；失败返回 [] */
@@ -1436,23 +1626,32 @@ productsRouter.post('/sourcing-research', async (req: Request, res: Response) =>
     .parse(req.body ?? {})
   const settings = loadSettings()
 
-  // ① 中文类目/关键词 → 4imprint 英文搜索词（AI 翻译；失败用类目原文兜底）
+  // ① 构建 4imprint 英文搜索词（内置词典毫秒级命中，仅未命中才调 AI 翻译）
   const zhText = [body.category, body.keywords].filter(Boolean).join(' ') || 'promotional products'
-  let queryEn = zhText
-  try {
-    queryEn = (await runAi(() => researchQueryEn(zhText, settings))) || zhText
-  } catch {
-    /* 翻译失败不阻断，用原文搜索 */
+  const queryEn = await buildImprintQuery(body, settings)
+
+  // ② 双通道并行抓 4imprint 产品 alias：jina 渲染搜索页（主）+ Bing site: 站内搜索（兜底）
+  const [jinaAliases, bingAliases] = await Promise.all([fetch4imprintViaJina(queryEn), fetch4imprintViaBing(queryEn)])
+  const merged: string[] = []
+  const seenAlias = new Set<string>()
+  for (const a of [...jinaAliases, ...bingAliases]) {
+    if (!seenAlias.has(a)) {
+      seenAlias.add(a)
+      merged.push(a)
+    }
+  }
+  if (merged.length === 0) {
+    throw new AppError(502, `4imprint 搜索「${queryEn}」没有找到产品（渲染抓取与站内搜索均未命中），请稍后重试或换个类目`)
   }
 
-  // ② 抓取 4imprint 搜索页 → 解析热销产品卡片
-  const html = await fetch4imprintHtml(queryEn)
-  const asiProducts = parse4imprintCards(html)
+  // ③ 并行抓产品详情页（静态 HTML，og: 标签齐全；最多 12 个，控制耗时）
+  const detailResults = await Promise.all(merged.slice(0, 12).map((a) => fetchImprintDetail(a)))
+  const asiProducts: ImprintCard[] = detailResults.filter((d): d is ImprintCard => d !== null)
   if (asiProducts.length === 0) {
-    throw new AppError(502, `4imprint 搜索「${queryEn}」没有解析到产品，请换个类目或关键词重试`)
+    throw new AppError(502, `4imprint 产品详情抓取失败（共 ${merged.length} 个候选），请稍后重试`)
   }
 
-  // ③ AI 分析热销产品：挑对标品 + 分析卖点 + 生成 1688 中文搜索词
+  // ④ AI 分析热销产品：挑对标品 + 分析卖点 + 生成 1688 中文搜索词（唯一一次 AI 调用）
   const research = await runAi(() =>
     researchSourcing(
       {
@@ -1466,22 +1665,23 @@ productsRouter.post('/sourcing-research', async (req: Request, res: Response) =>
     )
   )
 
-  // ④ 每个方向：Bing site:detail.1688.com 搜具体 offer → 抓详情（标题/价格/图/MOQ）
+  // ⑤ 每个方向并行：Bing site:detail.1688.com 搜 offer → 并行抓详情（标题/价格/图/MOQ）
   const directions = await Promise.all(
     research.directions.map(async (d) => {
-      const matches: ResearchMatch[] = []
-      const seen = new Set<string>()
-      for (const q of d.search1688.slice(0, 2)) {
-        const urls = await search1688OffersViaBing(q)
-        for (const u of urls.slice(0, 3)) {
-          if (seen.has(u)) continue
-          seen.add(u)
-          const brief = await grabOfferBrief(u)
-          if (brief) matches.push(brief)
-          if (matches.length >= 3) break
+      // 方向内也并行：两个搜索词同时搜
+      const urlLists = await Promise.all(d.search1688.slice(0, 2).map((q) => search1688OffersViaBing(q)))
+      const offerUrls: string[] = []
+      const seenOffer = new Set<string>()
+      for (const list of urlLists) {
+        for (const u of list.slice(0, 4)) {
+          if (!seenOffer.has(u)) {
+            seenOffer.add(u)
+            offerUrls.push(u)
+          }
         }
-        if (matches.length >= 3) break
       }
+      const briefs = await Promise.all(offerUrls.slice(0, 4).map((u) => grabOfferBrief(u)))
+      const matches = briefs.filter((b): b is ResearchMatch => b !== null).slice(0, 3)
       return { ...d, matches, search1688Urls: d.search1688.map(build1688SearchUrl) }
     })
   )

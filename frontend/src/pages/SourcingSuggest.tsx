@@ -21,6 +21,7 @@ import EvaluationChat from '@/components/EvaluationChat'
 import { api, getErrorMessage, SourcingHistoryItem } from '@/lib/api'
 import { EMPTY_SOURCE, Evaluation, PriceRow, SourceInfo } from '@/types'
 import { GLS_CATEGORIES } from '@/constants/gls-categories'
+import { glsCategoryLabel } from '@/constants/gls-categories-zh'
 
 function Field({
   label,
@@ -411,17 +412,17 @@ export default function SourcingSuggest() {
               value={input.category}
               onChange={(e) => setInput((s) => ({ ...s, category: e.target.value }))}
             >
-              <option value="">不限</option>
-              {GLS_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
+             <option value="">不限</option>
+             {GLS_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {glsCategoryLabel(c)}
+              </option>
+             ))}
             </select>
           </Field>
-          <Field label="预算（¥/件，可选）">
+          <Field label="预算（¥/件，可选）" hint="深度研究同样使用此预算筛选方向">
             <Input
-              className={inputCls}
+              className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
               type="number"
               min={0}
               step="0.5"
@@ -540,22 +541,30 @@ export default function SourcingSuggest() {
 
       <SectionCard
         title="深度选品研究（对标 4imprint 热销）"
-        hint="抓取美国头部 ASI 分销商 4imprint 的热销产品，AI 分析卖点并到 1688 找同款，给出具体 1688 商品链接"
+        hint="与上方表单条件联动：抓取美国头部 ASI 分销商 4imprint 的热销产品，AI 分析卖点并到 1688 找同款，给出具体 1688 商品链接"
         right={
           <Button size="sm" onClick={runResearch} disabled={researchBusy}>
             {researchBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <SearchCheck className="mr-1 h-3.5 w-3.5" />}
-            {researchBusy ? '研究中…（约 1-2 分钟）' : '开始深度研究'}
+            {researchBusy ? '研究中…（约 30-60 秒）' : '开始深度研究'}
           </Button>
         }
       >
+        {/* 同步上方表单条件的回显条 */}
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] text-blue-800">
+          <span className="font-semibold">已同步上方条件：</span>
+          <span>类目：{input.category ? glsCategoryLabel(input.category) : '不限'}</span>
+          <span>关键词：{input.keywords || '无'}</span>
+          <span>预算：{input.budgetCny ? `¥${input.budgetCny}/件` : '不限'}</span>
+          <span>备注：{input.notes || '无'}</span>
+        </div>
         {researchBusy && (
           <p className="py-2 text-sm text-slate-500">
-            正在抓取 4imprint 热销产品 → AI 分析卖点 → 1688 搜索同款并抓取详情，全程约 1-2 分钟，请勿关闭页面…
+            正在抓取 4imprint 热销产品 → AI 分析卖点 → 1688 搜索同款并抓取详情（并行加速），全程约 30-60 秒，请勿关闭页面…
           </p>
         )}
         {!researchBusy && !research && (
           <p className="py-2 text-sm text-slate-400">
-            填写上方「目标类目 / 偏好关键词」后点击「开始深度研究」。流程：4imprint 热销产品 → AI 分析特点 → 1688 找同款 → 具体商品链接。
+            直接使用上方「目标类目 / 偏好关键词 / 预算」开始研究。流程：4imprint 热销产品 → AI 分析特点 → 1688 找同款 → 具体商品链接。常用词中→英翻译内置词典完成，无需等待 AI。
           </p>
         )}
         {research && (
