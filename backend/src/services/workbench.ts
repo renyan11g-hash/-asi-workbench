@@ -15,7 +15,7 @@ import {
   toTitleCase,
   translateColors,
 } from '../constants/asi'
-import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, ChatMessage, ListingAnswer } from './prompts'
+import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildImageIdentifyPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, buildSupplierRankPrompt, ChatMessage, ListingAnswer } from './prompts'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
@@ -985,4 +985,124 @@ export async function researchQueryEn(text: string, settings: Settings): Promise
 Respond with STRICT JSON only: { "query": "<English search query, 1-3 words, e.g. canvas tote bag>" }`
   const raw = await callChatJson<Record<string, unknown>>(settings, system, `Chinese: ${text}`, 0.3)
   return String(raw.query ?? '').trim()
+}
+
+// ---------- 以图找源（上传产品图片 → AI 识图 → 1688 搜商家 → AI 排序） ----------
+
+export interface ImageIdentifyResult {
+  productName: string
+  productEn: string
+  category: string
+  features: string[]
+  search1688: string[]
+  compliance: string[]
+  keywords: string[]
+}
+
+export interface SupplierCandidate {
+  offerId: string
+  url: string
+  title: string
+  priceCny: number | null
+  moq: number | null
+  image: string
+  /** 从页面提取的原始文本：销量/店铺/资质标签等，供 AI 排序 */
+  raw: string
+}
+
+export interface RankedSupplier {
+  offerId: string
+  url: string
+  title: string
+  priceCny: number | null
+  moq: number | null
+  image: string
+  score: number
+  verdict: string
+  reasons: string[]
+  risks: string[]
+  complianceNote: string
+}
+
+export interface SupplierRankResult {
+  ranked: RankedSupplier[]
+  summary: string
+  tips: string[]
+}
+
+/** AI 识图：识别产品 + 生成 1688 中文搜索词 + 合规要点（images 为 base64 dataURL） */
+export async function identifyImageProduct(
+  images: string[],
+  settings: Settings,
+  notes?: string
+): Promise<ImageIdentifyResult> {
+  const { system, user } = buildImageIdentifyPrompt({ notes })
+  const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.4, images)
+  const search1688 = Array.isArray(raw.search1688)
+    ? (raw.search1688 as unknown[]).map(String).map((s) => s.trim()).filter(Boolean)
+    : []
+  return {
+    productName: String(raw.productName ?? '').trim(),
+    productEn: String(raw.productEn ?? '').trim(),
+    category: String(raw.category ?? '').trim(),
+    features: Array.isArray(raw.features) ? (raw.features as unknown[]).map(String).filter(Boolean) : [],
+    search1688,
+    compliance: Array.isArray(raw.compliance) ? (raw.compliance as unknown[]).map(String).filter(Boolean) : [],
+    keywords: Array.isArray(raw.keywords) ? (raw.keywords as unknown[]).map(String).filter(Boolean) : [],
+  }
+}
+
+/** AI 商家排序：按现货/定制/实力/销量/跨境/合规打分；offerId 必须来自候选列表（防编造） */
+export async function rankSuppliers(
+  input: {
+    productName: string
+    compliance: string[]
+    budgetCny?: number | null
+    notes?: string
+    candidates: SupplierCandidate[]
+  },
+  settings: Settings
+): Promise<SupplierRankResult> {
+  const { system, user: userTpl } = buildSupplierRankPrompt({
+    productName: input.productName,
+    compliance: input.compliance,
+    budgetCny: input.budgetCny,
+    notes: input.notes,
+  })
+  const offerBlock = input.candidates
+    .map(
+      (c, i) =>
+        `${i + 1}. offerId=${c.offerId} | ${c.title} | ¥${c.priceCny ?? '?'} | 起批${c.moq ?? '?'}件 | ${c.raw || '（无附加信息）'}`
+    )
+    .join('\n')
+  const raw = await callChatJson<Record<string, unknown>>(settings, system, userTpl.replace('{OFFERS}', offerBlock), 0.4)
+  const byId = new Map(input.candidates.map((c) => [c.offerId, c]))
+  const ranked: RankedSupplier[] = Array.isArray(raw.ranked)
+    ? (raw.ranked as unknown[])
+        .filter((d): d is Record<string, unknown> => !!d && typeof d === 'object')
+        .map((d) => {
+          const offerId = String(d.offerId ?? '').trim()
+          const cand = byId.get(offerId)
+          if (!cand) return null // AI 编造的 offerId 直接丢弃
+          return {
+            offerId: cand.offerId,
+            url: cand.url,
+            title: cand.title,
+            priceCny: cand.priceCny,
+            moq: cand.moq,
+            image: cand.image,
+            score: Math.max(0, Math.min(100, Math.round(Number(d.score) || 0))),
+            verdict: String(d.verdict ?? '').trim(),
+            reasons: Array.isArray(d.reasons) ? (d.reasons as unknown[]).map(String).filter(Boolean) : [],
+            risks: Array.isArray(d.risks) ? (d.risks as unknown[]).map(String).filter(Boolean) : [],
+            complianceNote: String(d.complianceNote ?? '').trim(),
+          }
+        })
+        .filter((d): d is RankedSupplier => d !== null)
+    : []
+  return {
+    ranked,
+    summary: String(raw.summary ?? '').trim(),
+    tips: Array.isArray(raw.tips) ? (raw.tips as unknown[]).map(String).filter(Boolean) : [],
+  }
 }

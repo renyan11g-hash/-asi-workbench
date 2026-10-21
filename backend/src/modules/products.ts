@@ -7,8 +7,8 @@ import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { AiError } from '../services/ai'
 import { callChatJson } from '../services/ai'
-import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
-import type { ResearchMatch } from '../services/workbench'
+import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, identifyImageProduct, rankSuppliers, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
+import type { ResearchMatch, SupplierCandidate } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
 import { buildPriceGrid } from '../services/pricing'
 import { buildGlsWorkbook } from '../services/gls-export'
@@ -1693,5 +1693,124 @@ productsRouter.post('/sourcing-research', async (req: Request, res: Response) =>
     asiProducts,
     directions,
     tips: research.tips,
+  })
+})
+
+// ---------- 以图找源（上传产品图片 → AI 识图 → 1688 搜商家 → 抓详情 → AI 排序） ----------
+
+/** 从 1688 页面文本提取商家实力/销量/资质信号（供 AI 排序） */
+function extractSupplierSignals(text: string): string {
+  const hits: string[] = []
+  const add = (label: string, re: RegExp) => {
+    const m = text.match(re)
+    if (m) hits.push(label + (m[1] ? `:${m[0].slice(0, 40)}` : ''))
+  }
+  // 店铺实力标签
+  if (/实力商家|实力工厂/.test(text)) hits.push('实力商家')
+  if (/超级工厂/.test(text)) hits.push('超级工厂')
+  if (/源头工厂|工厂直供|自产自销|生产厂家/.test(text)) hits.push('源头工厂')
+  if (/跨境专供|跨境专属|跨境货源/.test(text)) hits.push('跨境专供')
+  if (/现货|速发|48小时|24小时|当天发货/.test(text)) hits.push('现货速发')
+  if (/支持定制|来图定制|logo定制|定制logo|OEM|ODM/i.test(text)) hits.push('支持定制')
+  if (/一件代发/.test(text)) hits.push('一件代发')
+  // 销量信号
+  add('成交', /(?:近\d+日|近\d+个月)?(?:成交|已售|销量)[^\d]{0,6}[\d.]+\s*(?:万|千)?[件笔单]?/)
+  add('回头率', /回头率[:：]?\s*[\d.]+%?/)
+  add('复购', /复购率[:：]?\s*[\d.]+%?/)
+  // 资质/检测
+  if (/检测报告|质检报告|SGS|FDA|食品级|LFGB/.test(text)) hits.push('有检测/资质标注')
+  if (/UN38\.3|MSDS|空运鉴定/.test(text)) hits.push('电池运输报告')
+  if (/CE|FCC|UL|CPC|ASTM/i.test(text)) hits.push('认证标注')
+  // 店铺年限
+  add('店铺年限', /(?:入驻|经营|开店)[^\d]{0,4}\d+\s*年/)
+  return hits.join('；')
+}
+
+/** 抓取一个 1688 offer 详情并组装候选商家（含信号提取）；失败返回 null */
+async function grabSupplierCandidate(url: string): Promise<SupplierCandidate | null> {
+  const offerId = url.match(/offer\/(\d+)/)?.[1] ?? ''
+  if (!offerId) return null
+  const clean = `https://detail.1688.com/offer/${offerId}.html`
+  let g = await grab1688Once(clean)
+  if (!g || (!g.sourceTitle && !g.description)) g = await grabViaJina(clean)
+  if (!g || (!g.sourceTitle && !g.description)) return null
+  const rawText = [g.sourceTitle, g.description.slice(0, 600), g.materialCn, g.sizeCn].filter(Boolean).join(' ')
+  return {
+    offerId,
+    url: clean,
+    title: g.sourceTitle || g.description.slice(0, 60),
+    priceCny: g.priceCny,
+    moq: g.moq,
+    image: g.image,
+    raw: extractSupplierSignals(rawText),
+  }
+}
+
+/**
+ * POST /sourcing-by-image —— 以图找源：
+ * ① AI 识图（产品识别 + 1688 中文搜索词 + 合规要点）
+ * ② 并行用多个搜索词经 Bing site:detail.1688.com 搜 offer 链接
+ * ③ 并行抓 offer 详情（标题/价格/MOQ/图 + 实力/销量/资质信号）
+ * ④ AI 按现货/定制/实力/销量/跨境/合规打分排序
+ */
+productsRouter.post('/sourcing-by-image', async (req: Request, res: Response) => {
+  const body = z
+    .object({
+      images: z.array(z.string().min(32)).min(1).max(3),
+      notes: z.string().optional(),
+      budgetCny: z.coerce.number().nullable().optional(),
+    })
+    .parse(req.body ?? {})
+  const settings = loadSettings()
+
+  // ① AI 识图（唯一一次视觉调用）
+  const identified = await runAi(() => identifyImageProduct(body.images, settings, body.notes))
+  if (!identified.productName || identified.search1688.length === 0) {
+    throw new AppError(502, 'AI 未能从图片识别出可搜索的产品，请换一张更清晰的产品图（单产品、正面照最佳）')
+  }
+
+  // ② 多搜索词并行搜 1688 offer 链接（Bing site: 通道）
+  const urlLists = await Promise.all(identified.search1688.slice(0, 4).map((q) => search1688OffersViaBing(q)))
+  const offerUrls: string[] = []
+  const seenOffer = new Set<string>()
+  for (const list of urlLists) {
+    for (const u of list) {
+      if (!seenOffer.has(u)) {
+        seenOffer.add(u)
+        offerUrls.push(u)
+      }
+    }
+  }
+  if (offerUrls.length === 0) {
+    throw new AppError(502, `1688 搜索「${identified.search1688[0]}」没有找到商品链接，请稍后重试或补充说明`)
+  }
+
+  // ③ 并行抓 offer 详情（最多 12 个，控制耗时）
+  const candidates = (
+    await Promise.all(offerUrls.slice(0, 12).map((u) => grabSupplierCandidate(u)))
+  ).filter((c): c is SupplierCandidate => c !== null)
+  if (candidates.length === 0) {
+    throw new AppError(502, '1688 商品详情抓取失败（反爬拦截），请稍后重试')
+  }
+
+  // ④ AI 排序（现货/定制/实力/销量/跨境/合规）
+  const rank = await runAi(() =>
+    rankSuppliers(
+      {
+        productName: identified.productName,
+        compliance: identified.compliance,
+        budgetCny: body.budgetCny,
+        notes: body.notes,
+        candidates,
+      },
+      settings
+    )
+  )
+
+  res.json({
+    ok: true,
+    identified,
+    candidatesCount: candidates.length,
+    ...rank,
   })
 })

@@ -5,6 +5,7 @@ import {
   ClipboardList,
   Compass,
   History,
+  ImagePlus,
   Lightbulb,
   Loader2,
   SearchCheck,
@@ -151,6 +152,30 @@ interface QuickResult {
   priceGrid: PriceRow[]
 }
 
+/** 以图找源返回类型（与 api.sourcingByImage 一致） */
+type ImageSearchResult = Awaited<ReturnType<typeof api.sourcingByImage>>
+
+/** 压缩上传图片为 base64 dataURL（最长边 1280，JPEG q0.85），控制请求体积 */
+async function compressImage(file: File, maxEdge = 1280, quality = 0.85): Promise<string> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image()
+    i.onload = () => resolve(i)
+    i.onerror = () => reject(new Error('图片读取失败'))
+    i.src = URL.createObjectURL(file)
+  })
+  let { width, height } = img
+  if (width > maxEdge || height > maxEdge) {
+    const ratio = Math.min(maxEdge / width, maxEdge / height)
+    width = Math.round(width * ratio)
+    height = Math.round(height * ratio)
+  }
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  canvas.getContext('2d')?.drawImage(img, 0, 0, width, height)
+  return canvas.toDataURL('image/jpeg', quality)
+}
+
 export default function SourcingSuggest() {
   const navigate = useNavigate()
   const [busy, setBusy] = useState(false)
@@ -163,6 +188,11 @@ export default function SourcingSuggest() {
   const [historyLoading, setHistoryLoading] = useState(true)
   const [researchBusy, setResearchBusy] = useState(false)
   const [research, setResearch] = useState<ResearchResult | null>(null)
+  const [imgBusy, setImgBusy] = useState(false)
+  const [imgPreview, setImgPreview] = useState('')
+  const [imgNotes, setImgNotes] = useState('')
+  const [imgBudget, setImgBudget] = useState('')
+  const [imgResult, setImgResult] = useState<ImageSearchResult | null>(null)
 
   /** 拉取历史选品记录 */
   const loadHistory = async () => {
@@ -234,6 +264,28 @@ export default function SourcingSuggest() {
       toast.error(getErrorMessage(err))
     } finally {
       setResearchBusy(false)
+    }
+  }
+
+  /** 以图找源：上传产品图片 → AI 识图 → 1688 搜商家 → AI 按现货/定制/实力/销量/跨境/合规排序 */
+  const runImageSearch = async () => {
+    if (!imgPreview) {
+      toast.error('请先上传产品图片')
+      return
+    }
+    setImgBusy(true)
+    try {
+      const r = await api.sourcingByImage({
+        images: [imgPreview],
+        notes: imgNotes || undefined,
+        budgetCny: imgBudget ? Number(imgBudget) : undefined,
+      })
+      setImgResult(r)
+      toast.success(`识图完成：${r.identified.productName}，已评估 ${r.candidatesCount} 家商家`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setImgBusy(false)
     }
   }
 
@@ -679,6 +731,159 @@ export default function SourcingSuggest() {
                 </div>
                 <ul className="space-y-0.5">
                   {research.tips.map((t, i) => (
+                    <li key={i} className="text-[12px] leading-relaxed text-amber-800">· {t}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </SectionCard>
+
+      {/* 以图找源：上传产品图片 → AI 识图 → 1688 搜商家 → AI 排序 */}
+      <SectionCard
+        title="以图找源（上传图片自动找 1688 商家）"
+        hint="上传产品图，AI 识图后自动在 1688 搜索同款商家，按现货、可定制、店铺实力、销量、跨境专属、合规（检测报告等）综合排序，无需再手动翻链接"
+        right={
+          <Button size="sm" onClick={runImageSearch} disabled={imgBusy || !imgPreview}>
+            {imgBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="mr-1 h-3.5 w-3.5" />}
+            {imgBusy ? '找源中…（约 1-2 分钟）' : '开始以图找源'}
+          </Button>
+        }
+      >
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="产品图片（必填）" hint="单产品正面照最佳，JPG/PNG">
+            <label className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 text-xs text-slate-600 hover:bg-slate-100">
+              <ImagePlus className="h-3.5 w-3.5" /> {imgPreview ? '重新选择' : '选择图片'}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0]
+                  if (!f) return
+                  try {
+                    setImgPreview(await compressImage(f))
+                    setImgResult(null)
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : '图片处理失败')
+                  }
+                }}
+              />
+            </label>
+          </Field>
+          <Field label="预算（¥/件，可选）">
+            <Input
+              className={inputCls}
+              type="number"
+              min={0}
+              step="0.5"
+              placeholder="如 15"
+              value={imgBudget}
+              onChange={(e) => setImgBudget(e.target.value)}
+            />
+          </Field>
+          <Field label="补充说明（可选）" hint="目标人群、必须满足的合规点等">
+            <Input
+              className={inputCls}
+              placeholder="如：要能印 logo、需食品级检测报告"
+              value={imgNotes}
+              onChange={(e) => setImgNotes(e.target.value)}
+            />
+          </Field>
+        </div>
+        {imgPreview && (
+          <div className="mt-3 flex items-center gap-3">
+            <img src={imgPreview} alt="产品图" className="h-20 w-20 rounded-lg border border-slate-200 object-cover" />
+            <p className="text-[11px] text-slate-400">图片已就绪，点击右上角「开始以图找源」</p>
+          </div>
+        )}
+        {imgBusy && (
+          <p className="py-2 text-sm text-slate-500">
+            AI 识图 → 1688 多词并行搜索 → 抓取商家详情（实力/销量/资质信号）→ AI 综合排序，约 1-2 分钟，请勿关闭页面…
+          </p>
+        )}
+        {imgResult && (
+          <div className="mt-3 space-y-3">
+            {/* 识图结果 */}
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-semibold text-blue-800">识图结果</span>
+                <span className="text-sm font-semibold text-slate-800">{imgResult.identified.productName}</span>
+                {imgResult.identified.productEn && (
+                  <span className="text-[11px] text-slate-500">{imgResult.identified.productEn}</span>
+                )}
+                {imgResult.identified.category && (
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">{imgResult.identified.category}</span>
+                )}
+              </div>
+              {imgResult.identified.features.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {imgResult.identified.features.map((f, j) => (
+                    <span key={j} className="rounded bg-white px-1.5 py-0.5 text-[11px] text-slate-600 ring-1 ring-slate-200">
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {imgResult.identified.compliance.length > 0 && (
+                <p className="mt-1.5 text-[11px] text-amber-700">合规要点：{imgResult.identified.compliance.join('；')}</p>
+              )}
+              <p className="mt-1 text-[11px] text-slate-500">共评估 {imgResult.candidatesCount} 家 1688 商家</p>
+            </div>
+            {imgResult.summary && <p className="text-[13px] leading-relaxed text-slate-700">{imgResult.summary}</p>}
+
+            {/* 排序后的商家列表 */}
+            {imgResult.ranked.map((s, i) => (
+              <div key={s.offerId} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-start gap-3">
+                  {s.image ? (
+                    <img src={s.image} alt={s.title} className="h-16 w-16 shrink-0 rounded object-cover" loading="lazy" />
+                  ) : (
+                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded bg-slate-100 text-[10px] text-slate-300">无图</div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+                          s.verdict.includes('不推荐')
+                            ? 'bg-rose-100 text-rose-700'
+                            : s.verdict.includes('推荐')
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-amber-100 text-amber-700'
+                        }`}
+                      >
+                        {s.verdict || `第 ${i + 1} 名`}
+                      </span>
+                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-semibold text-blue-700">{s.score} 分</span>
+                      <a
+                        href={s.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="min-w-0 flex-1 truncate text-[13px] font-medium text-blue-700 hover:underline"
+                      >
+                        {s.title} ↗
+                      </a>
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      {s.priceCny != null ? `¥${s.priceCny}` : '价格面议'}
+                      {s.moq != null && ` · 起批 ${s.moq} 件`}
+                    </div>
+                    {s.reasons.length > 0 && <p className="mt-1 text-[11px] text-emerald-700">亮点：{s.reasons.join('；')}</p>}
+                    {s.complianceNote && <p className="mt-0.5 text-[11px] text-slate-600">合规：{s.complianceNote}</p>}
+                    {s.risks.length > 0 && <p className="mt-0.5 text-[11px] text-rose-600">风险：{s.risks.join('；')}</p>}
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {imgResult.tips.length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-amber-800">
+                  <Lightbulb className="h-3 w-3" /> 验货/谈判要点
+                </div>
+                <ul className="space-y-0.5">
+                  {imgResult.tips.map((t, i) => (
                     <li key={i} className="text-[12px] leading-relaxed text-amber-800">· {t}</li>
                   ))}
                 </ul>

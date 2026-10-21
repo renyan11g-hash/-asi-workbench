@@ -32,8 +32,8 @@ export const createApp = (): Application => {
     })
   )
 
-  // Body parsing and compression
-  app.use(express.json())
+  // Body parsing and compression（以图找源上传 base64 图片，放宽到 8mb）
+  app.use(express.json({ limit: '8mb' }))
   app.use(express.urlencoded({ extended: true }))
   app.use(compression())
 
