@@ -15,7 +15,7 @@ import {
   toTitleCase,
   translateColors,
 } from '../constants/asi'
-import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, ChatMessage, ListingAnswer } from './prompts'
+import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, ChatMessage, ListingAnswer } from './prompts'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
@@ -874,4 +874,115 @@ export async function suggestSourcing(
     keywords1688: Array.isArray(raw.keywords1688) ? raw.keywords1688.map(String) : [],
     tips: Array.isArray(raw.tips) ? raw.tips.map(String) : [],
   }
+}
+
+// ---------- 深度选品研究（对标 4imprint 热销 → AI 分析 → 1688 找同款） ----------
+
+export interface ResearchAsiProduct {
+  name: string
+  url: string
+  image: string
+  priceFrom: number | null
+  priceTo: number | null
+  rating: number | null
+  category: string
+  orderMin: string
+  shipDays: string
+}
+
+export interface ResearchMatch {
+  url: string
+  title: string
+  priceCny: number | null
+  image: string
+  moq: number | null
+}
+
+export interface ResearchDirection {
+  asiProduct: { name: string; url: string }
+  why: string
+  features: string[]
+  search1688: string[]
+  expectedUnitCostCny: number | null
+  expectedSellUsd: { min: number; max: number } | null
+  risks: string[]
+  matches: ResearchMatch[]
+}
+
+export interface ResearchResult {
+  ok: boolean
+  query: string
+  queryEn: string
+  asiProducts: ResearchAsiProduct[]
+  directions: ResearchDirection[]
+  tips: string[]
+}
+
+/** AI 分析 4imprint 热销产品：挑选对标品 + 分析卖点 + 生成 1688 中文搜索词 */
+export async function researchSourcing(
+  input: {
+    category?: string
+    keywords?: string
+    budgetCny?: number | null
+    notes?: string
+    asiProducts: ResearchAsiProduct[]
+  },
+  settings: Settings
+): Promise<{ directions: ResearchDirection[]; tips: string[] }> {
+  const { system, user } = buildSourcingResearchPrompt({
+    category: input.category,
+    keywords: input.keywords,
+    budgetCny: input.budgetCny,
+    notes: input.notes,
+    asiProducts: input.asiProducts.map((p) => ({
+      name: p.name,
+      url: p.url,
+      priceFrom: p.priceFrom,
+      priceTo: p.priceTo,
+      rating: p.rating,
+      category: p.category,
+      orderMin: p.orderMin,
+    })),
+  })
+  const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.5)
+  const byName = new Map(input.asiProducts.map((p) => [p.name.toLowerCase(), p]))
+  const dirs: ResearchDirection[] = Array.isArray(raw.directions)
+    ? (raw.directions as unknown[])
+        .filter((d): d is Record<string, unknown> => !!d && typeof d === 'object')
+        .map((d) => {
+          const ap = (d.asiProduct ?? {}) as Record<string, unknown>
+          const name = String(ap.name ?? '').trim()
+          // 名称必须能对回 4imprint 列表（防止 AI 编造产品），对不回则取 url 匹配或丢弃
+          const hit = byName.get(name.toLowerCase())
+          return {
+            asiProduct: { name: hit?.name ?? name, url: String(ap.url ?? hit?.url ?? '').trim() },
+            why: String(d.why ?? '').trim(),
+            features: Array.isArray(d.features) ? d.features.map(String).filter(Boolean) : [],
+            search1688: Array.isArray(d.search1688) ? d.search1688.map(String).map((s) => s.trim()).filter(Boolean) : [],
+            expectedUnitCostCny: typeof d.expectedUnitCostCny === 'number' ? d.expectedUnitCostCny : null,
+            expectedSellUsd:
+              d.expectedSellUsd && typeof d.expectedSellUsd === 'object'
+                ? {
+                    min: Number((d.expectedSellUsd as Record<string, unknown>).min) || 0,
+                    max: Number((d.expectedSellUsd as Record<string, unknown>).max) || 0,
+                  }
+                : null,
+            risks: Array.isArray(d.risks) ? d.risks.map(String) : [],
+            matches: [] as ResearchMatch[],
+          }
+        })
+        .filter((d) => d.asiProduct.name && d.search1688.length > 0)
+    : []
+  return {
+    directions: dirs,
+    tips: Array.isArray(raw.tips) ? raw.tips.map(String).filter(Boolean) : [],
+  }
+}
+
+/** AI 把中文类目/关键词翻译成 4imprint 英文搜索词（4imprint 只支持英文搜索） */
+export async function researchQueryEn(text: string, settings: Settings): Promise<string> {
+  const system = `Translate a Chinese product category/keyword into ONE short English search query for 4imprint.com (a US promotional products site).
+Respond with STRICT JSON only: { "query": "<English search query, 1-3 words, e.g. canvas tote bag>" }`
+  const raw = await callChatJson<Record<string, unknown>>(settings, system, `Chinese: ${text}`, 0.3)
+  return String(raw.query ?? '').trim()
 }

@@ -7,7 +7,8 @@ import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { AiError } from '../services/ai'
 import { callChatJson } from '../services/ai'
-import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, regenerateListingFields, suggestSourcing } from '../services/workbench'
+import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
+import type { ResearchMatch } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
 import { buildPriceGrid } from '../services/pricing'
 import { buildGlsWorkbook } from '../services/gls-export'
@@ -491,6 +492,8 @@ interface GrabbedFetched {
   cartonGwKg: number | null
   moq: number | null
   priceCny: number | null
+  /** 首张产品图（尽力提取，可能为空） */
+  image: string
 }
 
 /** 统计抓到几项有效资料 */
@@ -553,6 +556,8 @@ async function grabViaJina(url: string): Promise<GrabbedFetched | null> {
     const priceM = text.match(/[¥￥]\s*(\d{1,5}(?:\.\d{1,2})?)/)
     const priceNum = priceM ? Number(priceM[1]) : null
     const priceCny = priceNum != null && priceNum >= 0.1 && priceNum <= 10000 ? priceNum : null
+    // 首张产品图（jina markdown 中的图片，尽力提取）
+    const image = text.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/)?.[1] ?? ''
     const info: GrabbedFetched = {
       sourceTitle: title,
       sourceKeywords: [],
@@ -566,6 +571,7 @@ async function grabViaJina(url: string): Promise<GrabbedFetched | null> {
       cartonGwKg: cartonGw ? Math.round(num(cartonGw) * 100) / 100 : null,
       moq: moq ? Math.round(num(moq)) : null,
       priceCny,
+      image,
     }
     return info.sourceTitle || info.description ? info : null
   } catch {
@@ -623,6 +629,8 @@ async function grab1688Once(url: string): Promise<GrabbedFetched | null> {
     const priceM = html.match(/[¥￥]\s*(\d{1,5}(?:\.\d{1,2})?)/) ?? html.match(/"price"\s*:\s*"?(\d{1,5}(?:\.\d{1,2})?)"?/)
     const priceNum = priceM ? Number(priceM[1]) : null
     const priceCny = priceNum != null && priceNum >= 0.1 && priceNum <= 10000 ? priceNum : null
+    // 首张产品图（og:image，尽力提取）
+    const image = pick(/og:image["']\s*content=["']([^"']+)["']/i)
 
     return {
       sourceTitle: title,
@@ -637,6 +645,7 @@ async function grab1688Once(url: string): Promise<GrabbedFetched | null> {
       cartonGwKg: cartonGw ? Math.round(num(cartonGw) * 100) / 100 : null,
       moq: moq ? Math.round(num(moq)) : null,
       priceCny,
+      image,
     }
   } catch {
     return null
@@ -1285,5 +1294,204 @@ productsRouter.post('/sourcing-suggest', async (req: Request, res: Response) => 
     ...result,
     directions,
     keywords1688Urls: result.keywords1688.map(build1688SearchUrl),
+  })
+})
+
+// ---------- 深度选品研究（对标 4imprint 热销 → AI 分析 → 1688 找同款） ----------
+
+/** 4imprint 搜索页产品卡片（由 data-* 属性解析，结构已实测确认） */
+interface ImprintCard {
+  name: string
+  url: string
+  image: string
+  priceFrom: number | null
+  priceTo: number | null
+  rating: number | null
+  category: string
+  orderMin: string
+  shipDays: string
+}
+
+/** 直连抓取 4imprint 搜索页 HTML（Render 海外 IP 可行；fetch 默认跟随 301 → /search/search） */
+async function fetch4imprintHtml(query: string): Promise<string> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 20000)
+  try {
+    const r = await fetch(`https://www.4imprint.com/search?q=${encodeURIComponent(query)}`, {
+      signal: ctrl.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    })
+    if (!r.ok) throw new AppError(502, `4imprint 搜索页返回 ${r.status}，请稍后重试`)
+    const html = await r.text()
+    if (html.length < 5000) throw new AppError(502, '4imprint 搜索页内容异常（可能被反爬拦截），请稍后重试')
+    return html
+  } catch (err) {
+    if (err instanceof AppError) throw err
+    throw new AppError(502, '4imprint 搜索页抓取失败（网络超时或被拦截），请稍后重试')
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 解析 4imprint 搜索页产品卡片：data-name/data-alias/data-price 锚点 + itemPrice/orderMin/shipDays/ratingStars2020 */
+function parse4imprintCards(html: string): ImprintCard[] {
+  const cards: ImprintCard[] = []
+  const seen = new Set<string>()
+  // 锚点：<a ... data-name="..." data-alias="..." data-price="0.3800" ...>，后跟 img 与价格/起订/评分区块
+  const anchorRe = /<a\b[^>]*\bdata-name="([^"]+)"[^>]*\bdata-alias="([^"]+)"[^>]*\bdata-price="([\d.]+)"[^>]*>([\s\S]{0,2500}?)(?=<a\b[^>]*\bdata-name=|<\/li>|<\/ul>|<\/section>|$)/gi
+  for (const m of html.matchAll(anchorRe)) {
+    const name = decodeEntities(m[1]).trim()
+    const alias = m[2].trim()
+    if (!name || !alias || seen.has(alias)) continue
+    const chunk = m[4]
+    // 卡片内首张产品图（cdn.4imprint.com/prod/250/xxx.webp）
+    const img = chunk.match(/cdn\.4imprint\.com\/prod\/\d+\/[\w.-]+\.(?:webp|jpg|jpeg|png)/i)?.[0] ?? ''
+    // "Prices from $0.38 to $0.57" → 价格区间
+    const priceTxt = chunk.match(/Prices from\s*\$([\d.]+)(?:\s*to\s*\$([\d.]+))?/i)
+    const priceFrom = priceTxt ? Number(priceTxt[1]) : Number(m[3]) || null
+    const priceTo = priceTxt?.[2] ? Number(priceTxt[2]) : priceFrom
+    // 评分 data-rating="4.2"
+    const ratingTxt = chunk.match(/data-rating="([\d.]+)"/)
+    const rating = ratingTxt ? Number(ratingTxt[1]) : null
+    // "Order as few as 500" / "Ships within 3 days"
+    const orderMin = decodeEntities(chunk.match(/orderMin[^>]*>([^<]{1,60})</i)?.[1] ?? '').trim()
+    const shipDays = decodeEntities(chunk.match(/shipDays[^>]*>([^<]{1,60})</i)?.[1] ?? '').trim()
+    cards.push({
+      name,
+      url: `https://www.4imprint.com/product/${alias}`,
+      image: img ? `https://${img}` : '',
+      priceFrom,
+      priceTo,
+      rating,
+      category: decodeEntities(m[0].match(/data-category="([^"]*)"/)?.[1] ?? '').trim(),
+      orderMin,
+      shipDays,
+    })
+    seen.add(alias)
+    if (cards.length >= 24) break
+  }
+  return cards
+}
+
+/** jina 渲染抓取 Bing 搜索结果（site:detail.1688.com 限定），提取具体 1688 offer 链接；失败返回 [] */
+async function search1688OffersViaBing(query: string): Promise<string[]> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 25000)
+  try {
+    const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(`site:detail.1688.com ${query}`)}&count=20`
+    const r = await fetch('https://r.jina.ai/' + bingUrl, {
+      signal: ctrl.signal,
+      headers: { 'X-Return-Format': 'text' },
+    })
+    if (!r.ok) return []
+    const text = await r.text()
+    // 提取 offer 链接（去重，保序）
+    const urls: string[] = []
+    const seen = new Set<string>()
+    for (const m of text.matchAll(/https?:\/\/detail\.1688\.com\/offer\/(\d+)\.html/g)) {
+      const u = `https://detail.1688.com/offer/${m[1]}.html`
+      if (!seen.has(u)) {
+        seen.add(u)
+        urls.push(u)
+      }
+    }
+    return urls
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 抓取一个 1688 offer 的简要信息（标题/价格/图/MOQ），复用现有多通道抓取 */
+async function grabOfferBrief(url: string): Promise<ResearchMatch | null> {
+  const offerId = url.match(/offer\/(\d+)/)?.[1] ?? ''
+  const clean = offerId ? `https://detail.1688.com/offer/${offerId}.html` : url
+  // 先直连（快），失败再 jina（慢但能绕反爬）
+  let g = await grab1688Once(clean)
+  if (!g || (!g.sourceTitle && !g.description)) g = await grabViaJina(clean)
+  if (!g || (!g.sourceTitle && !g.description)) return null
+  return {
+    url: clean,
+    title: g.sourceTitle || g.description.slice(0, 60),
+    priceCny: g.priceCny,
+    image: g.image,
+    moq: g.moq,
+  }
+}
+
+productsRouter.post('/sourcing-research', async (req: Request, res: Response) => {
+  const body = z
+    .object({
+      category: z.string().optional(),
+      keywords: z.string().optional(),
+      budgetCny: z.coerce.number().nullable().optional(),
+      notes: z.string().optional(),
+    })
+    .parse(req.body ?? {})
+  const settings = loadSettings()
+
+  // ① 中文类目/关键词 → 4imprint 英文搜索词（AI 翻译；失败用类目原文兜底）
+  const zhText = [body.category, body.keywords].filter(Boolean).join(' ') || 'promotional products'
+  let queryEn = zhText
+  try {
+    queryEn = (await runAi(() => researchQueryEn(zhText, settings))) || zhText
+  } catch {
+    /* 翻译失败不阻断，用原文搜索 */
+  }
+
+  // ② 抓取 4imprint 搜索页 → 解析热销产品卡片
+  const html = await fetch4imprintHtml(queryEn)
+  const asiProducts = parse4imprintCards(html)
+  if (asiProducts.length === 0) {
+    throw new AppError(502, `4imprint 搜索「${queryEn}」没有解析到产品，请换个类目或关键词重试`)
+  }
+
+  // ③ AI 分析热销产品：挑对标品 + 分析卖点 + 生成 1688 中文搜索词
+  const research = await runAi(() =>
+    researchSourcing(
+      {
+        category: body.category,
+        keywords: body.keywords,
+        budgetCny: body.budgetCny,
+        notes: body.notes,
+        asiProducts,
+      },
+      settings
+    )
+  )
+
+  // ④ 每个方向：Bing site:detail.1688.com 搜具体 offer → 抓详情（标题/价格/图/MOQ）
+  const directions = await Promise.all(
+    research.directions.map(async (d) => {
+      const matches: ResearchMatch[] = []
+      const seen = new Set<string>()
+      for (const q of d.search1688.slice(0, 2)) {
+        const urls = await search1688OffersViaBing(q)
+        for (const u of urls.slice(0, 3)) {
+          if (seen.has(u)) continue
+          seen.add(u)
+          const brief = await grabOfferBrief(u)
+          if (brief) matches.push(brief)
+          if (matches.length >= 3) break
+        }
+        if (matches.length >= 3) break
+      }
+      return { ...d, matches, search1688Urls: d.search1688.map(build1688SearchUrl) }
+    })
+  )
+
+  res.json({
+    ok: true,
+    query: zhText,
+    queryEn,
+    asiProducts,
+    directions,
+    tips: research.tips,
   })
 })

@@ -97,6 +97,36 @@ interface SourcingResult {
 const fallbackSearchUrl = (k: string) =>
   `https://s.1688.com/selloffer/offer_search.htm?keywords=${encodeURIComponent(k)}`
 
+/** 深度选品研究（对标 4imprint 热销 → AI 分析 → 1688 找同款） */
+interface ResearchResult {
+  ok: boolean
+  query: string
+  queryEn: string
+  asiProducts: Array<{
+    name: string
+    url: string
+    image: string
+    priceFrom: number | null
+    priceTo: number | null
+    rating: number | null
+    category: string
+    orderMin: string
+    shipDays: string
+  }>
+  directions: Array<{
+    asiProduct: { name: string; url: string }
+    why: string
+    features: string[]
+    search1688: string[]
+    search1688Urls?: string[]
+    expectedUnitCostCny: number | null
+    expectedSellUsd: { min: number; max: number } | null
+    risks: string[]
+    matches: Array<{ url: string; title: string; priceCny: number | null; image: string; moq: number | null }>
+  }>
+  tips: string[]
+}
+
 /** /preview/quick-evaluate 的返回：抓取资料 + AI 评估 + 价格表 */
 interface QuickResult {
   ok: boolean
@@ -130,6 +160,8 @@ export default function SourcingSuggest() {
   const [quick, setQuick] = useState<QuickResult | null>(null)
   const [history, setHistory] = useState<SourcingHistoryItem[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
+  const [researchBusy, setResearchBusy] = useState(false)
+  const [research, setResearch] = useState<ResearchResult | null>(null)
 
   /** 拉取历史选品记录 */
   const loadHistory = async () => {
@@ -182,6 +214,25 @@ export default function SourcingSuggest() {
       toast.error(getErrorMessage(err))
     } finally {
       setQuickBusy(false)
+    }
+  }
+
+  /** 深度选品研究：4imprint 热销 → AI 分析 → 1688 找同款（含具体 offer 链接） */
+  const runResearch = async () => {
+    setResearchBusy(true)
+    try {
+      const r = await api.sourcingResearch({
+        category: input.category || undefined,
+        keywords: input.keywords || undefined,
+        budgetCny: input.budgetCny ? Number(input.budgetCny) : undefined,
+        notes: input.notes || undefined,
+      })
+      setResearch(r)
+      toast.success(`研究完成：${r.directions?.length ?? 0} 个对标方向（4imprint 热销 ${r.asiProducts?.length ?? 0} 款）`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setResearchBusy(false)
     }
   }
 
@@ -479,6 +530,147 @@ export default function SourcingSuggest() {
                     <li key={i} className="text-[12px] leading-relaxed text-amber-800">
                       · {t}
                     </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </SectionCard>
+
+      <SectionCard
+        title="深度选品研究（对标 4imprint 热销）"
+        hint="抓取美国头部 ASI 分销商 4imprint 的热销产品，AI 分析卖点并到 1688 找同款，给出具体 1688 商品链接"
+        right={
+          <Button size="sm" onClick={runResearch} disabled={researchBusy}>
+            {researchBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <SearchCheck className="mr-1 h-3.5 w-3.5" />}
+            {researchBusy ? '研究中…（约 1-2 分钟）' : '开始深度研究'}
+          </Button>
+        }
+      >
+        {researchBusy && (
+          <p className="py-2 text-sm text-slate-500">
+            正在抓取 4imprint 热销产品 → AI 分析卖点 → 1688 搜索同款并抓取详情，全程约 1-2 分钟，请勿关闭页面…
+          </p>
+        )}
+        {!researchBusy && !research && (
+          <p className="py-2 text-sm text-slate-400">
+            填写上方「目标类目 / 偏好关键词」后点击「开始深度研究」。流程：4imprint 热销产品 → AI 分析特点 → 1688 找同款 → 具体商品链接。
+          </p>
+        )}
+        {research && (
+          <div className="space-y-4">
+            <p className="text-xs text-slate-500">
+              4imprint 搜索词：<span className="font-medium text-slate-700">{research.queryEn}</span>
+              （共 {research.asiProducts.length} 款热销产品）
+            </p>
+
+            {/* ASI 参考产品：图 + 名称 + 价格区间 + 评分 + 链接 */}
+            <div>
+              <div className="mb-2 text-xs font-semibold text-slate-600">4imprint 热销产品（参考）</div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {research.asiProducts.slice(0, 8).map((p) => (
+                  <a
+                    key={p.url}
+                    href={p.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="group rounded-lg border border-slate-200 bg-white p-2 transition hover:border-blue-300 hover:shadow-sm"
+                  >
+                    {p.image ? (
+                      <img src={p.image} alt={p.name} className="mb-1.5 h-20 w-full rounded object-contain" loading="lazy" />
+                    ) : (
+                      <div className="mb-1.5 flex h-20 items-center justify-center rounded bg-slate-50 text-[10px] text-slate-300">无图</div>
+                    )}
+                    <div className="line-clamp-2 text-[11px] font-medium leading-snug text-slate-700 group-hover:text-blue-700">{p.name}</div>
+                    <div className="mt-1 text-[10px] text-slate-500">
+                      {p.priceFrom != null ? `$${p.priceFrom}${p.priceTo != null && p.priceTo !== p.priceFrom ? `-$${p.priceTo}` : ''}` : '价格面议'}
+                      {p.rating != null && <span className="ml-1 text-amber-600">★{p.rating}</span>}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </div>
+
+            {/* 对标方向：AI 分析 + 1688 同款 */}
+            {research.directions.map((d, i) => (
+              <div key={i} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-semibold text-blue-800">对标 {i + 1}</span>
+                  <a href={d.asiProduct.url} target="_blank" rel="noreferrer" className="text-sm font-semibold text-blue-700 hover:underline">
+                    {d.asiProduct.name} ↗
+                  </a>
+                  {d.expectedSellUsd && (
+                    <span className="text-[11px] text-slate-500">
+                      建议批发 ${d.expectedSellUsd.min}-${d.expectedSellUsd.max}
+                    </span>
+                  )}
+                </div>
+                {d.why && <p className="mt-1.5 text-[12px] leading-relaxed text-slate-600">{d.why}</p>}
+                {d.features.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {d.features.map((f, j) => (
+                      <span key={j} className="rounded bg-white px-1.5 py-0.5 text-[11px] text-slate-600 ring-1 ring-slate-200">
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {d.risks.length > 0 && (
+                  <p className="mt-1.5 text-[11px] text-amber-700">风险：{d.risks.join('；')}</p>
+                )}
+
+                {/* 1688 同款匹配结果 */}
+                <div className="mt-2.5">
+                  <div className="mb-1.5 text-[11px] font-semibold text-slate-600">1688 同款 / 相似商品</div>
+                  {d.matches.length === 0 ? (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] text-slate-400">自动匹配未命中，可手动搜索：</span>
+                      {d.search1688Urls?.map((u, j) => (
+                        <a key={j} href={u} target="_blank" rel="noreferrer" className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-100">
+                          {d.search1688[j]} ↗
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {d.matches.map((m) => (
+                        <a
+                          key={m.url}
+                          href={m.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-2 rounded-md border border-slate-200 bg-white p-1.5 transition hover:border-blue-300"
+                        >
+                          {m.image ? (
+                            <img src={m.image} alt={m.title} className="h-10 w-10 shrink-0 rounded object-cover" loading="lazy" />
+                          ) : (
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-slate-50 text-[9px] text-slate-300">无图</div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[12px] font-medium text-slate-700">{m.title}</div>
+                            <div className="text-[10px] text-slate-500">
+                              {m.priceCny != null ? `¥${m.priceCny}` : '价格面议'}
+                              {m.moq != null && ` · 起批 ${m.moq} 件`}
+                            </div>
+                          </div>
+                          <span className="shrink-0 text-[10px] text-blue-600">打开 ↗</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {research.tips.length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-amber-800">
+                  <Lightbulb className="h-3 w-3" /> 研究要点
+                </div>
+                <ul className="space-y-0.5">
+                  {research.tips.map((t, i) => (
+                    <li key={i} className="text-[12px] leading-relaxed text-amber-800">· {t}</li>
                   ))}
                 </ul>
               </div>

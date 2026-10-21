@@ -552,3 +552,64 @@ Rules:
 
   return { system, user }
 }
+
+/**
+ * 深度选品研究：输入 4imprint（美国头部 ASI 分销商）热销产品列表，
+ * AI 挑选最有机会的对标品、分析卖点、生成 1688 中文搜索词（供后端继续抓取具体 offer）。
+ */
+export function buildSourcingResearchPrompt(input: {
+  category?: string
+  keywords?: string
+  budgetCny?: number | null
+  notes?: string
+  asiProducts: Array<{
+    name: string
+    url: string
+    priceFrom: number | null
+    priceTo: number | null
+    rating: number | null
+    category: string
+    orderMin: string
+  }>
+}) {
+  const system = `You are a product-sourcing researcher for the US promotional products (ASI) market.
+You receive BEST-SELLING products from 4imprint.com (a top US ASI distributor) with price range, rating and minimum order.
+Pick the most promising ones, analyze WHY they sell well, and generate practical Chinese 1688 search queries to find similar products on 1688.com.
+Respond with STRICT JSON only (no markdown, no commentary):
+{
+  "directions": [
+    {
+      "asiProduct": { "name": "<exact name copied from the list>", "url": "<exact url copied from the list>" },
+      "why": "<Chinese: why this ASI product sells well (buyer demand, price point, features)>",
+      "features": ["<Chinese: 2-4 key selling features of the ASI product>"],
+      "search1688": ["<2-3 practical Chinese 1688 search queries for SIMILAR products>"],
+      "expectedUnitCostCny": <number>,
+      "expectedSellUsd": { "min": <number>, "max": <number> },
+      "risks": ["<Chinese, 1-2 items>"]
+    }
+  ],
+  "tips": ["<Chinese sourcing tips, 2-3 items>"]
+}
+Pick 3-4 ASI products, ordered by overall opportunity. asiProduct.name and asiProduct.url MUST be copied EXACTLY from the provided list.
+search1688 queries must be concrete Chinese product terms a 1688 supplier would list under (e.g. 帆布围裙 定制 — never English).`
+
+  const user = `BEST-SELLING 4imprint products${input.category ? ` (category: ${input.category})` : ''}:
+${input.asiProducts
+  .map(
+    (p, i) =>
+      `${i + 1}. ${p.name} | $${p.priceFrom ?? '?'}${p.priceTo != null && p.priceTo !== p.priceFrom ? `-$${p.priceTo}` : ''} | rating ${p.rating ?? '-'} | min order ${p.orderMin || '-'} | ${p.url}`
+  )
+  .join('\n')}
+
+CONSTRAINTS
+- Buyer focus category: ${input.category || '(open)'}
+- Keywords/interests: ${input.keywords || '(none)'}
+- Max unit budget on 1688: ${input.budgetCny ? `¥${input.budgetCny}` : '(flexible, prefer ≤ ¥30)'}
+- Notes: ${input.notes || '(none)'}
+
+Rules:
+- The 1688 counterpart must be the same product type, logo-customizable, and cheap enough to resell with margin vs the 4imprint price.
+- expectedSellUsd should be at or below the 4imprint price range (competitive wholesale for ASI distributors).`
+
+  return { system, user }
+}

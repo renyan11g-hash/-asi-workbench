@@ -337,6 +337,45 @@ export const api = {
     return data
   },
 
+  // ---------- 深度选品研究（对标 4imprint 热销 → AI 分析 → 1688 找同款） ----------
+  async sourcingResearch(payload: {
+    category?: string
+    keywords?: string
+    budgetCny?: number
+    notes?: string
+  }): Promise<{
+    ok: boolean
+    query: string
+    queryEn: string
+    asiProducts: Array<{
+      name: string
+      url: string
+      image: string
+      priceFrom: number | null
+      priceTo: number | null
+      rating: number | null
+      category: string
+      orderMin: string
+      shipDays: string
+    }>
+    directions: Array<{
+      asiProduct: { name: string; url: string }
+      why: string
+      features: string[]
+      search1688: string[]
+      /** 后端用 GBK 编码生成的可打开 1688 搜索链接（与 search1688 一一对应） */
+      search1688Urls?: string[]
+      expectedUnitCostCny: number | null
+      expectedSellUsd: { min: number; max: number } | null
+      risks: string[]
+      matches: Array<{ url: string; title: string; priceCny: number | null; image: string; moq: number | null }>
+    }>
+    tips: string[]
+  }> {
+    const { data } = await apiClient.post('/products/sourcing-research', payload, LONG_TIMEOUT)
+    return data
+  },
+
   // ---------- 服务端草稿（选品评估防丢失） ----------
   async listDrafts(): Promise<
     Array<{ id: string; title: string; createdAt: string; updatedAt: string }>
