@@ -438,16 +438,54 @@ export const api = {
     return data
   },
 
+  /**
+   * 异步生成 Listing：POST 立即返回 taskId，然后轮询 GET /products/tasks/:taskId。
+   * 解决 Render 免费层 100 秒代理超时导致的 502（同步等待 AI 生成 1-5 分钟必挂）。
+   */
   async generateProductListing(
     id: string,
-    answers?: Array<{ id: string; question: string; answer: string }>
+    answers?: Array<{ id: string; question: string; answer: string }>,
+    onProgress?: (elapsedSec: number) => void
   ): Promise<Product> {
-    const { data } = await apiClient.post<{ product: Product }>(
+    const { data: start } = await apiClient.post<{ taskId: string; status: string }>(
       `/products/${id}/listing`,
-      answers ? { answers } : {},
-      LONG_TIMEOUT
+      answers ? { answers } : {}
     )
-    return data.product
+    const taskId = start.taskId
+    if (!taskId) throw new Error('后端未返回 taskId，请检查后端版本')
+
+    const startedAt = Date.now()
+    const MAX_WAIT_MS = 10 * 60 * 1000 // 与后端 AI 超时一致
+    const POLL_INTERVAL_MS = 3000
+
+    for (;;) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+      const elapsed = Date.now() - startedAt
+      onProgress?.(Math.round(elapsed / 1000))
+      if (elapsed > MAX_WAIT_MS) {
+        throw new Error('生成超时（超过 10 分钟），请重试或检查 AI 服务商状态')
+      }
+      let task: { status: string; result?: { productId?: string }; error?: string; hint?: string }
+      try {
+        const { data } = await apiClient.get<{ status: string; result?: { productId?: string }; error?: string; hint?: string }>(
+          `/products/tasks/${taskId}`
+        )
+        task = data
+      } catch (err) {
+        // 404 = 任务不存在（服务重启清空）；其他网络抖动继续轮询
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/404|不存在/.test(msg)) throw new Error('任务已丢失（服务可能重启过），请重新生成')
+        continue
+      }
+      if (task.status === 'done') {
+        const { data } = await apiClient.get<{ product: Product }>(`/products/${id}`)
+        return data.product
+      }
+      if (task.status === 'error') {
+        throw new Error(task.error ? `${task.error}${task.hint ? `（${task.hint}）` : ''}` : '生成失败，请重试')
+      }
+      // pending / running → 继续轮询
+    }
   },
 
   async findSimilarForProduct(id: string): Promise<{ similar: SimilarResearch; product: Product }> {

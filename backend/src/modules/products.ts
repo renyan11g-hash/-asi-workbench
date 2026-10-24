@@ -14,6 +14,7 @@ import { buildGlsWorkbook } from '../services/gls-export'
 import { recommendImprintMethods } from '../services/imprint-recommend'
 import { Evaluation, Listing, Product, ProductStatus, SimilarResearch, SourceInfo } from '../types'
 import { loadSettings } from './settings'
+import { createTask, getTask, runTask, TaskRecord } from '../services/task-manager'
 
 export const productsRouter: Router = Router()
 
@@ -1090,7 +1091,9 @@ productsRouter.post('/:id/chat-evaluation', async (req: Request, res: Response) 
   res.json({ product: findProduct(id) })
 })
 
-// ---------- AI：生成 Listing（落库） ----------
+// ---------- AI：生成 Listing（异步任务模式：立即返回 taskId，后台执行，前端轮询） ----------
+// Render 免费层代理有 100 秒硬超时，同步等待 AI 生成（1-5 分钟）必然 502。
+// 改为：POST 立即返回 taskId → 后台跑 generateListing → 前端 GET /tasks/:taskId 轮询结果。
 productsRouter.post('/:id/listing', async (req: Request, res: Response) => {
   const id = String(req.params.id)
   const current = findProduct(id)
@@ -1108,16 +1111,31 @@ productsRouter.post('/:id/listing', async (req: Request, res: Response) => {
         .optional(),
     })
     .parse(req.body ?? {})
-  const listing = await runAi(() =>
-    generateListing(current.source, settings, body.answers as ListingAnswer[] | undefined, current.similar)
-  )
-  db.prepare('UPDATE products SET listing=?, status=?, updated_at=? WHERE id=?').run(
-    JSON.stringify(listing),
-    'listed',
-    new Date().toISOString(),
-    id
-  )
-  res.json({ product: findProduct(id) })
+
+  const task = createTask('generate-listing')
+  runTask(task, async () => {
+    const listing = await runAi(() =>
+      generateListing(current.source, settings, body.answers as ListingAnswer[] | undefined, current.similar)
+    )
+    db.prepare('UPDATE products SET listing=?, status=?, updated_at=? WHERE id=?').run(
+      JSON.stringify(listing),
+      'listed',
+      new Date().toISOString(),
+      id
+    )
+    return { productId: id }
+  })
+
+  res.json({ taskId: task.id, status: task.status })
+})
+
+// ---------- 任务轮询：查询异步任务状态/结果 ----------
+productsRouter.get('/tasks/:taskId', (req: Request, res: Response) => {
+  const task: TaskRecord | undefined = getTask(String(req.params.taskId))
+  if (!task) {
+    throw new AppError(404, '任务不存在或已过期（服务重启会清空任务，请重新生成）')
+  }
+  res.json(task)
 })
 
 // ---------- AI：分块重新生成（只重生成指定区块字段，不重生成整个 listing；不落库，由前端确认后保存） ----------

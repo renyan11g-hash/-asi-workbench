@@ -463,6 +463,7 @@ export default function ListingEditor() {
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [genElapsed, setGenElapsed] = useState<number | null>(null) // 异步生成已耗时（秒）
   const syncedId = useRef<string | null>(null)
   const [draftMeta, setDraftMeta] = useState<{ savedAt: string } | null>(null)
   const [hasDraft, setHasDraft] = useState(false)
@@ -533,12 +534,14 @@ export default function ListingEditor() {
     setDirty(true)
   }
 
-  /** 触发生成：直接调用 AI 生成（不再弹窗询问，节省时间） */
+  /** 触发生成：异步任务模式（后台跑 + 轮询，不卡页面、不怕 Render 100 秒超时） */
   const doGenerate = async () => {
     if (!product) return
     setBusy(true)
     try {
-      const updated = await api.generateProductListing(product.id)
+      const updated = await api.generateProductListing(product.id, undefined, (sec) => {
+        setGenElapsed(sec)
+      })
       setListing(updated.listing)
       setDirty(false)
       setHasDraft(false)
@@ -554,6 +557,7 @@ export default function ListingEditor() {
       toast.error(getErrorMessage(err))
     } finally {
       setBusy(false)
+      setGenElapsed(null)
     }
   }
 
@@ -754,7 +758,13 @@ export default function ListingEditor() {
         <div className="flex flex-wrap items-center gap-2">
           <Button onClick={generate} disabled={busy}>
             {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Wand2 className="mr-1 h-4 w-4" />}
-            {busy ? '生成中…' : product.listing ? '重新生成' : 'AI 生成 ASI 英文链接'}
+            {busy
+              ? genElapsed !== null
+                ? `后台生成中… ${genElapsed}s（完成会自动填入）`
+                : '后台生成中…'
+              : product.listing
+                ? '重新生成'
+                : 'AI 生成 ASI 英文链接'}
           </Button>
           <Button
             variant="outline"
