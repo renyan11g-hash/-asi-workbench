@@ -3,6 +3,50 @@ import { ASI_CATEGORIES, ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_B
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { costSummaryForPrompt, convertUnits } from './pricing'
 
+/**
+ * 类目智能筛选：从 926 个 GLS 类目中按产品文本相关性挑出最匹配的 N 个。
+ * 全量注入 400 项（约 8000+ 字符）会显著拖慢 AI 响应（token 多 → 首字延迟高 + 生成慢），
+ * 相关性筛选后只注入 ~60 项（约 1200 字符），AI 选择面依然足够，速度大幅提升。
+ */
+export function pickRelevantCategories(source: SourceInfo, max = 60): string[] {
+  // 产品侧文本：标题 + 描述 + 关键词 + 类目提示 + 中文材质（小写化做匹配）
+  const haystack = [
+    source.sourceTitle,
+    source.description,
+    source.amazonTitle,
+    source.category,
+    source.materialCn,
+    (source.sourceKeywords ?? []).join(' '),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+  // 提取产品侧有效词（≥2 字符的英文词 + 中文 2 字词），作为匹配信号
+  const signals = new Set<string>()
+  for (const w of haystack.match(/[a-z]{2,}/g) ?? []) signals.add(w)
+  for (const w of haystack.match(/[\u4e00-\u9fa5]{2}/g) ?? []) signals.add(w)
+
+  // 打分：类目里每个词命中产品信号 +1（类目词越长越具体，命中含金量越高）
+  const scored = GLS_CATEGORIES.map((cat) => {
+    const words = cat.toLowerCase().match(/[a-z]{2,}/g) ?? []
+    let score = 0
+    for (const w of words) if (signals.has(w)) score += 1
+    return { cat, score }
+  })
+
+  // 有命中的按分排序取前 N；命中不足时用列表头部（高频通用类目）补齐
+  const hits = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).map((s) => s.cat)
+  const picked = hits.slice(0, max)
+  if (picked.length < max) {
+    for (const cat of GLS_CATEGORIES) {
+      if (picked.length >= max) break
+      if (!picked.includes(cat)) picked.push(cat)
+    }
+  }
+  return picked
+}
+
 const ASI_CONTEXT = `You are a senior copywriter for US promotional products (ASI / PPAI / SAGE / Distributor e-commerce) catalogs.
 You write product listings that rank in distributor search and convert corporate buyers.
 
@@ -108,8 +152,8 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 - If an answer says "no" or is empty, omit that claim from the listing.`
 
   const themesPick = ASI_THEMES.join(', ')
-  // 类目来自金山文档「Categories」表（1620 项）；全量注入太长，给前 400 项 + 匹配规则
-  const categoriesPick = GLS_CATEGORIES.slice(0, 400).join(', ')
+  // 类目来自金山文档「Categories」表（926 项）；按产品相关性智能筛选 ~60 项注入（提速：token 少 → 响应快）
+  const categoriesPick = pickRelevantCategories(source, 60).join(', ')
   const materialsPick = ASI_MATERIALS.join(', ')
   const imprintsPick = ASI_IMPRINT_METHODS.join(', ')
 
@@ -151,7 +195,7 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 ${answersBlock}${similarBlock}
 
 REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)
-- Categories (up to 2, MUST be from the GLS category table — first 400 of 1620 listed here; if none fits, pick the closest match by keyword): ${categoriesPick}
+- Categories (up to 2, MUST be from the GLS category list below — pre-filtered to the most relevant for this product; if none fits, pick the closest match by keyword): ${categoriesPick}
 - ASI Themes (exactly 5, MUST include 'Anniversary' and 'Sustainable'): ${themesPick}
 - ASI Materials (one): ${materialsPick}
 - ASI Imprint Methods (1-4): ${imprintsPick}

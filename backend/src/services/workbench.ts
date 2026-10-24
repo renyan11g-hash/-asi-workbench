@@ -605,7 +605,8 @@ export async function generateListing(
   const { rows } = buildPriceGrid(source, settings)
   if (!settings.aiApiKey?.trim()) return templateListing(source, settings)
   const { system, user } = buildListingPrompt(source, settings, answers, similar)
-  const images = (source.images ?? []).slice(0, 4)
+  // 只注入前 2 张图：图片是视觉 token 大头，4 张会显著拖慢响应；2 张足够判断产品形态与印刷面
+  const images = (source.images ?? []).slice(0, 2)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.5, images)
   const listing = normalizeListing(raw, rows, source, settings)
   return applyQc(listing)
