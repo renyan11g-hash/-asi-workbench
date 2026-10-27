@@ -2,13 +2,17 @@ import { Settings, SourceInfo, Evaluation, Listing, SimilarResearch } from '../t
 import { ASI_CATEGORIES, ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { costSummaryForPrompt, convertUnits } from './pricing'
+import { recommendImprintMethods } from './imprint-recommend'
 
 /**
- * 类目智能筛选：从 926 个 GLS 类目中按产品文本相关性挑出最匹配的 N 个。
- * 全量注入 400 项（约 8000+ 字符）会显著拖慢 AI 响应（token 多 → 首字延迟高 + 生成慢），
- * 相关性筛选后只注入 ~60 项（约 1200 字符），AI 选择面依然足够，速度大幅提升。
+ * 类目智能筛选：从 GLS 类目表中按产品文本相关性挑出最匹配的 N 个。
+ * 关键改进（修复「中文 1688 源打不中英文类目表 → 注入字母序杂项 → AI 编造类目」的问题）：
+ * 1. 中文品类词经「中文 → 英文类目信号词」映射后参与打分（保温杯 → insulated/bottle/mug...）；
+ * 2. 类目主词（连字符前缀，如 "Bottles-Insulated" 的 "Bottles"）命中权重更高（+3）；
+ * 3. 命中某类目后，同主词族的全部变体一并注入（AI 看到 "Bottles-*" 全家族才能选准）；
+ * 4. 全部零命中时均匀采样覆盖 A-Z，不再注入字母序头部杂项误导 AI。
  */
-export function pickRelevantCategories(source: SourceInfo, max = 60): string[] {
+export function pickRelevantCategories(source: SourceInfo, max = 80): string[] {
   // 产品侧文本：标题 + 描述 + 关键词 + 类目提示 + 中文材质（小写化做匹配）
   const haystack = [
     source.sourceTitle,
@@ -22,29 +26,80 @@ export function pickRelevantCategories(source: SourceInfo, max = 60): string[] {
     .join(' ')
     .toLowerCase()
 
-  // 提取产品侧有效词（≥2 字符的英文词 + 中文 2 字词），作为匹配信号
+  // 提取产品侧有效词（≥2 字符的英文词）
   const signals = new Set<string>()
   for (const w of haystack.match(/[a-z]{2,}/g) ?? []) signals.add(w)
-  for (const w of haystack.match(/[\u4e00-\u9fa5]{2}/g) ?? []) signals.add(w)
 
-  // 打分：类目里每个词命中产品信号 +1（类目词越长越具体，命中含金量越高）
+  // 中文品类词 → 英文类目信号词（1688 中文标题/描述的关键 bridge，否则英文类目表完全打不中）
+  const CN_CATEGORY_SIGNALS: Array<[RegExp, string[]]> = [
+    [/保温|真空|保冷|thermos|tumbler/i, ['insulated', 'vacuum', 'tumbler']],
+    [/水瓶|水壶|运动壶|瓶子|壶/i, ['bottle', 'flask']],
+    [/马克杯|咖啡杯|mug/i, ['mug', 'stein']],
+    [/随行杯|吸管杯|纸杯|杯/i, ['cup', 'tumbler']],
+    [/酒|红酒|葡萄酒|香槟|威士忌/i, ['wine', 'glass', 'bar', 'shot']],
+    [/杯垫/i, ['coaster']],
+    [/袋|包|箱包|背包|拎包|收纳包/i, ['bag', 'tote', 'backpack', 'pack']],
+    [/帽/i, ['cap', 'hat', 'headwear']],
+    [/笔/i, ['pen', 'pencil', 'writing']],
+    [/伞/i, ['umbrella']],
+    [/钥匙扣|钥匙链|挂绳|工牌|证件|徽章/i, ['keychain', 'chain', 'lanyard', 'badge', 'holder']],
+    [/笔记|记事本|手账|日历|plan/i, ['notebook', 'journal', 'planner', 'calendar']],
+    [/手机|电子|充电|数据线|耳机|音箱|u盘|支架/i, ['phone', 'electronic', 'tech', 'charger', 'cable', 'usb']],
+    [/玩具|积木|拼图|飞盘/i, ['toy', 'game', 'puzzle']],
+    [/厨房|厨具|餐具|刀具|砧板|炊具|筷子/i, ['kitchen', 'cutlery', 'utensil', 'knife', 'dining']],
+    [/牙刷|洗护|化妆|美容|护肤|梳|镜/i, ['care', 'cosmetic', 'beauty', 'grooming', 'mirror']],
+    [/宠物|猫|狗/i, ['pet', 'dog', 'cat']],
+    [/灯|照明/i, ['light', 'lamp']],
+    [/工具|扳手|螺丝|卷尺|五金/i, ['tool', 'hardware']],
+    [/运动|健身|瑜伽|球/i, ['sport', 'fitness', 'gym', 'yoga', 'ball']],
+    [/户外|露营|野餐|烧烤/i, ['outdoor', 'camping', 'picnic', 'bbq']],
+    [/收纳|整理|置物/i, ['storage', 'organizer']],
+    [/贺卡|卡片|贴纸|贴膜/i, ['card', 'sticker', 'decal']],
+    [/表|时钟|闹钟/i, ['watch', 'clock']],
+    [/风扇|制冷|冰/i, ['fan', 'cooling', 'ice']],
+    [/餐盒|饭盒|保鲜|食品罐/i, ['container', 'lunch', 'food']],
+    [/毛巾|浴巾/i, ['towel']],
+    [/地毯|垫子|脚垫|桌垫|鼠标垫/i, ['mat', 'pad']],
+    [/画|海报|挂旗|旗帜|横幅/i, ['flag', 'banner', 'poster']],
+    [/印章|印泥/i, ['stamp']],
+  ]
+  for (const [re, words] of CN_CATEGORY_SIGNALS) {
+    if (re.test(haystack)) for (const w of words) signals.add(w)
+  }
+
+  // 单复数兼容的信号命中判断（类目词 "flasks" 可命中信号 "flask"）
+  const hitSignal = (w: string): boolean => {
+    if (signals.has(w)) return true
+    if (w.length > 3 && w.endsWith('s') && signals.has(w.slice(0, -1))) return true
+    return signals.has(`${w}s`)
+  }
+
+  // 打分：主词（连字符前缀）命中 +3，其余词命中 +1（主词决定大类，含金量最高）
   const scored = GLS_CATEGORIES.map((cat) => {
-    const words = cat.toLowerCase().match(/[a-z]{2,}/g) ?? []
+    const mainWords: string[] = cat.split('-')[0].toLowerCase().match(/[a-z]{2,}/g) ?? []
+    const restWords: string[] = (cat.toLowerCase().match(/[a-z]{2,}/g) ?? []).filter((w) => !mainWords.includes(w))
     let score = 0
-    for (const w of words) if (signals.has(w)) score += 1
+    for (const w of mainWords) if (hitSignal(w)) score += 3
+    for (const w of restWords) if (hitSignal(w)) score += 1
     return { cat, score }
   })
 
-  // 有命中的按分排序取前 N；命中不足时用列表头部（高频通用类目）补齐
-  const hits = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).map((s) => s.cat)
-  const picked = hits.slice(0, max)
-  if (picked.length < max) {
-    for (const cat of GLS_CATEGORIES) {
-      if (picked.length >= max) break
-      if (!picked.includes(cat)) picked.push(cat)
-    }
+  const hits = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score)
+  if (!hits.length) {
+    // 零命中兜底：均匀采样覆盖 A-Z（不注入字母序头部杂项）
+    const step = Math.max(1, Math.floor(GLS_CATEGORIES.length / max))
+    const picked: string[] = []
+    for (let i = 0; i < GLS_CATEGORIES.length && picked.length < max; i += step) picked.push(GLS_CATEGORIES[i])
+    return picked
   }
-  return picked
+
+  const pickedSet = new Set(hits.slice(0, max).map((h) => h.cat))
+  // 家族补齐：前 10 个命中类目的同主词变体全部注入（如 Bottles-* / Mugs & Steins-* 全家族）
+  const families = new Set(hits.slice(0, 10).map((h) => h.cat.split('-')[0]))
+  for (const cat of GLS_CATEGORIES) {
+    if (families.has(cat.split('-')[0])) pickedSet.add(cat)
+  }
+  return GLS_CATEGORIES.filter((c) => pickedSet.has(c))
 }
 
 const ASI_CONTEXT = `You are a senior copywriter for US promotional products (ASI / PPAI / SAGE / Distributor e-commerce) catalogs.
@@ -64,11 +119,11 @@ ASI Listing field rules (strict):
   - You may include a brand name from the SAME product line (e.g. "Yeti Bags" only when it's truly a parallel/clone product line, not the actual brand).
   - DO NOT include obvious branded terms (Disney, Marvel, NBA, NFL, MLB, Sanrio, Hello Kitty, Nike, Apple, Coca, Pepsi, LEGO, Barbie, Tesla, Gucci, LV, etc.).
   - DO NOT force-fit unrelated brands.
-- Category: choose ONE from the ASI category list below.
-- Themes: choose EXACTLY 5 from the ASI themes list below; ALWAYS include "Anniversary" and "Sustainable" as two of the five (they are universal).
+- Category: choose ONE exact string from the GLS category list provided in the prompt (it states what the product physically IS).
+- Themes: choose EXACTLY 5 from the ASI themes list below; ALWAYS include "Anniversary" and "Sustainable" as two of the five (they are universal); the other 3 must genuinely match this product's audience/use case.
 - Material: choose ONE OR MORE from the ASI material list (max 4), joined by English comma (e.g. "Stainless Steel, Aluminum"). Pick every material actually present in the product.
 - Colors: translate each Chinese color into its ASI English equivalent and join with "/" (e.g. "Black/Gray/Brown/Orange/Army Green").
-- Imprint Methods: choose from the ASI imprint methods list below. ALWAYS include exactly these three: "Silkscreen", "Unimprinted", and "Full Color". Then add as many additional relevant methods from the same list as genuinely apply to this product (no upper limit).
+- Imprint Methods: choose from the ASI imprint methods list below. ALWAYS include exactly these three: "Silkscreen", "Unimprinted", and "Full Color". Then add as many additional methods as the product's MATERIAL genuinely supports (Laser Engraved/Etched only for metal/wood/leather; Embroidered only for fabric; Sublimation only for polyester/coated surfaces; Debossed/Foil Stamped only for leather/paper; Pad Print for curved small surfaces). Never add a method the material cannot support.
 - Imprint Area: estimate the printable area in inches for each printable face (Front/Back/Wrap), e.g. 'Front: 2.5" W x 2" H; Wrap: 8" W x 3" H'. Use the uploaded product images + size data.
 - Do NOT invent certifications (FDA, UL, CPSIA, BPA-free, etc.) unless the 1688 source explicitly states them.
 - Do NOT mention brand names, licensed characters, or trademarks.
@@ -152,10 +207,12 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 - If an answer says "no" or is empty, omit that claim from the listing.`
 
   const themesPick = ASI_THEMES.join(', ')
-  // 类目来自金山文档「Categories」表（926 项）；按产品相关性智能筛选 ~60 项注入（提速：token 少 → 响应快）
-  const categoriesPick = pickRelevantCategories(source, 60).join(', ')
+  // 类目来自金山文档「Categories」表；按产品相关性智能筛选（命中词族全部变体一并注入，AI 才能选准）
+  const categoriesPick = pickRelevantCategories(source, 80).join(', ')
   const materialsPick = ASI_MATERIALS.join(', ')
   const imprintsPick = ASI_IMPRINT_METHODS.join(', ')
+  // 印刷方式材质驱动：先用本地规则引擎按 1688 材质描述算出兼容方法，AI 只能在此基础上补充
+  const imprintRecoPick = recommendImprintMethods(source).recommendations.map((r) => r.method).join(', ')
 
   const answersBlock = answers?.length
     ? `\n\nANSWERS FROM THE SALESPERSON (use as the source of truth for selling points; do NOT add anything not stated here):\n${answers
@@ -195,10 +252,13 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 ${answersBlock}${similarBlock}
 
 REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)
-- Categories (up to 2, MUST be from the GLS category list below — pre-filtered to the most relevant for this product; if none fits, pick the closest match by keyword): ${categoriesPick}
+- Categories (up to 2, MUST be exact strings from the GLS category list below — pre-filtered to the most relevant for this product): ${categoriesPick}
+  Pick the 1-2 entries that state WHAT THE PRODUCT PHYSICALLY IS (e.g. an insulated steel bottle → "Bottles-Insulated"; a ceramic coffee mug → "Mugs & Steins-Ceramic"). Never pick an entry describing a different product.
 - ASI Themes (exactly 5, MUST include 'Anniversary' and 'Sustainable'): ${themesPick}
-- ASI Materials (one): ${materialsPick}
-- ASI Imprint Methods (1-4): ${imprintsPick}
+  The other 3 themes must GENUINELY match this product's audience/use case (e.g. camping gear → 'Camping', 'Outdoor'; office giveaway → 'Corporate', 'Trade Show'). Do NOT pad with unrelated themes.
+- ASI Materials (one or more, max 4): ${materialsPick}
+- ASI Imprint Methods (REQUIRED: 'Silkscreen', 'Unimprinted', 'Full Color', then extras): ${imprintsPick}
+  MATERIAL CONSTRAINT — based on this product's material, the compatible methods are: ${imprintRecoPick || 'Silkscreen, Full Color, Heat Transfer'}. Add extras ONLY from compatible ones (e.g. Laser Engraved/Etched only for metal/wood/leather; Embroidered only for fabric; Sublimation only for polyester or coated surfaces; Debossed/Foil Stamped only for leather/paper). Never add a method the material cannot support.
 - Color style: translate each Chinese color to its ASI English form, join with "/" (e.g. "Black/Gray/Brown/Orange/Army Green").
 
 KEYWORD SEED LIBRARY (high-frequency US promo terms, drawn from asinseed / Amazon promo research, already deduplicated; pick only ones that are RELEVANT to this product, do NOT stuff):
@@ -221,15 +281,15 @@ OUTPUT JSON SCHEMA (all fields required, all values MUST be plain strings/object
   "summary": "≤130 chars English, highlight core selling points, MUST end with EXACTLY 'Rush service is available' (include a space before it). NEVER mention colors or color names. Do NOT mention logo customization / custom logo printing. Do NOT mention imprint/printing methods.",
   "description": "≤800 chars English, modeled on Amazon US similar-product descriptions adapted to ASI promo style. 50-70% product description + the rest keywords blended in naturally. Do NOT list dimensions or size. No brand-story copy structure. NEVER mention colors or color names (color info lives ONLY in the 'colors'/'colorChips' fields). Do NOT specifically state that the logo can be customized / custom logo is available (imprinting is the default assumption; the Imprint Methods field already covers it). Do NOT describe imprint/printing methods or techniques (that info lives ONLY in the 'imprintMethods'/'imprintArea' fields).",
   "keywords": "single string of EXACTLY 30 groups separated by English commas (count them — always 30). PRIMARY GOAL: each group is phrased exactly as a US distributor would type it when sourcing this product on ASI — maximize search hit rate, click rate and conversion. Each group ≤30 chars, ≤4 words. Title Case. Built from asinseed-style ASIN high-frequency terms + the SEED LIBRARY. STRICT word-level dedupe: NO English word may repeat across different groups (each word appears exactly once in the whole string; use synonyms instead). If you run out of ideas, extend with product-attribute variants (material, use case, audience, occasion, style, feature) — never pad with irrelevant words. Do NOT include obvious brand names like ${BRAND_BLOCKLIST.slice(0, 6).join(', ')}.",
-  "category": "the PRIMARY category, ONE from the above ASI category list",
+  "category": "the PRIMARY category, ONE exact string from the GLS category list above",
   "typeOfProduct": "Type of Product: the ONE best-fit ASI top-level category from this exact list: ${ASI_CATEGORIES.join(' | ')}. Pick the single most representative category for this product.",
-  "categories": ["1-2 ASI categories from the list above; the first MUST equal \"category\"; pick the most relevant for this product (max 2)"],
-  "themes": ["exactly 5 ASI theme strings, MUST include 'Anniversary' and 'Sustainable'"],
+  "categories": ["1-2 GLS categories from the list above; the first MUST equal \"category\"; pick the most relevant for this product (max 2)"],
+  "themes": ["exactly 5 ASI theme strings, MUST include 'Anniversary' and 'Sustainable'; the other 3 must genuinely match this product's audience/use case"],
   "material": "ONE OR MORE from the above ASI material list, joined by English comma (e.g. 'Stainless Steel, Aluminum'), max 4",
   "materials": ["array form of the same materials"],
   "colors": "color string joined by '/', e.g. 'Black/Gray/Brown/Orange/Army Green'",
   "colorChips": ["individual English color names used in 'colors'"],
-  "imprintMethods": ["the three REQUIRED items 'Silkscreen', 'Unimprinted', 'Full Color' PLUS any additional relevant ones from the above ASI imprint list — there is NO upper limit, include all that apply to this product"],
+  "imprintMethods": ["the three REQUIRED items 'Silkscreen', 'Unimprinted', 'Full Color' PLUS compatible methods from the above ASI imprint list — include every method the product's MATERIAL can support (see MATERIAL CONSTRAINT above), never an incompatible one"],
   "imprintArea": "English imprint area per face in inches (e.g. 'Front: 2.5\\\" W x 2\\\" H; Wrap: 8\\\" W x 3\\\" H'), estimated from the uploaded product images + product size",
   "productionTime": "English, e.g. '5-7 business days after proof approval'",
   "packaging": "English packaging & shipping info",
@@ -511,6 +571,24 @@ export function buildFieldsRegeneratePrompt(
   fields: string[],
   instruction?: string
 ) {
+  // 枚举值域注入：分块重生成时 AI 必须从合法字符串中选择（此前只给规则不给列表 → 编造值被后处理丢弃）
+  const needsCategories = fields.includes('categories') || fields.includes('category')
+  const needsThemes = fields.includes('themes')
+  const needsImprints = fields.includes('imprintMethods')
+  const enumBlock = [
+    needsCategories
+      ? `GLS CATEGORIES (exact strings ONLY — copy verbatim):\n${pickRelevantCategories(source, 80).join(', ')}`
+      : '',
+    needsThemes ? `ASI THEMES (exact strings ONLY):\n${ASI_THEMES.join(', ')}` : '',
+    needsImprints
+      ? `ASI IMPRINT METHODS (exact strings ONLY): ${ASI_IMPRINT_METHODS.join(', ')}\nMATERIAL CONSTRAINT — based on this product's material, the compatible methods are: ${
+          recommendImprintMethods(source).recommendations.map((r) => r.method).join(', ') || 'Silkscreen, Full Color, Heat Transfer'
+        }. Add extras ONLY from compatible ones; never add a method the material cannot support.`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
   const system = `${ASI_CONTEXT}
 
 You regenerate ONLY the requested fields of an existing ASI listing. All other fields stay unchanged.
@@ -519,7 +597,7 @@ The JSON object MUST contain EXACTLY these keys (same names, flat — do NOT wra
 
 Value type by key:
 - Array fields (keywords / themes / categories / materials / imprintMethods / warnings / colorChips): JSON array of strings
-- All other fields: a single string`
+- All other fields: a single string${enumBlock ? `\n\nALLOWED VALUES (copy EXACT strings — never invent new ones):\n${enumBlock}` : ''}`
 
   const user = `1688 PRODUCT
 - Title: ${source.sourceTitle || '(empty)'}
@@ -541,7 +619,7 @@ ${instruction ? `Salesperson instruction (MUST be respected): ${instruction}` : 
 
 Rules:
 - Output ONLY the requested keys. Never output other fields.
-- Respect all ASI rules per field: title ≤60 chars, Keyword+Traffic Word+Selling Point+Core Noun, do NOT deliberately emphasize "Custom"; summary ≤130 chars ending with EXACTLY "Rush service is available"; description ≤800 chars, Amazon-US-similar style, no size mention, no brand-story structure; keywords EXACTLY 30 groups (always fill to 30) each ≤30 chars ≤4 words Title Case, built from asinseed-style ASIN high-frequency terms + the seed library, written as US distributor search queries, and NO English word may repeat across groups (word-level global dedupe; use synonyms); the 30 groups must collectively cover product-name variants, functions & performance, material & construction, and real use scenarios; themes EXACTLY 5 incl. "Anniversary" + "Sustainable"; categories max 2 from the GLS category table (exact strings only); materials from the ASI material list; imprintMethods MUST include "Silkscreen", "Unimprinted", "Full Color" plus relevant extras; colors joined by "/".
+- Respect all ASI rules per field: title ≤60 chars, Keyword+Traffic Word+Selling Point+Core Noun, do NOT deliberately emphasize "Custom"; summary ≤130 chars ending with EXACTLY "Rush service is available"; description ≤800 chars, Amazon-US-similar style, no size mention, no brand-story structure; keywords EXACTLY 30 groups (always fill to 30) each ≤30 chars ≤4 words Title Case, built from asinseed-style ASIN high-frequency terms + the seed library, written as US distributor search queries, and NO English word may repeat across groups (word-level global dedupe; use synonyms); the 30 groups must collectively cover product-name variants, functions & performance, material & construction, and real use scenarios; themes EXACTLY 5 incl. "Anniversary" + "Sustainable" (other 3 must genuinely match this product's audience/use case); categories max 2 from the GLS category list above (copy EXACT strings); materials from the ASI material list; imprintMethods MUST include "Silkscreen", "Unimprinted", "Full Color" plus MATERIAL-COMPATIBLE extras only; colors joined by "/".
 - For title, summary and description: NEVER mention colors or color names (color info lives ONLY in the colors/colorChips fields), do NOT specifically state that the logo can be customized / custom logo printing is available (imprinting is the default assumption; the imprintMethods field already covers it), and do NOT describe imprint/printing methods or techniques (that info lives ONLY in the imprintMethods/imprintArea fields).
 - typeOfProduct: MUST be exactly ONE string from the ASI top-level category list (Apparel & Outerwear | Automotive Accessories | Awards & Trophies | Baby, Toddler, & Child Items | Bags & Luggage | Caps & Hats | Drinkware | Electronics & Tech Products | Equipment and Business Services | Food, Beverage & Tobacco | Health, Beauty & Wellness | Home & Garden | Jewelry and Accessories | Key Chains | Kitchen & Dining | Lanyard, Badges, & Badge Holders | Magnets & Buttons, Stickers & Decals | Party Supplies | Pet Supplies | Publications | School, Office, & Craft Supplies | Signs, Banners, Flags, & Displays | Sports, Fitness, & Outdoors | Storage & Organization | Tools & Hardware | Toys, Games, & Novelties | Writing Instruments | Other).
 - English fields (title/summary/description/keywords/categories/themes/materials/imprintMethods/colors) must be English only. Chinese only in *Zh fields.`

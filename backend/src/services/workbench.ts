@@ -15,7 +15,8 @@ import {
   toTitleCase,
   translateColors,
 } from '../constants/asi'
-import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, ChatMessage, ListingAnswer } from './prompts'
+import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, pickRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
+import { recommendImprintMethods } from './imprint-recommend'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
@@ -31,21 +32,96 @@ const num = (v: unknown, fallback = 0): number => {
   return Number.isFinite(n) ? n : fallback
 }
 
+/** 枚举归一化：小写、&→and、去标点、压空白 —— 用于模糊匹配 AI 返回的枚举近似值 */
+const enumNorm = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+/** 词序无关 + 单复数无关的匹配键（逐词去尾部 s，≥4 字符才去） */
+const enumKey = (s: string): string =>
+  enumNorm(s)
+    .split(' ')
+    .map((w) => (w.length >= 4 && w.endsWith('s') ? w.slice(0, -1) : w))
+    .sort()
+    .join(' ')
+
+/**
+ * 模糊枚举匹配：精确小写 → 归一化 → 单复数/词序无关。
+ * 修复：AI 返回 "Mugs and Steins-Aluminum" / "insulated bottles" 之类近似值时，
+ * 旧逻辑精确匹配失败 → 静默丢弃 → 回退到中文类目提示。
+ */
+const fuzzyEnumMatch = (allowed: readonly string[], value: string): string | undefined => {
+  const v = enumNorm(value)
+  if (!v) return undefined
+  for (const x of allowed) if (enumNorm(x) === v) return x
+  const vk = enumKey(value)
+  for (const x of allowed) if (enumKey(x) === vk) return x
+  return undefined
+}
+
 const pickEnum = (allowed: readonly string[], value: unknown, fallback: string): string => {
   const s = typeof value === 'string' ? value.trim() : ''
   if (!s) return fallback
   const hit = allowed.find((x) => x.toLowerCase() === s.toLowerCase())
-  return hit ?? fallback
+  if (hit) return hit
+  return fuzzyEnumMatch(allowed, s) ?? fallback
 }
 
 const pickEnumMany = (allowed: readonly string[], values: unknown): string[] => {
   const list = arr(values)
   const set = new Set<string>()
   for (const v of list) {
-    const hit = allowed.find((x) => x.toLowerCase() === v.toLowerCase())
+    const hit = allowed.find((x) => x.toLowerCase() === v.toLowerCase()) ?? fuzzyEnumMatch(allowed, v)
     if (hit) set.add(hit)
   }
   return Array.from(set)
+}
+
+/** GLS 类目主词 → ASI 一级大类：typeOfProduct 兜底推断（旧逻辑回退 GLS 细分类目 → 字段非法） */
+const GLS_PREFIX_TO_TYPE: Array<[RegExp, string]> = [
+  [/bottle|mug|cup|tumbler|flask|stein|pitcher|wine glass|shot glass|coaster|drinkware/i, 'Drinkware'],
+  [/bag|tote|backpack|luggage|duffel|wallet|cooler bag/i, 'Bags & Luggage'],
+  [/cap|hat|visor|beanie|headwear|bandana/i, 'Caps & Hats'],
+  [/pen|pencil|marker|highlighter|crayon/i, 'Writing Instruments'],
+  [/keychain|key chain|key tag|keyring|lanyard|badge/i, 'Key Chains'],
+  [/notebook|journal|planner|calendar|folder|portfolio|stationery|desk|office/i, 'School, Office, & Craft Supplies'],
+  [/shirt|apparel|jacket|hoodie|polo|apron|pajama/i, 'Apparel & Outerwear'],
+  [/tool|knife|flashlight|multitool|hardware|tape measure/i, 'Tools & Hardware'],
+  [/kitchen|cutlery|utensil|cutting board|grater|peeler/i, 'Kitchen & Dining'],
+  [/toy|game|puzzle|novelty|yo-yo|frisbee/i, 'Toys, Games, & Novelties'],
+  [/electronic|tech|charger|cable|usb|speaker|earbud|power bank|mouse/i, 'Electronics & Tech Products'],
+]
+
+const guessTypeOfProduct = (glsCategory: string): string => {
+  const hay = glsCategory.toLowerCase()
+  for (const [re, t] of GLS_PREFIX_TO_TYPE) if (re.test(hay)) return t
+  return 'Other'
+}
+
+/** 主题词与产品文案的相关性打分（applyQc 智能补齐主题用，替代固定通用列表） */
+const THEME_STOPWORDS = new Set(['and', 'the', 'of', 'for', 'day', 'week'])
+const scoreThemeAgainstListing = (theme: string, text: string): number => {
+  const words = theme.toLowerCase().replace(/&/g, ' and ').match(/[a-z]+/g) ?? []
+  let score = 0
+  for (const w of words) {
+    // 过滤停用词与过短词（'s'/'st' 等碎词会子串误命中 stainless 等长词）
+    if (THEME_STOPWORDS.has(w) || w.length < 3) continue
+    // 词边界匹配：'st' 不再误命中 'stainless'，'camping' 精确命中
+    if (new RegExp(`\\b${w}\\b`).test(text)) score += 1
+  }
+  return score
+}
+
+/** 印刷方式材质过滤：仅保留规则引擎判定与该产品材质兼容的方式（必需三项由调用方保证） */
+const materialCompatibleImprints = (source: SourceInfo, extras: string[]): string[] => {
+  const compatible = new Set<string>(
+    recommendImprintMethods(source).recommendations.map((r) => r.method as string)
+  )
+  return extras.filter((m) => compatible.has(m))
 }
 
 function normalizeEvaluation(raw: Record<string, unknown>): Evaluation {
@@ -312,22 +388,71 @@ export function applyQc(listing: Listing): Listing {
   }
   title = title.replace(/\s+/g, ' ').trim()
 
-  // 主题必含 Anniversary + Sustainable
-  const themes = Array.from(new Set([...listing.themes, ...DEFAULT_THEMES]))
+  // 主题：先模糊校验合法值；必含 Anniversary + Sustainable（置顶保证不被截断丢弃）；不足按产品文案相关性智能补齐
+  const requiredThemes: readonly string[] = DEFAULT_THEMES
+  const themes = (() => {
+    const valid = Array.from(
+      new Set(
+        listing.themes
+          .map((t) => fuzzyEnumMatch(ASI_THEMES, t))
+          .filter((t): t is string => !!t)
+      )
+    )
+    const rest = valid.filter((t) => !requiredThemes.includes(t))
+    return [...requiredThemes, ...rest]
+  })()
   if (themes.length < LIMITS.themes) {
-    const candidates = ['Trade Show', 'Corporate', 'Eco & Environmentally Friendly', 'Wellness']
+    const text = [listing.title, listing.summary, listing.description, ...(listing.keywords ?? [])]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+    const genericPriority = ['Corporate', 'Trade Show', 'Eco & Environmentally Friendly', 'Wellness']
+    const candidates = (ASI_THEMES as readonly string[])
+      .filter((t) => !themes.includes(t))
+      .map((t) => ({ t, score: scoreThemeAgainstListing(t, text) }))
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score
+        const ga = genericPriority.indexOf(a.t)
+        const gb = genericPriority.indexOf(b.t)
+        return (ga === -1 ? 99 : ga) - (gb === -1 ? 99 : gb)
+      })
     for (const c of candidates) {
       if (themes.length >= LIMITS.themes) break
-      if (!themes.includes(c)) themes.push(c)
+      themes.push(c.t)
     }
   }
   const themesFinal = themes.slice(0, LIMITS.themes)
 
+  // 类目：模糊校验必须落在 GLS 类目表内（非法值丢弃；全部非法时保留原值不破坏数据）
+  const categoriesFinal = ((): string[] => {
+    const valid = Array.from(
+      new Set(
+        (listing.categories ?? [])
+          .map((c) => fuzzyEnumMatch(GLS_CATEGORIES, c))
+          .filter((c): c is string => !!c)
+      )
+    ).slice(0, 2)
+    return valid.length ? valid : (listing.categories ?? [])
+  })()
+
   // 印刷方式必填：Silkscreen / Unimprinted / Full Color
   const REQUIRED_IMPRINTS = ['Silkscreen', 'Unimprinted', 'Full Color']
   const imprints = Array.from(new Set([...REQUIRED_IMPRINTS, ...listing.imprintMethods]))
-  // 不设上限：用户未要求 ≤6，保留 AI 给出的全部合法项（去重后）
-  const imprintsFinal = imprints
+  // 材质驱动过滤：非必需方法必须与产品材质兼容（本地规则引擎判定，依据 materials/material + 标题描述）；
+  // 材质完全未识别时不过滤（兜底，避免误删合法方法）。不设上限：保留全部兼容项。
+  const materialForReco = listing.materials?.length
+    ? listing.materials
+    : listing.material
+      ? [listing.material]
+      : []
+  const imprintReco = recommendImprintMethods(
+    { materialCn: '', sourceTitle: listing.title, description: listing.description },
+    materialForReco
+  )
+  const compatibleImprints = new Set(imprintReco.recommendations.map((r) => r.method as string))
+  const imprintsFinal = compatibleImprints.size
+    ? imprints.filter((m) => REQUIRED_IMPRINTS.includes(m) || compatibleImprints.has(m))
+    : imprints
 
   // 材质：保证 material 与 materials 一致（material 是主显字符串，materials 是数组）
   const materialsFinal =
@@ -346,6 +471,7 @@ export function applyQc(listing: Listing): Listing {
     description,
     keywords,
     themes: themesFinal,
+    categories: categoriesFinal,
     imprintMethods: imprintsFinal,
     materials: materialsFinal.length ? materialsFinal : listing.materials,
     qc: {
@@ -445,7 +571,10 @@ function buildSkeletonListing(source: SourceInfo, settings: Settings): Listing {
   const imprintsSet = new Set<string>(['Silkscreen', 'Unimprinted', 'Full Color', ...imprintMethods])
   const imprintMethodsFinal = Array.from(imprintsSet)
 
-  const category = pickEnum(GLS_CATEGORIES, source.category, 'Other')
+  const category =
+    fuzzyEnumMatch(GLS_CATEGORIES, source.category || '') ??
+    pickRelevantCategories(source, 1)[0] ??
+    GLS_CATEGORIES[0]
 
   return {
     title: enforceLength(
@@ -459,7 +588,7 @@ function buildSkeletonListing(source: SourceInfo, settings: Settings): Listing {
     ),
     keywords: ['Custom Logo', 'Promotional Product', 'Bulk Giveaway', 'Trade Show', 'Corporate Gift'],
     category,
-    typeOfProduct: category,
+    typeOfProduct: guessTypeOfProduct(category),
     categories: [category],
     themes,
     material,
@@ -512,7 +641,9 @@ function normalizeListing(
 
   const themes = ((): string[] => {
     const list = Array.isArray(raw.themes) ? (raw.themes as unknown[]).map((x) => String(x)) : []
-    const filtered = list.filter((t) => (ASI_THEMES as readonly string[]).some((x) => x.toLowerCase() === t.toLowerCase()))
+    const filtered = list
+      .map((t) => fuzzyEnumMatch(ASI_THEMES, t))
+      .filter((t): t is string => !!t)
     return Array.from(new Set(filtered))
   })()
 
@@ -538,10 +669,16 @@ function normalizeListing(
         ? String(raw.categories).split(/[,/]/).map((s) => s.trim())
         : []
     const filtered = list
-      .filter((c) => (GLS_CATEGORIES as readonly string[]).some((x) => x.toLowerCase() === c.toLowerCase()))
+      .map((c) => fuzzyEnumMatch(GLS_CATEGORIES, c))
+      .filter((c): c is string => !!c)
     return Array.from(new Set(filtered)).slice(0, 2)
   })()
-  const primaryCategory = pickEnum(GLS_CATEGORIES, raw.category, source.category)
+  // 主类目：AI 返回值模糊匹配 GLS 表；匹配不上时用相关性最高的 GLS 类目兜底
+  // （旧逻辑回退到 1688 中文类目提示 → 中文串混入 GLS 类目字段）
+  const primaryCategory =
+    (raw.category ? fuzzyEnumMatch(GLS_CATEGORIES, String(raw.category)) : undefined) ??
+    pickRelevantCategories(source, 1)[0] ??
+    GLS_CATEGORIES[0]
   const categories = rawCategories.length ? rawCategories : [primaryCategory]
 
   const listing: Listing = {
@@ -550,7 +687,11 @@ function normalizeListing(
     description: String(raw.description ?? '').trim(),
     keywords: cleanKeywordList(raw.keywords ?? (typeof raw.keywords === 'string' ? raw.keywords : '')),
     category: primaryCategory,
-    typeOfProduct: pickEnum(ASI_CATEGORIES, raw.typeOfProduct, primaryCategory),
+    typeOfProduct: (() => {
+      const hit = pickEnum(ASI_CATEGORIES, raw.typeOfProduct, '')
+      if (hit) return hit
+      return guessTypeOfProduct(primaryCategory)
+    })(),
     categories,
     themes,
     material: pickEnum(ASI_MATERIALS, raw.material, fallbackMaterial),
@@ -575,7 +716,16 @@ function normalizeListing(
     })(),
     colors: colorsString,
     colorChips,
-    imprintMethods: pickEnumMany(ASI_IMPRINT_METHODS, raw.imprintMethods ?? settings.defaultImprintMethods),
+    imprintMethods: (() => {
+      const required = ['Silkscreen', 'Unimprinted', 'Full Color']
+      const base = pickEnumMany(ASI_IMPRINT_METHODS, raw.imprintMethods ?? settings.defaultImprintMethods)
+      // 材质驱动：额外印刷方式必须与产品材质兼容（本地规则引擎判定），必需三项始终保留
+      const extras = materialCompatibleImprints(
+        source,
+        base.filter((m) => !required.includes(m))
+      )
+      return Array.from(new Set([...required, ...extras]))
+    })(),
     imprintArea: imprintAreaStr,
     productionTime: String(raw.productionTime ?? '5-7 business days after proof approval').trim(),
     packaging: String(raw.packaging ?? '').trim() || (units.cartonSizeInch ? `Carton: ${units.cartonSizeInch}, ${source.pcsPerCarton ?? '?'} pcs/ctn, ${units.cartonGwLb ?? '?'} lb` : 'To be confirmed'),
@@ -813,6 +963,41 @@ export async function regenerateListingFields(
     } else {
       out[f] = String(v ?? '').trim()
     }
+  }
+  // 枚举校验：重生成的枚举字段必须落在合法值域（模糊归一化匹配），避免 AI 近似值被静默丢弃或非法值混入导出
+  if ('themes' in out) {
+    const list = Array.isArray(out.themes) ? (out.themes as string[]) : []
+    const matched = list.map((t) => fuzzyEnumMatch(ASI_THEMES, t)).filter((t): t is string => !!t)
+    out.themes = Array.from(new Set([...matched, ...DEFAULT_THEMES])).slice(0, LIMITS.themes)
+  }
+  if ('categories' in out) {
+    const list = Array.isArray(out.categories) ? (out.categories as string[]) : []
+    const matched = list.map((c) => fuzzyEnumMatch(GLS_CATEGORIES, c)).filter((c): c is string => !!c)
+    if (matched.length) out.categories = Array.from(new Set(matched)).slice(0, 2)
+    else delete out.categories // 全部非法时不动原值
+  }
+  if ('category' in out && typeof out.category === 'string') {
+    out.category = fuzzyEnumMatch(GLS_CATEGORIES, out.category) ?? out.category
+  }
+  if ('typeOfProduct' in out && typeof out.typeOfProduct === 'string') {
+    out.typeOfProduct = fuzzyEnumMatch(ASI_CATEGORIES, out.typeOfProduct) ?? out.typeOfProduct
+  }
+  if ('imprintMethods' in out) {
+    const list = Array.isArray(out.imprintMethods) ? (out.imprintMethods as string[]) : []
+    const matched = list.map((m) => fuzzyEnumMatch(ASI_IMPRINT_METHODS, m)).filter((m): m is string => !!m)
+    const required = ['Silkscreen', 'Unimprinted', 'Full Color']
+    // 材质驱动：额外印刷方式仅保留规则引擎判定与产品材质兼容的项
+    const extras = materialCompatibleImprints(source, matched.filter((m) => !required.includes(m)))
+    out.imprintMethods = Array.from(new Set([...required, ...extras]))
+  }
+  if ('materials' in out) {
+    const list = Array.isArray(out.materials) ? (out.materials as string[]) : []
+    const matched = list.map((m) => fuzzyEnumMatch(ASI_MATERIALS, m)).filter((m): m is string => !!m)
+    if (matched.length) out.materials = Array.from(new Set(matched))
+    else delete out.materials
+  }
+  if ('material' in out && typeof out.material === 'string') {
+    out.material = fuzzyEnumMatch(ASI_MATERIALS, out.material) ?? out.material
   }
   if (Object.keys(out).length === 0) {
     throw new AiError('AI 未返回任何字段值，请重试')
