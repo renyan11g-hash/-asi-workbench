@@ -358,7 +358,8 @@ productImagesRouter.get('/product/:productId', async (req: Request, res: Respons
 
 // ---------- 读取图片文件 ----------
 productImagesRouter.get('/:productId/:file', async (req: Request, res: Response) => {
-  const { productId, file } = req.params
+  const productId = String(req.params.productId)
+  const file = String(req.params.file)
   const buf = readImageFile(productId, file)
   res.setHeader('Content-Type', 'image/png')
   res.setHeader('Cache-Control', 'public, max-age=86400')
