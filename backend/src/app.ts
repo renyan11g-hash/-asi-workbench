@@ -18,6 +18,7 @@ import { ordersRouter } from './modules/orders'
 import { supplierCommunicationsRouter } from './modules/supplier-communications'
 import { emailDraftsRouter } from './modules/email-drafts'
 import { dashboardRouter } from './modules/dashboard'
+import { productImagesRouter } from './modules/product-images'
 
 export const createApp = (): Application => {
   const app = express()
@@ -52,6 +53,7 @@ export const createApp = (): Application => {
   app.use(`${env.API_PREFIX}/supplier-communications`, supplierCommunicationsRouter)
   app.use(`${env.API_PREFIX}/email-drafts`, emailDraftsRouter)
   app.use(`${env.API_PREFIX}/dashboard`, dashboardRouter)
+  app.use(`${env.API_PREFIX}/product-images`, productImagesRouter)
 
   // 生产环境：托管前端构建产物（单端口部署）
   const staticDir = resolveStaticDir()

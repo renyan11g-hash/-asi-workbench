@@ -35,6 +35,12 @@ const settingsSchema = z.object({
   aiBaseUrl: z.string().optional(),
   aiApiKey: z.string().optional(),
   aiModel: z.string().optional(),
+  // 图像生成配置
+  imageBaseUrl: z.string().optional(),
+  imageApiKey: z.string().optional(),
+  imageModel: z.string().optional(),
+  imageSize: z.string().max(20).optional(),
+  imageQuality: z.enum(['low', 'medium', 'high']).optional(),
   fxRate: z.number().positive().optional(),
   fxAutoUpdate: z.boolean().optional(),
   airRateCnyPerKg: z.number().min(0).optional(),
@@ -64,8 +70,9 @@ const maskKey = (key?: string) => {
 settingsRouter.get('/', async (_req: Request, res: Response) => {
   const s = loadSettings()
   res.json({
-    settings: { ...s, aiApiKey: maskKey(s.aiApiKey) },
+    settings: { ...s, aiApiKey: maskKey(s.aiApiKey), imageApiKey: maskKey(s.imageApiKey) },
     hasApiKey: Boolean(s.aiApiKey?.trim()),
+    hasImageApiKey: Boolean(s.imageApiKey?.trim()),
   })
 })
 
@@ -76,13 +83,17 @@ settingsRouter.put('/', async (req: Request, res: Response) => {
   if (patch.aiApiKey && patch.aiApiKey.includes('****')) {
     next.aiApiKey = current.aiApiKey
   }
+  if (patch.imageApiKey && patch.imageApiKey.includes('****')) {
+    next.imageApiKey = current.imageApiKey
+  }
   if (patch.qtyLevels?.length) {
     next.qtyLevels = [...patch.qtyLevels].sort((a, b) => a - b)
   }
   saveSettings(next)
   res.json({
-    settings: { ...next, aiApiKey: maskKey(next.aiApiKey) },
+    settings: { ...next, aiApiKey: maskKey(next.aiApiKey), imageApiKey: maskKey(next.imageApiKey) },
     hasApiKey: Boolean(next.aiApiKey?.trim()),
+    hasImageApiKey: Boolean(next.imageApiKey?.trim()),
   })
 })
 

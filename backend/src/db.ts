@@ -92,6 +92,27 @@ CREATE TABLE IF NOT EXISTS drafts (
   updated_at TEXT NOT NULL
 );
 
+-- 产品图片（AI 生成：主图/尺寸图/介绍图，含对话修改历史）
+CREATE TABLE IF NOT EXISTS product_images (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  slot INTEGER NOT NULL DEFAULT 0,
+  prompt TEXT NOT NULL DEFAULT '',
+  history TEXT NOT NULL DEFAULT '[]',
+  file TEXT NOT NULL,
+  dimension_spec TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_product_images_product ON product_images(product_id);
+
+-- 品牌 Logo（全局单条，key='brand-logo'，value=文件名）
+CREATE TABLE IF NOT EXISTS brand_assets (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- 历史选品：快速评估自动留档（按 url 去重，重复评估覆盖更新）
 CREATE TABLE IF NOT EXISTS sourcing_history (
   id TEXT PRIMARY KEY,

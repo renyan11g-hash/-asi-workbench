@@ -219,6 +219,17 @@ export interface Settings {
   aiBaseUrl: string
   aiApiKey: string
   aiModel: string
+  // 图像生成（默认火山引擎即梦 Seedream 4.0，国内直连；也兼容 OpenAI gpt-image-1）
+  /** 图像接口 Base URL（火山 https://ark.cn-beijing.volces.com/api/v3 / OpenAI https://api.openai.com/v1） */
+  imageBaseUrl: string
+  /** 图像服务 API Key */
+  imageApiKey: string
+  /** 图像模型（火山 doubao-seedream-4-0-250828 / OpenAI gpt-image-1） */
+  imageModel: string
+  /** 生成尺寸：火山 1K/2K/4K；OpenAI 1024x1024 / 1536x1024 / 1024x1536 */
+  imageSize: string
+  /** 生成质量：low / medium / high（OpenAI 专用，火山忽略） */
+  imageQuality: 'low' | 'medium' | 'high'
   // 价格模型
   /** 1 USD = ? CNY（默认 6.7，符合用户给定公式） */
   fxRate: number
@@ -260,6 +271,11 @@ export const DEFAULT_SETTINGS: Settings = {
   aiBaseUrl: 'https://api.deepseek.com',
   aiApiKey: '',
   aiModel: 'deepseek-chat',
+  imageBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+  imageApiKey: '',
+  imageModel: 'doubao-seedream-4-0-250828',
+  imageSize: '2K',
+  imageQuality: 'high',
   fxRate: 6.7,
   fxAutoUpdate: true,
   airRateCnyPerKg: 50,
@@ -439,6 +455,36 @@ export interface AfterSale {
   resolution?: string
   /** 退款金额（USD） */
   refundAmount?: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** 产品图片类型：主图 / 尺寸图 / 介绍图 */
+export type ProductImageKind = 'main' | 'dimension' | 'intro'
+
+/** 单张产品图片记录（含生成历史链） */
+export interface ProductImage {
+  id: string
+  productId: string
+  /** 图片角色：main=主图（含 Logo+多色缩略图） / dimension=尺寸图（inch） / intro=介绍图 */
+  kind: ProductImageKind
+  /** 第几张介绍图（1-3），非 intro 为 0 */
+  slot: number
+  /** 生成该图使用的英文 Prompt（文本模型产出） */
+  prompt: string
+  /** 用户修改指令历史（对话式改图） */
+  history: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
+  /** 图片文件名（存于 data/images/{productId}/） */
+  file: string
+  /** 尺寸图叠加的标注数据（inch），非尺寸图为 null */
+  dimensionSpec: {
+    /** 宽（正面横向） */
+    widthIn: number
+    /** 高（正面纵向） */
+    heightIn: number
+    /** 深/厚（可选） */
+    depthIn: number | null
+  } | null
   createdAt: string
   updatedAt: string
 }

@@ -22,6 +22,17 @@ export interface AiProviderPreset {
 
 export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
+    id: 'volcengine-ark',
+    name: '火山引擎方舟（即梦 Seedream 图像）',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    models: ['doubao-seedream-4-0-250828', 'doubao-seededit-3-0-i2i-250628'],
+    keyUrl: 'https://console.volcengine.com/ark',
+    needsProxy: false,
+    supportsVision: false,
+    priceNote: 'Seedream 4.0 约 ¥0.2-0.3/张',
+    note: '图像生成专用（产品图/尺寸图/介绍图）：国内直连、支付宝充值、支持产品图+Logo 多参考图合成与指令编辑。',
+  },
+  {
     id: 'deepseek',
     name: 'DeepSeek（深度求索）',
     baseUrl: 'https://api.deepseek.com',
