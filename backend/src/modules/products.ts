@@ -9,7 +9,7 @@ import { AiError, callChatJson } from '../services/ai'
 import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
 import type { ResearchMatch } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
-import { buildPriceGrid } from '../services/pricing'
+import { buildPriceGrid, convertUnits } from '../services/pricing'
 import { buildGlsWorkbook } from '../services/gls-export'
 import { recommendImprintMethods } from '../services/imprint-recommend'
 import { Evaluation, Listing, Product, ProductStatus, SimilarResearch, SourceInfo } from '../types'
@@ -966,6 +966,70 @@ productsRouter.patch('/:id', async (req: Request, res: Response) => {
 
   updateProductRow(id, source, evaluation, listing, status, new Date().toISOString())
   res.json({ product: findProduct(id) })
+})
+
+// ---------- 更新源信息（链接生成页「源信息一览」编辑入口） ----------
+// 系统一体化：改这里 → ① 产品库 source 更新 ② 评估库草稿 content.source 同步
+//   ③ listing 派生字段联动重算（英制换算/价格表/包装文案/材质颜色标签）
+productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const current = findProduct(id)
+  const patch = updateSchema.parse(req.body ?? {})
+  if (!patch.source) throw new AppError(400, '缺少 source 字段')
+
+  const source = toSourceInfo({ ...current.source, ...patch.source })
+  const settings = loadSettings()
+
+  // ① listing 派生字段联动重算（不改动 AI 生成的文案内容，只同步与源信息强相关的数据）
+  let listing = current.listing
+  if (listing) {
+    const units = convertUnits(source)
+    const rows = buildPriceGrid(source, settings).rows
+    listing = {
+      ...listing,
+      productSizeInch: units.productSizeInch,
+      productSizeCm: units.productSizeCm,
+      unitWeightLb: units.unitWeightLb,
+      cartonSizeInch: units.cartonSizeInch,
+      cartonGwLb: units.cartonGwLb,
+      priceGrid: rows,
+      packaging: units.cartonSizeInch
+        ? `Carton: ${units.cartonSizeInch}, ${source.pcsPerCarton ?? '?'} pcs/ctn, ${units.cartonGwLb ?? '?'} lb`
+        : listing.packaging,
+    }
+  }
+
+  // ② 更新产品库（source + 联动后的 listing）
+  updateProductRow(id, source, current.evaluation, listing, current.status, new Date().toISOString())
+
+  // ③ 同步评估库草稿（评估库 ↔ 产品库 双向一致）
+  let syncedDraftId: string | null = null
+  if (current.draftId) {
+    try {
+      const draftRow = db.prepare('SELECT content FROM drafts WHERE id = ?').get(current.draftId) as
+        | { content: string }
+        | undefined
+      if (draftRow) {
+        let content: Record<string, unknown> = {}
+        try {
+          content = JSON.parse(draftRow.content) as Record<string, unknown>
+        } catch {
+          content = {}
+        }
+        content.source = { ...(content.source as Record<string, unknown> | undefined), ...source }
+        db.prepare('UPDATE drafts SET content = ?, updated_at = ? WHERE id = ?').run(
+          JSON.stringify(content),
+          new Date().toISOString(),
+          current.draftId
+        )
+        syncedDraftId = current.draftId
+      }
+    } catch {
+      // 草稿同步失败不影响产品更新
+    }
+  }
+
+  res.json({ product: findProduct(id), syncedDraftId })
 })
 
 // ---------- 软删：移到回收站（DELETE /:id） ----------

@@ -12,6 +12,7 @@ import {
   History,
   Loader2,
   MessageSquare,
+  Pencil,
   RefreshCw,
   Ruler,
   Save,
@@ -608,6 +609,50 @@ export default function ListingEditor() {
       toast.error(getErrorMessage(err))
     }
   }
+
+  // ---------- 源信息一体化编辑（评估库 ↔ 产品库 ↔ 链接 三处同步） ----------
+  const [editingSource, setEditingSource] = useState(false)
+  const [sourceForm, setSourceForm] = useState<SourceInfo | null>(null)
+  const [savingSource, setSavingSource] = useState(false)
+
+  const startEditSource = () => {
+    if (!product) return
+    setSourceForm({ ...product.source })
+    setEditingSource(true)
+  }
+
+  const saveSource = async () => {
+    if (!product || !sourceForm) return
+    setSavingSource(true)
+    try {
+      const r = await api.updateProductSource(product.id, sourceForm)
+      // 联动后的 listing（价格表/英制换算/包装已重算）直接采用后端返回值
+      setListing(r.product.listing ?? listing)
+      setDirty(false)
+      setHasDraft(false)
+      setDraftMeta(null)
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(`asi-draft:listing-edit:${product.id}`)
+      }
+      qc.invalidateQueries({ queryKey: ['products'] })
+      qc.invalidateQueries({ queryKey: ['product', id] })
+      qc.invalidateQueries({ queryKey: ['drafts'] })
+      setEditingSource(false)
+      setSourceForm(null)
+      toast.success(
+        r.syncedDraftId
+          ? '已保存：产品库、评估库草稿、链接派生数据（价格表/尺寸/重量）已同步更新'
+          : '已保存：产品库与链接派生数据已同步更新'
+      )
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setSavingSource(false)
+    }
+  }
+
+  const setSrc = <K extends keyof SourceInfo>(key: K, value: SourceInfo[K]) =>
+    setSourceForm((s) => (s ? { ...s, [key]: value } : s))
 
   // 按行索引更新，避免数量可编辑后出现重复 qty 匹配错行
   const setPrice = (idx: number, price: number) => {
@@ -1654,62 +1699,223 @@ export default function ListingEditor() {
 
             <SectionCard
               title="源信息一览（评估时填写）"
-              hint="1688 商品原始资料，无需返回评估库即可核对"
+              hint="可直接修改并保存：产品库、评估库草稿、链接派生数据（价格表/尺寸/重量）自动同步"
+              right={
+                editingSource ? (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => {
+                        setEditingSource(false)
+                        setSourceForm(null)
+                      }}
+                      disabled={savingSource}
+                    >
+                      取消
+                    </Button>
+                    <Button size="sm" className="h-7 text-xs" onClick={saveSource} disabled={savingSource}>
+                      {savingSource ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
+                      保存并同步
+                    </Button>
+                  </div>
+                ) : (
+                  <Button variant="outline" size="sm" className="h-7 shrink-0 text-xs" onClick={startEditSource}>
+                    <Pencil className="mr-1 h-3 w-3" /> 编辑
+                  </Button>
+                )
+              }
             >
-              <div className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
-                {(() => {
-                  const s = product.source
-                  const rows: Array<[string, React.ReactNode]> = [
-                    ['1688 标题', s.sourceTitle || '—'],
-                    [
-                      '1688 链接',
-                      s.sourceUrl ? (
-                        <a
-                          href={s.sourceUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="break-all text-blue-600 hover:underline"
-                        >
-                          {s.sourceUrl} ↗
-                        </a>
-                      ) : (
-                        '—'
-                      ),
-                    ],
-                    ['供应商 / 店铺', s.supplier || '—'],
-                    ['类目', s.category || '—'],
-                    ['采购单价', s.priceCny ? `¥${s.priceCny}` : '—'],
-                    ['材质（中文）', s.materialCn || '—'],
-                    ['颜色（中文）', s.colorsCn || '—'],
-                    ['产品尺寸 / 规格', s.sizeCn || '—'],
-                    ['单件重量', s.weightG != null ? `${s.weightG} g` : '—'],
-                    [
-                      '箱规（L×W×H）',
-                      s.cartonLCm != null && s.cartonWCm != null && s.cartonHCm != null
-                        ? `${s.cartonLCm} × ${s.cartonWCm} × ${s.cartonHCm} cm`
-                        : '—',
-                    ],
-                    ['每箱数量', s.pcsPerCarton != null ? `${s.pcsPerCarton} 件` : '—'],
-                    ['箱规毛重', s.cartonGwKg != null ? `${s.cartonGwKg} kg` : '—'],
-                    ['亚马逊参考标题', s.amazonTitle || '—'],
-                    ['1688 关键词', (s.sourceKeywords ?? []).join(', ') || '—'],
-                    ['产品图片', `${(s.images ?? []).length} 张`],
-                  ]
-                  return rows.map(([k, v], i) => (
-                    <div key={i} className={k === '1688 标题' || k === '亚马逊参考标题' ? 'sm:col-span-2' : ''}>
-                      <div className="text-slate-500">{k}</div>
-                      <div className="mt-0.5 break-words text-slate-800">{v}</div>
-                    </div>
-                  ))
-                })()}
-              </div>
-              {product.source.notes && (
-                <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                  <div className="text-[11px] font-semibold text-slate-500">备注</div>
-                  <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-slate-700">
-                    {product.source.notes}
+              {editingSource && sourceForm ? (
+                <div className="grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2">
+                  <div className="sm:col-span-2">
+                    <Field label="1688 标题">
+                      <Input className="h-8 text-xs" value={sourceForm.sourceTitle} onChange={(e) => setSrc('sourceTitle', e.target.value)} />
+                    </Field>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Field label="1688 链接">
+                      <Input className="h-8 text-xs" value={sourceForm.sourceUrl} onChange={(e) => setSrc('sourceUrl', e.target.value)} />
+                    </Field>
+                  </div>
+                  <Field label="供应商 / 店铺">
+                    <Input className="h-8 text-xs" value={sourceForm.supplier} onChange={(e) => setSrc('supplier', e.target.value)} />
+                  </Field>
+                  <Field label="类目">
+                    <Input className="h-8 text-xs" value={sourceForm.category} onChange={(e) => setSrc('category', e.target.value)} />
+                  </Field>
+                  <Field label="采购单价（¥）">
+                    <Input
+                      className="h-8 text-xs"
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      value={sourceForm.priceCny ?? ''}
+                      onChange={(e) => setSrc('priceCny', e.target.value === '' ? 0 : Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="MOQ（件）">
+                    <Input
+                      className="h-8 text-xs"
+                      type="number"
+                      min={0}
+                      value={sourceForm.moq ?? ''}
+                      onChange={(e) => setSrc('moq', e.target.value === '' ? 0 : Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="材质（中文）" hint="影响链接中的 ASI 材质标签（重新生成链接文案后生效）">
+                    <Input className="h-8 text-xs" value={sourceForm.materialCn} onChange={(e) => setSrc('materialCn', e.target.value)} />
+                  </Field>
+                  <Field label="颜色（中文）" hint="影响链接中的颜色字段（重新生成链接文案后生效）">
+                    <Input className="h-8 text-xs" value={sourceForm.colorsCn} onChange={(e) => setSrc('colorsCn', e.target.value)} />
+                  </Field>
+                  <Field label="产品尺寸 / 规格" hint="如 80x160cm，影响英制尺寸换算">
+                    <Input className="h-8 text-xs" value={sourceForm.sizeCn} onChange={(e) => setSrc('sizeCn', e.target.value)} />
+                  </Field>
+                  <Field label="单件重量（g）" hint="影响 unitWeightLb">
+                    <Input
+                      className="h-8 text-xs"
+                      type="number"
+                      min={0}
+                      value={sourceForm.weightG ?? ''}
+                      onChange={(e) => setSrc('weightG', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="箱规 L（cm）">
+                    <Input
+                      className="h-8 text-xs"
+                      type="number"
+                      step="0.1"
+                      min={0}
+                      value={sourceForm.cartonLCm ?? ''}
+                      onChange={(e) => setSrc('cartonLCm', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="箱规 W（cm）">
+                    <Input
+                      className="h-8 text-xs"
+                      type="number"
+                      step="0.1"
+                      min={0}
+                      value={sourceForm.cartonWCm ?? ''}
+                      onChange={(e) => setSrc('cartonWCm', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="箱规 H（cm）">
+                    <Input
+                      className="h-8 text-xs"
+                      type="number"
+                      step="0.1"
+                      min={0}
+                      value={sourceForm.cartonHCm ?? ''}
+                      onChange={(e) => setSrc('cartonHCm', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="每箱数量（件）" hint="影响运费摊算与包装文案">
+                    <Input
+                      className="h-8 text-xs"
+                      type="number"
+                      min={0}
+                      value={sourceForm.pcsPerCarton ?? ''}
+                      onChange={(e) => setSrc('pcsPerCarton', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="箱规毛重（kg）" hint="影响 cartonGwLb 与运费">
+                    <Input
+                      className="h-8 text-xs"
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      value={sourceForm.cartonGwKg ?? ''}
+                      onChange={(e) => setSrc('cartonGwKg', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="亚马逊参考标题">
+                    <Input className="h-8 text-xs" value={sourceForm.amazonTitle} onChange={(e) => setSrc('amazonTitle', e.target.value)} />
+                  </Field>
+                  <div className="sm:col-span-2">
+                    <Field label="1688 关键词" hint="逗号分隔">
+                      <Input
+                        className="h-8 text-xs"
+                        value={(sourceForm.sourceKeywords ?? []).join(', ')}
+                        onChange={(e) =>
+                          setSrc(
+                            'sourceKeywords',
+                            e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+                          )
+                        }
+                      />
+                    </Field>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Field label="备注">
+                      <Textarea className="min-h-16 text-xs" value={sourceForm.notes} onChange={(e) => setSrc('notes', e.target.value)} />
+                    </Field>
+                  </div>
+                  <p className="sm:col-span-2 rounded-md bg-blue-50 px-3 py-2 text-[11px] leading-relaxed text-blue-700">
+                    保存后自动同步：① 产品库源信息 ② 评估库草稿 ③ 链接中的价格表 / 英制尺寸 / 重量 / 包装文案。
+                    标题、描述等 AI 文案不受影响（如需更新请用各区块的重新生成按钮）。
                   </p>
                 </div>
+              ) : (
+                <>
+                  <div className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
+                    {(() => {
+                      const s = product.source
+                      const rows: Array<[string, React.ReactNode]> = [
+                        ['1688 标题', s.sourceTitle || '—'],
+                        [
+                          '1688 链接',
+                          s.sourceUrl ? (
+                            <a
+                              href={s.sourceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="break-all text-blue-600 hover:underline"
+                            >
+                              {s.sourceUrl} ↗
+                            </a>
+                          ) : (
+                            '—'
+                          ),
+                        ],
+                        ['供应商 / 店铺', s.supplier || '—'],
+                        ['类目', s.category || '—'],
+                        ['采购单价', s.priceCny ? `¥${s.priceCny}` : '—'],
+                        ['材质（中文）', s.materialCn || '—'],
+                        ['颜色（中文）', s.colorsCn || '—'],
+                        ['产品尺寸 / 规格', s.sizeCn || '—'],
+                        ['单件重量', s.weightG != null ? `${s.weightG} g` : '—'],
+                        [
+                          '箱规（L×W×H）',
+                          s.cartonLCm != null && s.cartonWCm != null && s.cartonHCm != null
+                            ? `${s.cartonLCm} × ${s.cartonWCm} × ${s.cartonHCm} cm`
+                            : '—',
+                        ],
+                        ['每箱数量', s.pcsPerCarton != null ? `${s.pcsPerCarton} 件` : '—'],
+                        ['箱规毛重', s.cartonGwKg != null ? `${s.cartonGwKg} kg` : '—'],
+                        ['亚马逊参考标题', s.amazonTitle || '—'],
+                        ['1688 关键词', (s.sourceKeywords ?? []).join(', ') || '—'],
+                        ['产品图片', `${(s.images ?? []).length} 张`],
+                      ]
+                      return rows.map(([k, v], i) => (
+                        <div key={i} className={k === '1688 标题' || k === '亚马逊参考标题' ? 'sm:col-span-2' : ''}>
+                          <div className="text-slate-500">{k}</div>
+                          <div className="mt-0.5 break-words text-slate-800">{v}</div>
+                        </div>
+                      ))
+                    })()}
+                  </div>
+                  {product.source.notes && (
+                    <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                      <div className="text-[11px] font-semibold text-slate-500">备注</div>
+                      <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-slate-700">
+                        {product.source.notes}
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
             </SectionCard>
 

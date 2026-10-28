@@ -130,6 +130,18 @@ export const api = {
     return data.product
   },
 
+  /** 更新源信息（链接生成页编辑）：后端联动重算 listing 派生字段并同步评估库草稿 */
+  async updateProductSource(
+    id: string,
+    source: Partial<SourceInfo>
+  ): Promise<{ product: Product; syncedDraftId: string | null }> {
+    const { data } = await apiClient.patch<{ product: Product; syncedDraftId: string | null }>(
+      `/products/${id}/source`,
+      { source }
+    )
+    return data
+  },
+
   async deleteProduct(id: string): Promise<{ action: string }> {
     const { data } = await apiClient.delete<{ action: string }>(`/products/${id}`)
     return data
