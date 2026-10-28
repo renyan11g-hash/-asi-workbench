@@ -58,8 +58,33 @@ function friendlyImageError(status: number, raw: string): AiError {
       '图像接口地址不可用 (404) 或模型不存在',
       '火山引擎 Base URL 用 https://ark.cn-beijing.volces.com/api/v3 ；模型 ID 需与方舟控制台开通的一致（如 doubao-seedream-4-0-250828）。'
     )
-  if (status === 429)
-    return new AiError('图像接口限流 (429)：请求过于频繁或额度不足', '稍后重试，或检查账户余额/并发额度。')
+  if (status === 429) {
+    // 火山方舟 429 细分：ModelNotOpen（模型未开通）/ QuotaExceeded（额度不足）/ AccessRateLimit（请求频繁）
+    let code = ''
+    let detail = ''
+    try {
+      const j = JSON.parse(raw) as { error?: { code?: string; message?: string } }
+      code = j.error?.code || ''
+      detail = j.error?.message || ''
+    } catch {
+      /* 非 JSON 响应，忽略 */
+    }
+    const lower = (code + ' ' + detail).toLowerCase()
+    if (/not\s*open|notopen/.test(lower))
+      return new AiError(
+        `模型未开通 (429 ${code})：${detail || '当前账号未开通该模型'}`,
+        '到火山方舟控制台「模型广场」找到该模型点「开通服务」，开通后即可调用。'
+      )
+    if (/quota|balance|arrears|insufficient|欠费|余额/.test(lower))
+      return new AiError(
+        `额度不足 (429 ${code})：${detail || '免费额度已用完或账户余额不足'}`,
+        '到火山方舟控制台查看免费额度/余额，不足时充值（支持支付宝）。'
+      )
+    return new AiError(
+      `图像接口限流 (429 ${code || 'AccessRateLimit'})：${detail || '请求过于频繁'}`,
+      '稍等 1-2 分钟再试；若持续出现，检查模型并发额度或账户余额。'
+    )
+  }
   if (status >= 500)
     return new AiError('图像服务商故障 (' + status + ')', '服务商侧问题，稍后重试即可。')
   return new AiError(`图像生成失败 (${status})：${raw.slice(0, 300)}`)
