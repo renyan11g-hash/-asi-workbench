@@ -179,6 +179,12 @@ export interface Settings {
   aiBaseUrl: string
   aiApiKey: string
   aiModel: string
+  // 图像生成（火山引擎 Seedream / OpenAI gpt-image-1）
+  imageBaseUrl: string
+  imageApiKey: string
+  imageModel: string
+  imageSize: string
+  imageQuality: 'low' | 'medium' | 'high'
   fxRate: number
   airRateCnyPerKg: number
   seaRateCnyPerKg: number

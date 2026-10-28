@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SectionCard } from '@/components/ui/primitives'
 import { api, getErrorMessage } from '@/lib/api'
+import apiClient from '@/lib/api-client'
 import { useSettings } from '@/hooks/use-data'
 import { Settings } from '@/types'
 
@@ -31,6 +32,7 @@ function Field({
 interface ProviderPreset {
   id: string
   name: string
+  kind: 'text' | 'image'
   baseUrl: string
   models: string[]
   keyUrl: string
@@ -48,6 +50,9 @@ export default function SettingsPage() {
   const [imprintText, setImprintText] = useState('')
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [testingImage, setTestingImage] = useState(false)
+  const [uploadingLogo, setUploadingLogo] = useState(false)
+  const [logoUrl, setLogoUrl] = useState<string | null>(null)
   const [refreshingFx, setRefreshingFx] = useState(false)
   const [fxMeta, setFxMeta] = useState<{ source?: string; updatedAt?: string; autoUpdate?: boolean } | null>(null)
   const [providers, setProviders] = useState<ProviderPreset[]>([])
@@ -113,6 +118,61 @@ export default function SettingsPage() {
     }
   }
 
+  const testImage = async () => {
+    if (!form) return
+    setTestingImage(true)
+    try {
+      const res = await api.testImageConnection({
+        imageBaseUrl: form.imageBaseUrl,
+        imageApiKey: form.imageApiKey,
+        imageModel: form.imageModel,
+      })
+      if (res.ok) toast.success(res.message)
+      else toast.error(res.message)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setTestingImage(false)
+    }
+  }
+
+  const uploadLogo = async (file: File) => {
+    setUploadingLogo(true)
+    try {
+      // 后端接受 JSON base64 dataURL（避免 multipart 依赖）
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result))
+        reader.onerror = () => reject(new Error('读取文件失败'))
+        reader.readAsDataURL(file)
+      })
+      await apiClient.post('/product-images/logo', { dataUrl })
+      // 加时间戳破缓存，立即显示新 Logo
+      setLogoUrl(`/api/product-images/logo?t=${Date.now()}`)
+      toast.success('Logo 已上传，生成主图时将自动融合到产品正面')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setUploadingLogo(false)
+    }
+  }
+
+  // 加载已上传 Logo 预览（404 = 尚未上传，忽略）
+  useEffect(() => {
+    let cancelled = false
+    apiClient
+      .get('/product-images/logo', { responseType: 'blob' })
+      .then((r) => {
+        if (!cancelled) setLogoUrl(URL.createObjectURL(r.data as Blob))
+      })
+      .catch(() => {
+        if (!cancelled) setLogoUrl(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const clearAll = async () => {
     const choice = window.prompt(
       '清空产品库选项（输入数字）：\n  1 = 清空非回收站（保留回收站）\n  2 = 仅清空回收站\n  3 = 全部清空（最危险，先导出 CSV）'
@@ -170,7 +230,7 @@ export default function SettingsPage() {
         <div className="space-y-4">
           <div className="space-y-2">
             <div className="flex flex-wrap gap-2">
-              {providers.map((p) => (
+              {providers.filter((p) => p.kind === 'text').map((p) => (
                 <button
                   key={p.id}
                   onClick={() => patch({ aiBaseUrl: p.baseUrl, aiModel: p.models[0] ?? '' })}
@@ -264,6 +324,138 @@ export default function SettingsPage() {
             {testing ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Wifi className="mr-1 h-4 w-4" />}
             测试连接
           </Button>
+        </div>
+      </SectionCard>
+
+      <SectionCard
+        title="图像生成（产品图片）"
+        hint="用于生成产品主图/尺寸图/介绍图。火山引擎即梦 Seedream 国内直连、支付宝充值；也兼容 OpenAI gpt-image-1。与上方文本 AI 相互独立。"
+      >
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {providers.filter((p) => p.kind === 'image').map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => patch({ imageBaseUrl: p.baseUrl, imageModel: p.models[0] ?? '' })}
+                  title={`${p.note}\n价格：${p.priceNote}${p.needsProxy ? '\n需科学上网' : ' · 国内直连'}`}
+                  className={`rounded-md border px-2.5 py-1 text-xs ${
+                    form.imageBaseUrl === p.baseUrl
+                      ? 'border-blue-400 bg-blue-50 text-blue-700'
+                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700'
+                  }`}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+            {(() => {
+              const cur = providers.find((p) => p.kind === 'image' && p.baseUrl === form.imageBaseUrl)
+              if (!cur) return null
+              return (
+                <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
+                  <div className="font-medium text-slate-700">{cur.name}</div>
+                  <div>{cur.note}</div>
+                  <div className="mt-0.5 text-slate-500">参考价格：{cur.priceNote}{cur.needsProxy ? ' · 需科学上网' : ' · 国内直连'}</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <span>推荐模型：</span>
+                    {cur.models.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => patch({ imageModel: m })}
+                        className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${
+                          form.imageModel === m
+                            ? 'border-blue-400 bg-blue-100 text-blue-700'
+                            : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                    <a href={cur.keyUrl} target="_blank" rel="noreferrer" className="ml-1 text-blue-600 hover:underline">
+                      → 获取 API Key
+                    </a>
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Field label="Base URL" hint="火山引擎填 https://ark.cn-beijing.volces.com/api/v3（粘贴完整端点也可自动识别）">
+                <Input
+                  className="h-9 text-sm"
+                  value={form.imageBaseUrl}
+                  onChange={(e) => patch({ imageBaseUrl: e.target.value })}
+                  placeholder="https://ark.cn-beijing.volces.com/api/v3"
+                />
+              </Field>
+            </div>
+            <Field label="API Key" hint={data?.hasImageApiKey ? '已保存 Key，留空则不修改' : '尚未配置'}>
+              <Input
+                className="h-9 text-sm"
+                type="password"
+                value={form.imageApiKey}
+                onChange={(e) => patch({ imageApiKey: e.target.value })}
+                placeholder="火山引擎 API Key"
+              />
+            </Field>
+            <Field label="模型名称" hint="需与方舟控制台开通的模型 ID 一致">
+              <Input
+                className="h-9 text-sm"
+                value={form.imageModel}
+                onChange={(e) => patch({ imageModel: e.target.value })}
+                placeholder="doubao-seedream-4-0-250828"
+              />
+            </Field>
+            <Field label="生成尺寸" hint="火山：1K / 2K / 4K；OpenAI：1024x1024 等">
+              <Input
+                className="h-9 text-sm"
+                value={form.imageSize}
+                onChange={(e) => patch({ imageSize: e.target.value })}
+              />
+            </Field>
+            <Field label="生成质量" hint="OpenAI 专用（low/medium/high），火山忽略">
+              <select
+                className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
+                value={form.imageQuality}
+                onChange={(e) => patch({ imageQuality: e.target.value as Settings['imageQuality'] })}
+              >
+                <option value="low">low（省额度）</option>
+                <option value="medium">medium</option>
+                <option value="high">high（默认）</option>
+              </select>
+            </Field>
+          </div>
+          <div className="flex items-center gap-3">
+            <Button variant="outline" onClick={testImage} disabled={testingImage}>
+              {testingImage ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Wifi className="mr-1 h-4 w-4" />}
+              测试连接（会真实生成一张小图）
+            </Button>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+            <div className="mb-2 text-xs font-medium text-slate-600">品牌 Logo（生成主图时自动融合到产品正面）</div>
+            <div className="flex items-center gap-3">
+              {logoUrl && (
+                <img src={logoUrl} alt="Logo" className="h-14 w-14 rounded border border-slate-200 bg-white object-contain p-1" />
+              )}
+              <label className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-600 hover:border-blue-300 hover:text-blue-700">
+                {uploadingLogo ? '上传中…' : '上传 Logo（PNG 透明底最佳）'}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  disabled={uploadingLogo}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) uploadLogo(f)
+                    e.target.value = ''
+                  }}
+                />
+              </label>
+            </div>
+          </div>
         </div>
       </SectionCard>
 

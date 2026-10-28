@@ -6,6 +6,8 @@
 export interface AiProviderPreset {
   id: string
   name: string
+  /** 用途：text=文本对话（评估/Listing 生成）；image=图像生成（产品图片） */
+  kind: 'text' | 'image'
   baseUrl: string
   models: string[]
   /** 官网（获取 API Key） */
@@ -24,6 +26,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'volcengine-ark',
     name: '火山引擎方舟（即梦 Seedream 图像）',
+    kind: 'image',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     models: ['doubao-seedream-4-0-250828', 'doubao-seededit-3-0-i2i-250628'],
     keyUrl: 'https://console.volcengine.com/ark',
@@ -35,6 +38,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'deepseek',
     name: 'DeepSeek（深度求索）',
+    kind: 'text',
     baseUrl: 'https://api.deepseek.com',
     models: ['deepseek-chat', 'deepseek-reasoner'],
     keyUrl: 'https://platform.deepseek.com/api_keys',
@@ -46,6 +50,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'zhipu',
     name: '智谱 GLM（bigmodel）',
+    kind: 'text',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     models: ['glm-4.5-flash', 'glm-4.5-air', 'glm-4.5v', 'glm-4-plus'],
     keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
@@ -57,6 +62,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'qwen',
     name: '阿里通义千问（DashScope 兼容模式）',
+    kind: 'text',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     models: ['qwen-plus', 'qwen-turbo', 'qwen-vl-plus', 'qwen-max'],
     keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1',
@@ -68,6 +74,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'moonshot',
     name: '月之暗面 Kimi',
+    kind: 'text',
     baseUrl: 'https://api.moonshot.cn/v1',
     models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-latest'],
     keyUrl: 'https://platform.moonshot.cn/console/api-keys',
@@ -79,6 +86,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'siliconflow',
     name: '硅基流动 SiliconFlow（聚合）',
+    kind: 'text',
     baseUrl: 'https://api.siliconflow.cn/v1',
     models: [
       'Qwen/Qwen2.5-7B-Instruct',
@@ -95,6 +103,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'openai',
     name: 'OpenAI（GPT）',
+    kind: 'text',
     baseUrl: 'https://api.openai.com/v1',
     models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini'],
     keyUrl: 'https://platform.openai.com/api-keys',
@@ -106,6 +115,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'gemini',
     name: 'Google Gemini',
+    kind: 'text',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     models: ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'],
     keyUrl: 'https://aistudio.google.com/apikey',
@@ -117,6 +127,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'openrouter',
     name: 'OpenRouter（海外聚合）',
+    kind: 'text',
     baseUrl: 'https://openrouter.ai/api/v1',
     models: [
       'google/gemini-2.0-flash-001',
@@ -133,6 +144,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'groq',
     name: 'Groq（超快推理）',
+    kind: 'text',
     baseUrl: 'https://api.groq.com/openai/v1',
     models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
     keyUrl: 'https://console.groq.com/keys',
@@ -144,6 +156,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'custom',
     name: '自定义（OpenAI 兼容）',
+    kind: 'text',
     baseUrl: '',
     models: [],
     keyUrl: '',

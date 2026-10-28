@@ -30,7 +30,10 @@ interface ArkImageResponse {
 const IMAGE_TIMEOUT_MS = Number(process.env.IMAGE_TIMEOUT_MS) || 600_000
 
 function assertConfig(settings: ImageSettings): { base: string; key: string; model: string } {
-  const base = settings.imageBaseUrl?.trim() || 'https://ark.cn-beijing.volces.com/api/v3'
+  // 容错：用户可能粘贴完整端点（…/images/generations），自动去掉后缀再拼接
+  const base = (
+    settings.imageBaseUrl?.trim() || 'https://ark.cn-beijing.volces.com/api/v3'
+  ).replace(/\/images\/(generations|edits)\/?$/i, '')
   const key = settings.imageApiKey?.trim() || ''
   const model = settings.imageModel?.trim() || 'doubao-seedream-4-0-250828'
   if (!key) {

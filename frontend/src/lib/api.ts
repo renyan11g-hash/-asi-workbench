@@ -31,6 +31,20 @@ export { getErrorMessage }
 export interface SettingsResponse {
   settings: Settings
   hasApiKey: boolean
+  hasImageApiKey?: boolean
+}
+
+export interface AiProviderPreset {
+  id: string
+  name: string
+  kind: 'text' | 'image'
+  baseUrl: string
+  models: string[]
+  keyUrl: string
+  needsProxy: boolean
+  supportsVision: boolean
+  priceNote: string
+  note: string
 }
 
 export interface SourcingHistoryItem {
@@ -61,6 +75,18 @@ export const api = {
   async testConnection(probe: Partial<Settings>): Promise<{ ok: boolean; message: string }> {
     const { data } = await apiClient.post<{ ok: boolean; message: string }>(
       '/settings/test',
+      probe,
+      LONG_TIMEOUT
+    )
+    return data
+  },
+
+  /** 图像服务连通性测试（真实生成一张小图验证） */
+  async testImageConnection(
+    probe: Partial<Pick<Settings, 'imageBaseUrl' | 'imageApiKey' | 'imageModel'>>
+  ): Promise<{ ok: boolean; message: string }> {
+    const { data } = await apiClient.post<{ ok: boolean; message: string }>(
+      '/product-images/test',
       probe,
       LONG_TIMEOUT
     )
@@ -250,19 +276,7 @@ export const api = {
     return data
   },
 
-  async listAiProviders(): Promise<{
-    providers: Array<{
-      id: string
-      name: string
-      baseUrl: string
-      models: string[]
-      keyUrl: string
-      needsProxy: boolean
-      supportsVision: boolean
-      priceNote: string
-      note: string
-    }>
-  }> {
+  async listAiProviders(): Promise<{ providers: AiProviderPreset[] }> {
     const { data } = await apiClient.get('/settings/ai-providers')
     return data
   },
