@@ -4,7 +4,11 @@ import { AiError } from './ai'
 /**
  * 尺寸图程序化标注：
  * AI 只负责生成"干净的产品图"（无文字无标线），尺寸线与 inch 数字由本模块用
- * Jimp + SVG 叠加，保证数字 100% 精确（AI 直接画数字经常出错）。
+ * Jimp 原生绘图 API 直接叠加，保证数字 100% 精确（AI 直接画数字经常出错）。
+ *
+ * 注：早期版本用 SVG overlay + Jimp.read(Buffer.from(svg))，但 Jimp 不支持
+ * SVG buffer 输入（报 "Could not find MIME for Buffer <null>"），故改为纯
+ * Jimp 画线/箭头/文字（loadFont + print + rotate），不再依赖 SVG。
  *
  * 标注方式：产品包围盒（自动检测非白像素范围）四周画箭头尺寸线：
  *   - 底部：宽度 W in
@@ -19,7 +23,8 @@ interface OverlaySpec {
 }
 
 const LINE_W = 4
-const FONT_SIZE = 44
+const ARROW_S = 14
+const INK = { r: 0x1e, g: 0x29, b: 0x3b, a: 255 } // #1e293b
 
 /** 检测产品包围盒：扫描非白色（且非透明）像素 */
 function detectBoundingBox(img: Jimp): { left: number; top: number; right: number; bottom: number } {
@@ -57,7 +62,83 @@ function detectBoundingBox(img: Jimp): { left: number; top: number; right: numbe
   return { left, top, right, bottom }
 }
 
-/** 用 SVG 画尺寸线 + 文字，再 composite 到原图 */
+/* ---------- Jimp 原生绘图工具 ---------- */
+
+let fontPromise: Promise<any> | null = null
+function getFont(): Promise<any> {
+  if (!fontPromise) fontPromise = Jimp.loadFont(Jimp.FONT_SANS_64_BLACK)
+  return fontPromise
+}
+
+/** 画一条加粗线段（Bresenham + 方形笔刷），坐标自动裁剪到画布内 */
+function drawLine(img: Jimp, x1: number, y1: number, x2: number, y2: number, thickness = LINE_W): void {
+  const { width, height, data } = img.bitmap
+  const half = Math.floor(thickness / 2)
+  const dx = Math.abs(x2 - x1)
+  const dy = Math.abs(y2 - y1)
+  const sx = x1 < x2 ? 1 : -1
+  const sy = y1 < y2 ? 1 : -1
+  let err = dx - dy
+  let x = x1
+  let y = y1
+  for (;;) {
+    for (let oy = -half; oy <= half; oy++) {
+      for (let ox = -half; ox <= half; ox++) {
+        const px = x + ox
+        const py = y + oy
+        if (px < 0 || py < 0 || px >= width || py >= height) continue
+        const i = (py * width + px) * 4
+        data[i] = INK.r
+        data[i + 1] = INK.g
+        data[i + 2] = INK.b
+        data[i + 3] = INK.a
+      }
+    }
+    if (x === x2 && y === y2) break
+    const e2 = 2 * err
+    if (e2 > -dy) { err -= dy; x += sx }
+    if (e2 < dx) { err += dx; y += sy }
+  }
+}
+
+/** 在 (x,y) 画方向箭头（两条 45° 短线组成 V 形，尖端指向 (x,y)） */
+function drawArrow(img: Jimp, x: number, y: number, dir: 'l' | 'r' | 'u' | 'd'): void {
+  const s = ARROW_S
+  if (dir === 'l') {
+    drawLine(img, x + s, y - s, x, y)
+    drawLine(img, x + s, y + s, x, y)
+  } else if (dir === 'r') {
+    drawLine(img, x - s, y - s, x, y)
+    drawLine(img, x - s, y + s, x, y)
+  } else if (dir === 'u') {
+    drawLine(img, x - s, y + s, x, y)
+    drawLine(img, x + s, y + s, x, y)
+  } else {
+    drawLine(img, x - s, y - s, x, y)
+    drawLine(img, x + s, y - s, x, y)
+  }
+}
+
+/** 把文字渲染到透明小图上并重新着色为 INK，返回图与尺寸 */
+async function renderText(text: string): Promise<{ img: Jimp; w: number; h: number }> {
+  const font = await getFont()
+  const tw = Math.ceil(Jimp.measureText(font, text)) + 8
+  const th = Math.ceil(Jimp.measureTextHeight(font, text, tw)) + 8
+  const t = new Jimp(tw, th, 0x00000000)
+  t.print(font, 4, 4, text)
+  const d = t.bitmap.data
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] > 0) {
+      d[i] = INK.r
+      d[i + 1] = INK.g
+      d[i + 2] = INK.b
+      d[i + 3] = INK.a
+    }
+  }
+  return { img: t, w: tw, h: th }
+}
+
+/** 画尺寸线 + 文字，直接叠加到原图（纯 Jimp，无 SVG） */
 export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promise<Buffer> {
   const img = await Jimp.read(input).catch(() => {
     throw new AiError('尺寸图叠加失败：无法解析生成的图片')
@@ -69,32 +150,38 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
   const margin = Math.round(Math.min(width, height) * 0.12) // 画布边缘留白
   const fmt = (n: number) => (Math.round(n * 10) / 10).toFixed(1)
 
-  const lines: string[] = []
-  const arrow = (x: number, y: number, dir: 'l' | 'r' | 'u' | 'd') => {
-    const s = 14
-    if (dir === 'l') return `<path d="M${x + s},${y - s} L${x},${y} L${x + s},${y + s}" stroke="#1e293b" stroke-width="${LINE_W}" fill="none"/>`
-    if (dir === 'r') return `<path d="M${x - s},${y - s} L${x},${y} L${x - s},${y + s}" stroke="#1e293b" stroke-width="${LINE_W}" fill="none"/>`
-    if (dir === 'u') return `<path d="M${x - s},${y + s} L${x},${y} L${x + s},${y + s}" stroke="#1e293b" stroke-width="${LINE_W}" fill="none"/>`
-    return `<path d="M${x - s},${y - s} L${x},${y} L${x + s},${y - s}" stroke="#1e293b" stroke-width="${LINE_W}" fill="none"/>`
-  }
-
   // 底部宽度线
   const yW = Math.min(height - margin, box.bottom + pad)
-  lines.push(
-    `<line x1="${box.left}" y1="${yW}" x2="${box.right}" y2="${yW}" stroke="#1e293b" stroke-width="${LINE_W}"/>`,
-    arrow(box.left, yW, 'l'),
-    arrow(box.right, yW, 'r'),
-    `<text x="${(box.left + box.right) / 2}" y="${yW + FONT_SIZE + 8}" font-family="Arial, Helvetica, sans-serif" font-size="${FONT_SIZE}" font-weight="bold" fill="#1e293b" text-anchor="middle">${fmt(spec.widthIn)} in</text>`
-  )
+  drawLine(img, box.left, yW, box.right, yW)
+  drawArrow(img, box.left, yW, 'l')
+  drawArrow(img, box.right, yW, 'r')
+  {
+    const label = `${fmt(spec.widthIn)} in`
+    const t = await renderText(label)
+    let tx = Math.round((box.left + box.right) / 2 - t.w / 2)
+    let ty = yW + 8
+    if (ty + t.h > height) ty = yW - 8 - t.h // 下方放不下就放到线上方
+    tx = Math.max(0, Math.min(tx, Math.max(0, width - t.w)))
+    ty = Math.max(0, ty)
+    img.composite(t.img, tx, ty)
+  }
 
-  // 右侧高度线
+  // 右侧高度线（文字旋转 90°，自上而下阅读）
   const xH = Math.min(width - margin, box.right + pad)
-  lines.push(
-    `<line x1="${xH}" y1="${box.top}" x2="${xH}" y2="${box.bottom}" stroke="#1e293b" stroke-width="${LINE_W}"/>`,
-    arrow(xH, box.top, 'u'),
-    arrow(xH, box.bottom, 'd'),
-    `<text x="${xH + FONT_SIZE * 0.6}" y="${(box.top + box.bottom) / 2}" font-family="Arial, Helvetica, sans-serif" font-size="${FONT_SIZE}" font-weight="bold" fill="#1e293b" text-anchor="start" transform="rotate(90 ${xH + FONT_SIZE * 0.6} ${(box.top + box.bottom) / 2})">${fmt(spec.heightIn)} in</text>`
-  )
+  drawLine(img, xH, box.top, xH, box.bottom)
+  drawArrow(img, xH, box.top, 'u')
+  drawArrow(img, xH, box.bottom, 'd')
+  {
+    const label = `${fmt(spec.heightIn)} in`
+    const t = await renderText(label)
+    t.img.rotate(90, true) // 顺时针 90°：文字自上而下
+    const rw = t.img.bitmap.width
+    const rh = t.img.bitmap.height
+    let tx = xH + 8
+    if (tx + rw > width) tx = xH - 8 - rw // 右侧放不下就放到线左侧
+    const ty = Math.round((box.top + box.bottom) / 2 - rh / 2)
+    img.composite(t.img, Math.max(0, tx), Math.max(0, ty))
+  }
 
   // 左上深度线（可选）：斜 45° 表示深度
   if (spec.depthIn && spec.depthIn > 0) {
@@ -104,17 +191,15 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
     const x2 = x1 - d
     const y2 = y1 - d
     if (x2 > margin && y2 > margin) {
-      lines.push(
-        `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#1e293b" stroke-width="${LINE_W}"/>`,
-        arrow(x2, y2, 'u'),
-        `<text x="${x2 - 8}" y="${y2 - 8}" font-family="Arial, Helvetica, sans-serif" font-size="${FONT_SIZE}" font-weight="bold" fill="#1e293b" text-anchor="end">${fmt(spec.depthIn)} in</text>`
-      )
+      drawLine(img, x1, y1, x2, y2)
+      drawArrow(img, x2, y2, 'u')
+      const label = `${fmt(spec.depthIn)} in`
+      const t = await renderText(label)
+      const tx = Math.max(0, x2 - 8 - t.w)
+      const ty = Math.max(0, y2 - 8 - t.h)
+      img.composite(t.img, tx, ty)
     }
   }
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${lines.join('')}</svg>`
-  const overlay = await Jimp.read(Buffer.from(svg))
-  img.composite(overlay, 0, 0)
 
   return img.getBufferAsync(Jimp.MIME_PNG)
 }
