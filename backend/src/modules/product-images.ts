@@ -12,6 +12,7 @@ import { overlayDimensions } from '../services/dimension-overlay'
 import { ProductImage, ProductImageKind, SourceInfo } from '../types'
 import { loadSettings } from './settings'
 import { createTask, getTask, runTask, updateTask } from '../services/task-manager'
+import { findProduct } from './products'
 
 export const productImagesRouter: Router = Router()
 
@@ -217,12 +218,10 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   let source: SourceInfo
   let productId: string
   if (body.productId) {
-    const row = db.prepare('SELECT * FROM products WHERE id = ?').get(body.productId) as
-      | { id: string; source: string }
-      | undefined
-    if (!row) throw new AppError(404, '产品不存在')
-    source = JSON.parse(row.source) as SourceInfo
-    productId = row.id
+    // 复用 products 模块的列式解析（products 表无 source JSON 列，直接 JSON.parse 会崩）
+    const p = findProduct(body.productId)
+    source = p.source
+    productId = p.id
   } else if (body.source) {
     source = body.source as unknown as SourceInfo
     productId = 'preview'

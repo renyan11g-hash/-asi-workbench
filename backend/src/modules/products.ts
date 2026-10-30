@@ -226,7 +226,7 @@ function migrateEvaluation(e: Evaluation | null): Evaluation | null {
   return e
 }
 
-function findProduct(id: string): Product {
+export function findProduct(id: string): Product {
   const row = db.prepare('SELECT * FROM products WHERE id = ?').get(id) as unknown as Row | undefined
   if (!row) throw new AppError(404, '产品不存在')
   return rowToProduct(row)
