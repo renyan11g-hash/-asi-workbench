@@ -118,7 +118,9 @@ export function buildPriceGrid(
     (Number(source.cartonHCm) || 0)) / divisor
   const boxGw = Number(source.cartonGwKg) || 0
   const actualKg = boxGw > 0 ? boxGw : singleKg * pcs
-  const billableKg = Math.max(volumetricKg, actualKg)
+  const rawBillableKg = Math.max(volumetricKg, actualKg)
+  // 运费计费重按 0.5kg 为单位四舍五入（如 11.8 → 12，11.3 → 11.5），与货代计费规则一致
+  const billableKg = rawBillableKg > 0 ? Math.round(rawBillableKg * 2) / 2 : 0
 
   // 每档成本：到岸成本 = 商品 + 运费（运费单独列示，不并入杂费）
   const airUnitCost = billableKg > 0 ? (billableKg * airRate) / pcs + unitPriceCny : unitPriceCny

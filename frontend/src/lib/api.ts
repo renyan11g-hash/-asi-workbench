@@ -16,6 +16,7 @@ import {
   PriceComparison,
   PriceRow,
   Product,
+  ProductImage,
   ProductStatus,
   Settings,
   SimilarResearch,
@@ -530,6 +531,77 @@ export const api = {
       LONG_TIMEOUT
     )
     return data.product
+  },
+
+  /**
+   * 产品图片：查询某产品已生成的 AI 图片列表
+   */
+  async listProductImages(productId: string): Promise<ProductImage[]> {
+    const { data } = await apiClient.get<{ images: ProductImage[] }>(
+      `/product-images/product/${productId}`
+    )
+    return data.images
+  },
+
+  /**
+   * 产品图片：异步生成 5 张图（主图/尺寸图/介绍图×3）。
+   * POST 立即返回 taskId，然后轮询 GET /product-images/tasks/:taskId（解决 Render 100 秒代理超时）。
+   */
+  async generateProductImages(
+    productId: string,
+    onProgress?: (progress: string, elapsedSec: number) => void
+  ): Promise<ProductImage[]> {
+    const { data: start } = await apiClient.post<{ taskId: string; status: string }>(
+      `/product-images/generate`,
+      { productId }
+    )
+    const taskId = start.taskId
+    if (!taskId) throw new Error('后端未返回 taskId，请检查后端版本')
+
+    const startedAt = Date.now()
+    const MAX_WAIT_MS = 10 * 60 * 1000
+    const POLL_INTERVAL_MS = 3000
+
+    for (;;) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+      const elapsed = Date.now() - startedAt
+      onProgress?.('', Math.round(elapsed / 1000))
+      if (elapsed > MAX_WAIT_MS) {
+        throw new Error('图片生成超时（超过 10 分钟），请重试或检查 AI 服务商状态')
+      }
+      let task: { status: string; result?: { images?: ProductImage[] }; progress?: string; error?: string; hint?: string }
+      try {
+        const { data } = await apiClient.get<{
+          status: string
+          result?: { images?: ProductImage[] }
+          progress?: string
+          error?: string
+          hint?: string
+        }>(`/product-images/tasks/${taskId}`)
+        task = data
+      } catch (err) {
+        // 404 = 任务不存在（服务重启清空）；其他网络抖动继续轮询
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/404|不存在/.test(msg)) throw new Error('任务已丢失（服务可能重启过），请重新生成')
+        continue
+      }
+      if (task.progress) onProgress?.(task.progress, Math.round(elapsed / 1000))
+      if (task.status === 'done') {
+        // 从任务结果取图片；兜底再查一次列表接口
+        if (task.result?.images?.length) return task.result.images
+        return await api.listProductImages(productId)
+      }
+      if (task.status === 'error') {
+        throw new Error(task.error ? `${task.error}${task.hint ? `（${task.hint}）` : ''}` : '图片生成失败，请重试')
+      }
+      // pending / running → 继续轮询
+    }
+  },
+
+  /** 产品图片访问地址（img src 用） */
+  productImageUrl(productId: string, file: string): string {
+    const baseURL = import.meta.env.VITE_API_URL || '/api'
+    return `${baseURL}/product-images/${productId}/${file}`
   },
 
   exportCsvUrl(): string {

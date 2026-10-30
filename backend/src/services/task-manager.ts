@@ -14,6 +14,8 @@ export interface TaskRecord {
   /** 失败时的错误信息 */
   error?: string
   hint?: string
+  /** 进度描述（如「已完成 2/5 张」），长任务可选更新 */
+  progress?: string
   createdAt: number
   updatedAt: number
 }

@@ -159,6 +159,30 @@ export interface SourceInfo {
 
 export type ProductStatus = 'sourced' | 'listed' | 'archived' | 'trashed'
 
+/** 产品图片角色：main=主图（含 Logo 融合）/ dimension=尺寸图（inch 标注）/ intro=介绍图 */
+export type ProductImageKind = 'main' | 'dimension' | 'intro'
+
+/** 单张产品图片记录（AI 生成，存于后端 data/images/{productId}/） */
+export interface ProductImage {
+  id: string
+  productId: string
+  kind: ProductImageKind
+  /** 第几张介绍图（1-3），非 intro 为 0 */
+  slot: number
+  /** 生成该图使用的英文 Prompt */
+  prompt: string
+  history: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
+  /** 图片文件名，访问地址：{API_URL}/product-images/{productId}/{file} */
+  file: string
+  dimensionSpec: {
+    widthIn: number
+    heightIn: number
+    depthIn: number | null
+  } | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Product {
   id: string
   /** 关联的选品评估草稿 id（评估库 ↔ 产品库 同步） */

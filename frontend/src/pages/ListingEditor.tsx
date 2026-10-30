@@ -10,6 +10,7 @@ import {
   Globe,
   HelpCircle,
   History,
+  ImageOff,
   Loader2,
   MessageSquare,
   Pencil,
@@ -48,7 +49,7 @@ import EvaluationChat from '@/components/EvaluationChat'
 import { api, getErrorMessage, listingToText } from '@/lib/api'
 import { useProduct, useSettings } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
-import { Listing, PriceRow, SimilarResearch, SourceInfo } from '@/types'
+import { Listing, PriceRow, ProductImage, SimilarResearch, SourceInfo } from '@/types'
 import { ASI_CATEGORIES, ASI_IMPRINT_METHODS, ASI_MATERIALS, ASI_THEMES } from '@/constants/asi'
 import { CategoryPicker } from '@/components/CategoryPicker'
 
@@ -654,6 +655,46 @@ export default function ListingEditor() {
   const setSrc = <K extends keyof SourceInfo>(key: K, value: SourceInfo[K]) =>
     setSourceForm((s) => (s ? { ...s, [key]: value } : s))
 
+  // ---------- 产品图片（AI 生成）：异步任务 + 轮询进度 ----------
+  const [productImages, setProductImages] = useState<ProductImage[]>([])
+  const [generatingImages, setGeneratingImages] = useState(false)
+  const [imgProgress, setImgProgress] = useState<string | null>(null)
+
+  // 加载已生成的图片（产品切换时）
+  useEffect(() => {
+    if (!product) return
+    let cancelled = false
+    api
+      .listProductImages(product.id)
+      .then((imgs) => {
+        if (!cancelled) setProductImages(imgs)
+      })
+      .catch(() => {
+        /* 图片列表加载失败不阻塞页面 */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [product])
+
+  const generateImages = async () => {
+    if (!product) return
+    setGeneratingImages(true)
+    setImgProgress('正在提交生成任务…')
+    try {
+      const imgs = await api.generateProductImages(product.id, (progress, elapsed) => {
+        setImgProgress(progress ? `${progress}（已耗时 ${elapsed} 秒）` : `生成中…（已耗时 ${elapsed} 秒）`)
+      })
+      setProductImages(imgs)
+      toast.success(`已生成 ${imgs.length} 张产品图片`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setGeneratingImages(false)
+      setImgProgress(null)
+    }
+  }
+
   // 按行索引更新，避免数量可编辑后出现重复 qty 匹配错行
   const setPrice = (idx: number, price: number) => {
     if (!listing) return
@@ -993,6 +1034,63 @@ export default function ListingEditor() {
                 className="h-16 w-16 rounded-md border border-slate-200 object-cover"
                 referrerPolicy="no-referrer"
               />
+            ))}
+          </div>
+        )}
+      </SectionCard>
+
+      {/* 产品图片（AI 生成）：主图 / 尺寸图 / 介绍图 */}
+      <SectionCard
+        title="产品图片（AI 生成）"
+        hint="主图（Logo 融合）、尺寸图（inch 标注）、介绍图 ×3；基于 1688 源图生成，约需 1-5 分钟"
+        right={
+          <Button
+            size="sm"
+            className="h-7 text-xs"
+            onClick={generateImages}
+            disabled={generatingImages || !product}
+          >
+            {generatingImages ? (
+              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+            ) : (
+              <Sparkles className="mr-1 h-3 w-3" />
+            )}
+            {generatingImages ? '生成中…' : productImages.length ? '重新生成' : '生成图片'}
+          </Button>
+        }
+      >
+        {imgProgress && (
+          <div className="mb-3 flex items-center gap-2 text-xs text-blue-700">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {imgProgress}
+          </div>
+        )}
+        {productImages.length === 0 && !generatingImages ? (
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <ImageOff className="h-4 w-4 text-slate-300" />
+            还没有生成图片。点击右上角「生成图片」，系统将基于 1688 源图 + Logo 生成 5 张图（主图 / 尺寸图 / 介绍图 ×3）。
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            {productImages.map((img) => (
+              <div key={img.id}>
+                <a
+                  href={api.productImageUrl(img.productId, img.file)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="查看原图"
+                >
+                  <img
+                    src={api.productImageUrl(img.productId, img.file)}
+                    alt={img.kind}
+                    className="aspect-square w-full rounded-md border border-slate-200 bg-white object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                </a>
+                <span className="mt-1 block text-center text-[10px] text-slate-500">
+                  {img.kind === 'main' ? '主图' : img.kind === 'dimension' ? '尺寸图' : `介绍图 ${img.slot}`}
+                </span>
+              </div>
             ))}
           </div>
         )}

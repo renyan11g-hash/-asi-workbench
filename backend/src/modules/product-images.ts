@@ -11,6 +11,7 @@ import { buildImagePromptSet, translateImageEditInstruction } from '../services/
 import { overlayDimensions } from '../services/dimension-overlay'
 import { ProductImage, ProductImageKind, SourceInfo } from '../types'
 import { loadSettings } from './settings'
+import { createTask, getTask, runTask, updateTask } from '../services/task-manager'
 
 export const productImagesRouter: Router = Router()
 
@@ -212,7 +213,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   const body = generateSchema.parse(req.body ?? {})
   const settings = loadSettings()
 
-  // 解析产品：优先 productId，其次请求体 source
+  // 解析产品：优先 productId，其次请求体 source（同步解析，404/400 立即返回给前端）
   let source: SourceInfo
   let productId: string
   if (body.productId) {
@@ -233,9 +234,6 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   const kinds = body.kinds ?? ['main', 'dimension', 'intro', 'intro', 'intro']
   const logo = readLogo()
 
-  // 1) 文本模型产出 5 张图 Prompt（带产品参考图 + Logo）
-  const promptSet = await runAi(() => buildImagePromptSet(source, settings))
-
   // 参考图：产品图（https URL 直传，火山引擎免下载）+ Logo（base64）
   const refs: ImageRef[] = (source.images ?? [])
     .filter((u) => /^https?:\/\//.test(u))
@@ -243,60 +241,83 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
     .map((u) => ({ url: u }) as ImageRef)
   if (logo) refs.push({ buffer: logo })
 
+  // 异步任务：5 张图逐张生成耗时 1-5 分钟，同步等待会超 Render 100 秒代理超时（502）
+  const task = createTask('generate-product-images')
   const created: ProductImage[] = []
   const now = () => new Date().toISOString()
+  // Prompt 集缓存：任务重试时复用，只重新生成失败的图
+  let promptSet: Awaited<ReturnType<typeof buildImagePromptSet>> | null = null
 
-  // 2) 逐张生成
-  for (const kind of kinds) {
-    const isIntro = kind === 'intro'
-    const existingIntros = created.filter((c) => c.kind === 'intro').length
-    const slot = isIntro ? existingIntros + 1 : 0
-    const prompt =
-      kind === 'main' ? promptSet.main : kind === 'dimension' ? promptSet.dimension : promptSet.intro[slot - 1]
+  runTask(task, async () => {
+    // 1) 文本模型产出 5 张图 Prompt（带产品参考图 + Logo）
+    const ps = promptSet ?? (promptSet = await runAi(() => buildImagePromptSet(source, settings)))
 
-    let buf = await runAi(() => generateImage(settings, prompt, refs))
+    // 2) 逐张生成（任务重试时跳过已完成的，续跑剩余的）
+    for (const kind of kinds) {
+      const isIntro = kind === 'intro'
+      const existingIntros = created.filter((c) => c.kind === 'intro').length
+      const slot = isIntro ? existingIntros + 1 : 0
+      if (created.some((c) => c.kind === kind && c.slot === slot)) continue
+      const prompt =
+        kind === 'main' ? ps.main : kind === 'dimension' ? ps.dimension : ps.intro[slot - 1]
 
-    // 尺寸图：程序化叠加 inch 标注
-    let dimensionSpec: ProductImage['dimensionSpec'] = null
-    if (kind === 'dimension' && dims) {
-      const spec = { widthIn: dims.widthIn, heightIn: dims.heightIn, depthIn: dims.depthIn ?? null }
-      buf = await overlayDimensions(buf, spec)
-      dimensionSpec = spec
+      let buf = await runAi(() => generateImage(settings, prompt, refs))
+
+      // 尺寸图：程序化叠加 inch 标注
+      let dimensionSpec: ProductImage['dimensionSpec'] = null
+      if (kind === 'dimension' && dims) {
+        const spec = { widthIn: dims.widthIn, heightIn: dims.heightIn, depthIn: dims.depthIn ?? null }
+        buf = await overlayDimensions(buf, spec)
+        dimensionSpec = spec
+      }
+
+      const file = saveImageFile(productId, buf)
+      const id = randomUUID()
+      const record: ProductImage = {
+        id,
+        productId,
+        kind,
+        slot,
+        prompt,
+        history: [],
+        file,
+        dimensionSpec,
+        createdAt: now(),
+        updatedAt: now(),
+      }
+      db.prepare(
+        `INSERT INTO product_images (id, product_id, kind, slot, prompt, history, file, dimension_spec, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        record.id,
+        record.productId,
+        record.kind,
+        record.slot,
+        record.prompt,
+        JSON.stringify(record.history),
+        record.file,
+        record.dimensionSpec ? JSON.stringify(record.dimensionSpec) : null,
+        record.createdAt,
+        record.updatedAt
+      )
+      created.push(record)
+      updateTask(task.id, { progress: `已完成 ${created.length}/${kinds.length} 张` })
     }
 
-    const file = saveImageFile(productId, buf)
-    const id = randomUUID()
-    const record: ProductImage = {
-      id,
-      productId,
-      kind,
-      slot,
-      prompt,
-      history: [],
-      file,
-      dimensionSpec,
-      createdAt: now(),
-      updatedAt: now(),
-    }
-    db.prepare(
-      `INSERT INTO product_images (id, product_id, kind, slot, prompt, history, file, dimension_spec, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      record.id,
-      record.productId,
-      record.kind,
-      record.slot,
-      record.prompt,
-      JSON.stringify(record.history),
-      record.file,
-      record.dimensionSpec ? JSON.stringify(record.dimensionSpec) : null,
-      record.createdAt,
-      record.updatedAt
-    )
-    created.push(record)
+    return { images: created, urls: created.map((c) => `/api/product-images/${productId}/${c.file}`) }
+  })
+
+  res.json({ taskId: task.id, status: task.status })
+})
+
+// ---------- 任务轮询：查询图片生成任务状态/结果 ----------
+// 注意：必须注册在 GET /:productId/:file 之前，避免 "tasks" 被当作 productId
+productImagesRouter.get('/tasks/:taskId', (req: Request, res: Response) => {
+  const task = getTask(String(req.params.taskId))
+  if (!task) {
+    throw new AppError(404, '任务不存在或已过期（服务重启会清空任务，请重新生成）')
   }
-
-  res.json({ images: created, urls: created.map((c) => `/api/product-images/${productId}/${c.file}`) })
+  res.json(task)
 })
 
 // ---------- 对话式修改图片 ----------

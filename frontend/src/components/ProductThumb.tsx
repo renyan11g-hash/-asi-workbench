@@ -41,6 +41,7 @@ export default function ProductThumb({
       style={{ width: size, height: size }}
       onError={() => setFailed(true)}
       className={`shrink-0 rounded-md border border-slate-200 bg-white object-cover ${className}`}
+      referrerPolicy="no-referrer"
     />
   )
 
