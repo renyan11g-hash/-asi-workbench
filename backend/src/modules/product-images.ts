@@ -7,7 +7,7 @@ import { db, getSetting, setSetting } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { AiError } from '../services/ai'
 import { editImage, generateImage, ImageRef, ImageSettings, testImageConnection } from '../services/image-gen'
-import { buildImagePromptSet, translateImageEditInstruction } from '../services/image-prompts'
+import { buildImagePromptSet, buildIntroSuggestions, translateImageEditInstruction } from '../services/image-prompts'
 import { overlayDimensions } from '../services/dimension-overlay'
 import { ProductImage, ProductImageKind, SourceInfo } from '../types'
 import { loadSettings } from './settings'
@@ -193,21 +193,29 @@ async function runAi<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** 从 sizeCn / productSizeInch 粗解析 inch 尺寸 */
+/** 解析尺寸图标注用的 inch 尺寸：优先 listing 英制尺寸，其次 sizeCn（1688 尺寸默认按 cm 换算） */
 function parseDimensions(source: SourceInfo, listingSizeInch?: string) {
-  const text = [listingSizeInch, source.sizeCn].filter(Boolean).join(' ')
-  // 匹配 3.5" W x 4.7" H / 8.9 x 12 x 3.5cm / 3.5*4.7inch 等
-  const nums = [...text.matchAll(/(\d+(?:\.\d+)?)\s*(?:["”]|in|inch|cm|毫米|mm)?/gi)].map((m) => Number(m[1]))
-  const isCm = /cm|毫米|mm/i.test(text) && !/in|inch|"/i.test(text)
-  const conv = (n: number) => (isCm ? n / 2.54 : n)
-  if (nums.length >= 2) {
-    return {
-      widthIn: conv(nums[0]),
-      heightIn: conv(nums[1]),
-      depthIn: nums.length >= 3 ? conv(nums[2]) : null,
+  // 1) listing.productSizeInch（AI 生成 + 人工核对，如 39.37" W x 15.75" H / 11.81" Diameter）
+  const inchText = (listingSizeInch ?? '').trim()
+  if (inchText) {
+    const nums = [...inchText.matchAll(/(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]))
+    if (nums.length >= 2) {
+      return { widthIn: nums[0], heightIn: nums[1], depthIn: nums.length >= 3 ? nums[2] : null }
     }
   }
-  return null
+  // 2) sizeCn：1688 尺寸默认 cm（即使没写单位，如 "100x40"）；只有明确标注英寸才不换算
+  const cn = (source.sizeCn ?? '').trim()
+  if (!cn) return null
+  const nums = [...cn.matchAll(/(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]))
+  if (nums.length < 2) return null
+  const isIn = /in|inch|["”]|英寸/i.test(cn)
+  const isMm = /mm|毫米/i.test(cn)
+  const conv = (n: number) => (isIn ? n : isMm ? n / 25.4 : n / 2.54)
+  return {
+    widthIn: conv(nums[0]),
+    heightIn: conv(nums[1]),
+    depthIn: nums.length >= 3 ? conv(nums[2]) : null,
+  }
 }
 
 productImagesRouter.post('/generate', async (req: Request, res: Response) => {
@@ -217,11 +225,14 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   // 解析产品：优先 productId，其次请求体 source（同步解析，404/400 立即返回给前端）
   let source: SourceInfo
   let productId: string
+  let listingSizeInch: string | undefined
   if (body.productId) {
     // 复用 products 模块的列式解析（products 表无 source JSON 列，直接 JSON.parse 会崩）
     const p = findProduct(body.productId)
     source = p.source
     productId = p.id
+    // listing 英制尺寸（AI 生成+人工核对）优先用于尺寸图标注
+    listingSizeInch = p.listing?.productSizeInch || undefined
   } else if (body.source) {
     source = body.source as unknown as SourceInfo
     productId = 'preview'
@@ -229,8 +240,9 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
     throw new AppError(400, '请提供 productId 或 source')
   }
 
-  const dims = body.dimensions ?? parseDimensions(source)
-  const kinds = body.kinds ?? ['main', 'dimension', 'intro', 'intro', 'intro']
+  const dims = body.dimensions ?? parseDimensions(source, listingSizeInch)
+  // 默认只生成主图 + 尺寸图（介绍图改为文字建议，省 AI 费用）；需要时可传 kinds 指定
+  const kinds = body.kinds ?? ['main', 'dimension']
   const logo = readLogo()
 
   // 参考图：产品图（https URL 直传，火山引擎免下载）+ Logo（base64）
@@ -270,6 +282,15 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
         dimensionSpec = spec
       }
 
+      // 同角色同槽位替换：先删旧记录与旧文件，避免多次生成后重复堆积
+      for (const old of listImages(productId).filter((i) => i.kind === kind && i.slot === slot)) {
+        try {
+          fs.unlinkSync(path.join(productDir(productId), old.file))
+        } catch {
+          /* 旧文件可能已不存在 */
+        }
+        db.prepare('DELETE FROM product_images WHERE id = ?').run(old.id)
+      }
       const file = saveImageFile(productId, buf)
       const id = randomUUID()
       const record: ProductImage = {
@@ -368,6 +389,14 @@ productImagesRouter.post('/chat', async (req: Request, res: Response) => {
     reply,
     url: `/api/product-images/${body.productId}/${file}`,
   })
+})
+
+// ---------- 介绍图文字建议（不生成图片，省 AI 费用） ----------
+productImagesRouter.post('/intro-suggestions', async (req: Request, res: Response) => {
+  const body = z.object({ productId: z.string().min(1) }).parse(req.body ?? {})
+  const p = findProduct(body.productId)
+  const suggestions = await runAi(() => buildIntroSuggestions(p.source, loadSettings()))
+  res.json({ suggestions })
 })
 
 // ---------- 查询产品图片列表 ----------

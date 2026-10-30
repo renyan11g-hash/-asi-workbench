@@ -453,6 +453,128 @@ function SectionAiTools({
   )
 }
 
+/** 单图 AI 对话窗口：针对主图/尺寸图单独对话修改（每次发送会生成新图，消耗 AI 额度） */
+function ImageChatDialog({
+  image,
+  onClose,
+  onUpdated,
+}: {
+  image: ProductImage | null
+  onClose: () => void
+  onUpdated: (img: ProductImage) => void
+}) {
+  const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const imageId = image?.id ?? null
+  useEffect(() => {
+    if (image) {
+      setMessages((image.history ?? []).map((h) => ({ role: h.role, content: h.content })))
+      setInput('')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageId])
+
+  const kindLabel =
+    image?.kind === 'main' ? '主图' : image?.kind === 'dimension' ? '尺寸图' : `介绍图 ${image?.slot ?? ''}`
+
+  const send = async () => {
+    if (!image) return
+    const text = input.trim()
+    if (!text || busy) return
+    const next = [...messages, { role: 'user' as const, content: text }]
+    setMessages(next)
+    setInput('')
+    setBusy(true)
+    try {
+      const r = await api.chatProductImage(image.productId, image.id, text)
+      setMessages([...next, { role: 'assistant', content: r.reply }])
+      onUpdated(r.image)
+      toast.success('图片已按您的要求更新')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open={!!image}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <DialogContent className="max-h-[88vh] max-w-lg overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <MessageSquare className="h-4 w-4 text-blue-600" /> AI 修改{kindLabel}
+          </DialogTitle>
+          <DialogDescription>
+            用中文描述想要的修改，AI 会基于当前这张{kindLabel}生成新版本；尺寸图上的 inch 标注会自动保留。每次发送都会消耗 AI 额度，请确认后再发送。
+          </DialogDescription>
+        </DialogHeader>
+        {image && (
+          <img
+            src={api.productImageUrl(image.productId, image.file)}
+            alt={image.kind}
+            className="w-full rounded-md border border-slate-200 bg-white object-contain"
+            referrerPolicy="no-referrer"
+          />
+        )}
+        <div className="max-h-56 min-h-16 space-y-2 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 p-3">
+          {messages.length === 0 && (
+            <p className="text-xs leading-relaxed text-slate-400">
+              例如：「把背景换成雪地场景」「Logo 放大一点」「毛巾换成红色」。
+            </p>
+          )}
+          {messages.map((m, i) => (
+            <div key={i} className={m.role === 'user' ? 'text-right' : ''}>
+              <span
+                className={`inline-block max-w-[85%] whitespace-pre-wrap rounded-lg px-2.5 py-1.5 text-left text-xs leading-relaxed ${
+                  m.role === 'user'
+                    ? 'bg-blue-600 text-white'
+                    : 'border border-slate-200 bg-white text-slate-800'
+                }`}
+              >
+                {m.content}
+              </span>
+            </div>
+          ))}
+          {busy && (
+            <div className="flex items-center gap-1 text-xs text-slate-400">
+              <Loader2 className="h-3 w-3 animate-spin" /> AI 正在修改图片，约需 1-2 分钟…
+            </div>
+          )}
+        </div>
+        <div className="flex items-end gap-2">
+          <Textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                void send()
+              }
+            }}
+            placeholder="告诉 AI 怎么修改这张图…（Enter 发送，Shift+Enter 换行）"
+            className="min-h-[60px] text-sm"
+          />
+          <Button size="sm" onClick={() => void send()} disabled={busy || !input.trim()}>
+            <Send className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={onClose}>
+            完成
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export default function ListingEditor() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -659,6 +781,11 @@ export default function ListingEditor() {
   const [productImages, setProductImages] = useState<ProductImage[]>([])
   const [generatingImages, setGeneratingImages] = useState(false)
   const [imgProgress, setImgProgress] = useState<string | null>(null)
+  // 介绍图拍摄建议（纯文字，不生成图片，省 AI 费用）
+  const [introSuggestions, setIntroSuggestions] = useState<string[]>([])
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false)
+  // 单图 AI 对话窗口（主图 / 尺寸图各自独立，对话状态由 ImageChatDialog 内部管理）
+  const [chatImage, setChatImage] = useState<ProductImage | null>(null)
 
   // 加载已生成的图片（产品切换时）
   useEffect(() => {
@@ -692,6 +819,21 @@ export default function ListingEditor() {
     } finally {
       setGeneratingImages(false)
       setImgProgress(null)
+    }
+  }
+
+  /** 获取介绍图拍摄建议（纯文字，不消耗生图费用） */
+  const fetchSuggestions = async () => {
+    if (!product) return
+    setLoadingSuggestions(true)
+    try {
+      const suggestions = await api.fetchIntroSuggestions(product.id)
+      setIntroSuggestions(suggestions)
+      toast.success('已获取介绍图拍摄建议')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setLoadingSuggestions(false)
     }
   }
 
@@ -1039,10 +1181,10 @@ export default function ListingEditor() {
         )}
       </SectionCard>
 
-      {/* 产品图片（AI 生成）：主图 / 尺寸图 / 介绍图 */}
+      {/* 产品图片（AI 生成）：主图 + 尺寸图 + 介绍图文字建议 */}
       <SectionCard
         title="产品图片（AI 生成）"
-        hint="主图（Logo 融合）、尺寸图（inch 标注）、介绍图 ×3；基于 1688 源图生成，约需 1-5 分钟"
+        hint="生成主图（Logo 融合）与尺寸图（inch 标注），约需 1-5 分钟；介绍图（第 3-5 张）改为下方文字拍摄建议，不消耗生图费用。每张图可单独与 AI 对话修改。"
         right={
           <Button
             size="sm"
@@ -1068,10 +1210,10 @@ export default function ListingEditor() {
         {productImages.length === 0 && !generatingImages ? (
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <ImageOff className="h-4 w-4 text-slate-300" />
-            还没有生成图片。点击右上角「生成图片」，系统将基于 1688 源图 + Logo 生成 5 张图（主图 / 尺寸图 / 介绍图 ×3）。
+            还没有生成图片。点击右上角「生成图片」，系统将基于 1688 源图 + Logo 生成主图与尺寸图。
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 sm:max-w-md">
             {productImages.map((img) => (
               <div key={img.id}>
                 <a
@@ -1087,14 +1229,73 @@ export default function ListingEditor() {
                     referrerPolicy="no-referrer"
                   />
                 </a>
-                <span className="mt-1 block text-center text-[10px] text-slate-500">
-                  {img.kind === 'main' ? '主图' : img.kind === 'dimension' ? '尺寸图' : `介绍图 ${img.slot}`}
-                </span>
+                <div className="mt-1 flex items-center justify-center gap-1">
+                  <span className="text-[10px] text-slate-500">
+                    {img.kind === 'main' ? '主图' : img.kind === 'dimension' ? '尺寸图' : `介绍图 ${img.slot}`}
+                  </span>
+                  <button
+                    type="button"
+                    className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100 hover:text-blue-700"
+                    onClick={() => setChatImage(img)}
+                    title="和 AI 对话修改这张图"
+                  >
+                    <MessageSquare className="h-3 w-3" /> AI 修改
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         )}
+
+        {/* 介绍图拍摄建议（纯文字，不生成图片，省 AI 费用） */}
+        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-700">介绍图拍摄建议（第 3-5 张）</p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={fetchSuggestions}
+              disabled={loadingSuggestions || !product}
+            >
+              {loadingSuggestions ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Sparkles className="mr-1 h-3 w-3" />
+              )}
+              {introSuggestions.length ? '重新获取建议' : '获取拍摄建议'}
+            </Button>
+          </div>
+          {introSuggestions.length === 0 ? (
+            <p className="mt-2 text-xs leading-relaxed text-slate-400">
+              点击「获取拍摄建议」，AI 将根据产品资料给出 3 条介绍图（生活场景图）的拍摄/构图建议，可一键复制给美工或 AI 绘图工具。
+            </p>
+          ) : (
+            <ol className="mt-2 space-y-2">
+              {introSuggestions.map((s, i) => (
+                <li
+                  key={i}
+                  className="flex items-start justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2"
+                >
+                  <p className="text-xs leading-relaxed text-slate-700">
+                    {i + 1}. {s}
+                  </p>
+                  <CopyBtn text={s} label="复制" />
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
       </SectionCard>
+
+      <ImageChatDialog
+        image={chatImage}
+        onClose={() => setChatImage(null)}
+        onUpdated={(updated) => {
+          setProductImages((imgs) => imgs.map((i) => (i.id === updated.id ? updated : i)))
+          setChatImage((cur) => (cur && cur.id === updated.id ? updated : cur))
+        }}
+      />
 
       {product.similar && <SimilarCard similar={product.similar} />}
 

@@ -534,6 +534,35 @@ export const api = {
   },
 
   /**
+   * 产品图片：对话式修改某张图（主图/尺寸图各自独立 AI 窗口）
+   */
+  async chatProductImage(
+    productId: string,
+    imageId: string,
+    message: string
+  ): Promise<{ image: ProductImage; reply: string; url: string }> {
+    const { data } = await apiClient.post<{ image: ProductImage; reply: string; url: string }>(
+      `/product-images/chat`,
+      { productId, imageId, message },
+      // 图片编辑耗时 1-2 分钟，覆盖默认 10 秒超时
+      { timeout: 180000 }
+    )
+    return data
+  },
+
+  /**
+   * 产品图片：获取介绍图拍摄建议（纯文字，不生成图片，省 AI 费用）
+   */
+  async fetchIntroSuggestions(productId: string): Promise<string[]> {
+    const { data } = await apiClient.post<{ suggestions: string[] }>(
+      `/product-images/intro-suggestions`,
+      { productId },
+      { timeout: 60000 }
+    )
+    return data.suggestions
+  },
+
+  /**
    * 产品图片：查询某产品已生成的 AI 图片列表
    */
   async listProductImages(productId: string): Promise<ProductImage[]> {

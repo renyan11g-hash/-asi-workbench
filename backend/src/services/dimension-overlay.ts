@@ -146,6 +146,19 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
   const { width, height } = img.bitmap
   const box = detectBoundingBox(img)
 
+  // 标注方向与产品在图中的朝向对齐：AI 摆放朝向不可控，若图片里竖放但数值"宽>高"
+  // （或横放但"高>宽"）则互换，保证底部线标视觉横向尺寸、右侧线标视觉纵向尺寸
+  const boxW = box.right - box.left
+  const boxH = box.bottom - box.top
+  let widthIn = spec.widthIn
+  let heightIn = spec.heightIn
+  if (
+    (boxH > boxW * 1.15 && widthIn > heightIn * 1.15) ||
+    (boxW > boxH * 1.15 && heightIn > widthIn * 1.15)
+  ) {
+    ;[widthIn, heightIn] = [heightIn, widthIn]
+  }
+
   const pad = Math.round(Math.min(width, height) * 0.08) // 尺寸线与产品的间距
   const margin = Math.round(Math.min(width, height) * 0.12) // 画布边缘留白
   const fmt = (n: number) => (Math.round(n * 10) / 10).toFixed(1)
@@ -156,7 +169,7 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
   drawArrow(img, box.left, yW, 'l')
   drawArrow(img, box.right, yW, 'r')
   {
-    const label = `${fmt(spec.widthIn)} in`
+    const label = `${fmt(widthIn)} in`
     const t = await renderText(label)
     let tx = Math.round((box.left + box.right) / 2 - t.w / 2)
     let ty = yW + 8
@@ -172,7 +185,7 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
   drawArrow(img, xH, box.top, 'u')
   drawArrow(img, xH, box.bottom, 'd')
   {
-    const label = `${fmt(spec.heightIn)} in`
+    const label = `${fmt(heightIn)} in`
     const t = await renderText(label)
     t.img.rotate(90, true) // 顺时针 90°：文字自上而下
     const rw = t.img.bitmap.width

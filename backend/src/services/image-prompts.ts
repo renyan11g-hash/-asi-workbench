@@ -91,6 +91,38 @@ function fallbackMain(source: SourceInfo): string {
 }
 
 /**
+ * 介绍图文字建议：不生成图片（省 AI 费用），由文本模型产出 3 条介绍图拍摄/构图建议
+ * （中文，可直接复制给美工或 AI 绘图工具使用）。
+ */
+export async function buildIntroSuggestions(
+  source: SourceInfo,
+  settings: Parameters<typeof callChatJson>[0]
+): Promise<string[]> {
+  const system = `You are a creative director for promotional-product (ASI) listing photos.
+Based on the 1688 product data, write exactly 3 suggestions for LIFESTYLE/CONTEXT photos (介绍图).
+Each suggestion: 1-2 sentences in CHINESE, describing scene + model action + what selling point it shows.
+Be concrete and shootable (e.g. "健身房场景：模特擦汗时展示毛巾速干，突出吸汗快干卖点").
+Output STRICT JSON: {"suggestions":["<1>","<2>","<3>"]}`
+
+  const user = `PRODUCT FACTS:
+- Title: ${source.sourceTitle}
+- Description: ${source.description?.slice(0, 800) || ''}
+- Material: ${source.materialCn}
+- Colors: ${source.colorsCn}
+- Category: ${source.category}
+- Notes: ${source.notes}
+
+Write 3 lifestyle photo suggestions that showcase this product's selling points for a US B2B promotional-products listing.`
+
+  const raw = await callChatJson<{ suggestions?: string[] }>(settings, system, user, 0.6)
+  const list = (raw.suggestions ?? []).map((s) => String(s).trim()).filter(Boolean).slice(0, 3)
+  while (list.length < 3) {
+    list.push(`${source.sourceTitle || '产品'}使用场景图：展示核心卖点（可让美工按此拍摄或用 AI 生成）。`)
+  }
+  return list
+}
+
+/**
  * 对话式改图：把用户中文修改意图 + 图片历史 → 精确英文编辑指令。
  * 返回英文编辑 prompt（用于 images/edits）+ 给用户看的中文说明。
  */
