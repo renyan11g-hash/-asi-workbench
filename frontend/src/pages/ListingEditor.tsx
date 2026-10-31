@@ -463,11 +463,14 @@ function GenerateNotesDialog({
   onOpenChange,
   onConfirm,
   generating,
+  target,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onConfirm: (notes: string) => void
   generating: boolean
+  /** 本次生成目标：main=主图 dimension=尺寸图 both=两者 */
+  target: 'main' | 'dimension' | 'both'
 }) {
   const [notes, setNotes] = useState('')
   const [openState, setOpenState] = useState(open)
@@ -493,10 +496,11 @@ function GenerateNotesDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
-            <MessageSquare className="h-4 w-4 text-blue-600" /> 生成前：告诉 AI 注意点（可选）
+            <MessageSquare className="h-4 w-4 text-blue-600" />
+            生成{target === 'main' ? '主图' : target === 'dimension' ? '尺寸图' : '主图 + 尺寸图'}：告诉 AI 注意点（可选）
           </DialogTitle>
           <DialogDescription>
-            例如「主图不要出现其他颜色缩略图」「Logo 印在腕带正面居中」「背景用浅蓝色」。
+            例如「产品是黑色的那款，Logo 改成白色」「不要出现其他颜色缩略图」「只展示绿色款」。
             留空直接开始生成。生成后每张图仍可单独「AI 修改」。
           </DialogDescription>
         </DialogHeader>
@@ -872,8 +876,9 @@ export default function ListingEditor() {
   }, [product])
 
   const [genNotesOpen, setGenNotesOpen] = useState(false)
+  const [genTarget, setGenTarget] = useState<'main' | 'dimension' | 'both'>('both')
 
-  const generateImages = async (notes = '') => {
+  const generateImages = async (notes = '', kinds?: Array<'main' | 'dimension'>) => {
     if (!product) return
     setGeneratingImages(true)
     setImgProgress('正在提交生成任务…')
@@ -883,7 +888,8 @@ export default function ListingEditor() {
         (progress, elapsed) => {
           setImgProgress(progress ? `${progress}（已耗时 ${elapsed} 秒）` : `生成中…（已耗时 ${elapsed} 秒）`)
         },
-        notes
+        notes,
+        kinds
       )
       setProductImages(imgs)
       toast.success(`已生成 ${imgs.length} 张产品图片`)
@@ -1259,19 +1265,41 @@ export default function ListingEditor() {
         title="产品图片（AI 生成）"
         hint="生成主图（Logo 融合）与尺寸图（inch 标注），约需 1-5 分钟；介绍图（第 3-5 张）改为下方文字拍摄建议，不消耗生图费用。每张图可单独与 AI 对话修改。"
         right={
-          <Button
-            size="sm"
-            className="h-7 text-xs"
-            onClick={() => setGenNotesOpen(true)}
-            disabled={generatingImages || !product}
-          >
-            {generatingImages ? (
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-            ) : (
-              <Sparkles className="mr-1 h-3 w-3" />
-            )}
-            {generatingImages ? '生成中…' : productImages.length ? '重新生成' : '生成图片'}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => {
+                setGenTarget('main')
+                setGenNotesOpen(true)
+              }}
+              disabled={generatingImages || !product}
+            >
+              {generatingImages && genTarget === 'main' ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Sparkles className="mr-1 h-3 w-3" />
+              )}
+              {generatingImages && genTarget === 'main' ? '生成中…' : productImages.some((i) => i.kind === 'main') ? '重新生成主图' : '生成主图'}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => {
+                setGenTarget('dimension')
+                setGenNotesOpen(true)
+              }}
+              disabled={generatingImages || !product}
+            >
+              {generatingImages && genTarget === 'dimension' ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Sparkles className="mr-1 h-3 w-3" />
+              )}
+              {generatingImages && genTarget === 'dimension' ? '生成中…' : productImages.some((i) => i.kind === 'dimension') ? '重新生成尺寸图' : '生成尺寸图'}
+            </Button>
+          </div>
         }
       >
         {imgProgress && (
@@ -1365,9 +1393,10 @@ export default function ListingEditor() {
         open={genNotesOpen}
         onOpenChange={setGenNotesOpen}
         generating={generatingImages}
+        target={genTarget}
         onConfirm={(notes) => {
           setGenNotesOpen(false)
-          generateImages(notes)
+          generateImages(notes, genTarget === 'both' ? undefined : [genTarget])
         }}
       />
       <ImageChatDialog
@@ -1410,6 +1439,7 @@ export default function ListingEditor() {
               title="Product Title"
               right={
                 <div className="flex items-center gap-1">
+                  <CopyBtn text={listing.title} label="复制" />
                   <CharCounter value={listing.title} max={TITLE_LIMIT} />
                   <SectionAiTools
                     productId={product.id}
@@ -1438,6 +1468,7 @@ export default function ListingEditor() {
               title="Summary Description"
               right={
                 <div className="flex items-center gap-1">
+                  <CopyBtn text={listing.summary} label="复制" />
                   <CharCounter value={listing.summary} max={SUMMARY_LIMIT} />
                   <SectionAiTools
                     productId={product.id}
@@ -1464,6 +1495,7 @@ export default function ListingEditor() {
               title="Full Description"
               right={
                 <div className="flex items-center gap-1">
+                  <CopyBtn text={listing.description} label="复制" />
                   <CharCounter value={listing.description} max={DESC_LIMIT} />
                   <SectionAiTools
                     productId={product.id}

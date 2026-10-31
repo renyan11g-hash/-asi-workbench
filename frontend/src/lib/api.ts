@@ -580,11 +580,13 @@ export const api = {
   async generateProductImages(
     productId: string,
     onProgress?: (progress: string, elapsedSec: number) => void,
-    notes?: string
+    notes?: string,
+    /** 只生成指定角色：['main'] 主图 / ['dimension'] 尺寸图；缺省=两者 */
+    kinds?: Array<'main' | 'dimension' | 'intro'>
   ): Promise<ProductImage[]> {
     const { data: start } = await apiClient.post<{ taskId: string; status: string }>(
       `/product-images/generate`,
-      { productId, notes: (notes ?? '').trim() || undefined }
+      { productId, notes: (notes ?? '').trim() || undefined, kinds }
     )
     const taskId = start.taskId
     if (!taskId) throw new Error('后端未返回 taskId，请检查后端版本')

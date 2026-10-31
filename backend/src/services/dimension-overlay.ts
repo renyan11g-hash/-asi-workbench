@@ -22,9 +22,9 @@ interface OverlaySpec {
   depthIn: number | null
 }
 
-const LINE_W = 4
-const ARROW_S = 14
-const INK = { r: 0x1e, g: 0x29, b: 0x3b, a: 255 } // #1e293b
+const LINE_W = 6
+const ARROW_S = 18
+const INK = { r: 0x00, g: 0x00, b: 0x00, a: 255 } // 纯黑，保证清晰可见
 
 /** 检测产品包围盒：扫描非白色（且非透明）像素 */
 function detectBoundingBox(img: Jimp): { left: number; top: number; right: number; bottom: number } {
@@ -159,12 +159,16 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
     ;[widthIn, heightIn] = [heightIn, widthIn]
   }
 
-  const pad = Math.round(Math.min(width, height) * 0.08) // 尺寸线与产品的间距
-  const margin = Math.round(Math.min(width, height) * 0.12) // 画布边缘留白
+  // 尺寸线与产品保持明显间距（不与产品重叠），且不能贴出画布边缘：
+  // 先按产品包围盒向外扩 pad 作为线位置；若空间不足，再把线推回画布内并保证仍在线外留出箭头/文字空间
+  const pad = Math.round(Math.min(width, height) * 0.1) // 尺寸线与产品的最小间距
+  const margin = Math.round(Math.min(width, height) * 0.14) // 画布边缘留白（含箭头+文字）
   const fmt = (n: number) => (Math.round(n * 10) / 10).toFixed(1)
 
-  // 底部宽度线
-  const yW = Math.min(height - margin, box.bottom + pad)
+  // 底部宽度线：优先放在产品下方 pad 处；画布下方空间不足时收紧 pad（但至少 12px，仍不与产品重叠）
+  const maxPadW = height - margin - LINE_W - box.bottom
+  const padW = Math.max(12, Math.min(pad, maxPadW))
+  const yW = box.bottom + padW
   drawLine(img, box.left, yW, box.right, yW)
   drawArrow(img, box.left, yW, 'l')
   drawArrow(img, box.right, yW, 'r')
@@ -179,8 +183,10 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
     img.composite(t.img, tx, ty)
   }
 
-  // 右侧高度线（文字旋转 90°，自上而下阅读）
-  const xH = Math.min(width - margin, box.right + pad)
+  // 右侧高度线（文字旋转 90°，自上而下阅读）：同底部线逻辑，保证不与产品重叠且不出画布
+  const maxPadH = width - margin - LINE_W - box.right
+  const padH = Math.max(12, Math.min(pad, maxPadH))
+  const xH = box.right + padH
   drawLine(img, xH, box.top, xH, box.bottom)
   drawArrow(img, xH, box.top, 'u')
   drawArrow(img, xH, box.bottom, 'd')
