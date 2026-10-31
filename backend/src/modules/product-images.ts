@@ -25,9 +25,22 @@ function productDir(productId: string): string {
   return dir
 }
 
+/**
+ * 图片存储：文件系统仅作缓存，真身持久化在 DB image_blobs 表。
+ * Render 容器 /tmp 会被每次部署清空，纯文件存储会导致图片全丢（记录还在 DB，读文件报「图片文件不存在」）。
+ * 写入 = 落盘缓存 + 存 DB；读取 = 缓存命中直接返回，未命中从 DB 恢复缓存后返回。
+ */
+function blobKey(productId: string, file: string): string {
+  return `${productId}/${path.basename(file)}`
+}
+
 function saveImageFile(productId: string, buf: Buffer): string {
   const file = `${Date.now()}-${randomUUID().slice(0, 8)}.png`
   fs.writeFileSync(path.join(productDir(productId), file), buf)
+  db.prepare('INSERT INTO image_blobs (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data').run(
+    blobKey(productId, file),
+    buf
+  )
   return file
 }
 
@@ -35,8 +48,19 @@ function readImageFile(productId: string, file: string): Buffer {
   // 防路径穿越：只允许文件名
   const safe = path.basename(file)
   const fp = path.join(productDir(productId), safe)
-  if (!fs.existsSync(fp)) throw new AppError(404, '图片文件不存在')
-  return fs.readFileSync(fp)
+  if (fs.existsSync(fp)) return fs.readFileSync(fp)
+  // 缓存缺失（部署清空 /tmp）：从 DB 恢复
+  const row = db.prepare('SELECT data FROM image_blobs WHERE key = ?').get(blobKey(productId, safe)) as
+    | { data: Buffer | Uint8Array | string }
+    | undefined
+  if (!row) throw new AppError(404, '图片文件不存在')
+  const buf = Buffer.from(row.data as Uint8Array)
+  try {
+    fs.writeFileSync(fp, buf)
+  } catch {
+    /* 缓存写失败不阻塞（下次再从 DB 读） */
+  }
+  return buf
 }
 
 // ---------- DB 行映射 ----------
@@ -91,13 +115,24 @@ function getLogoFile(): string | null {
   return v ? path.basename(v) : null
 }
 
-/** 读取 Logo Buffer（无 Logo 返回 null） */
+/** 读取 Logo Buffer（无 Logo 返回 null；缓存缺失时从 DB image_blobs 恢复） */
 function readLogo(): Buffer | null {
   const file = getLogoFile()
   if (!file) return null
   const fp = path.join(IMAGES_DIR, '_brand', file)
-  if (!fs.existsSync(fp)) return null
-  return fs.readFileSync(fp)
+  if (fs.existsSync(fp)) return fs.readFileSync(fp)
+  const row = db.prepare('SELECT data FROM image_blobs WHERE key = ?').get(`_brand/${file}`) as
+    | { data: Buffer | Uint8Array | string }
+    | undefined
+  if (!row) return null
+  const buf = Buffer.from(row.data as Uint8Array)
+  try {
+    fs.mkdirSync(path.join(IMAGES_DIR, '_brand'), { recursive: true })
+    fs.writeFileSync(fp, buf)
+  } catch {
+    /* 缓存写失败不阻塞 */
+  }
+  return buf
 }
 
 /** 上传/更新品牌 Logo（multipart 字段名 logo，PNG 透明底最佳） */
@@ -115,6 +150,11 @@ productImagesRouter.post('/logo', async (req: Request, res: Response) => {
   fs.mkdirSync(dir, { recursive: true })
   const file = `logo-${Date.now()}.png`
   fs.writeFileSync(path.join(dir, file), buf)
+  // Logo 真身也存 DB：部署清空 /tmp 后可恢复
+  db.prepare('INSERT INTO image_blobs (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data').run(
+    `_brand/${file}`,
+    buf
+  )
   setSetting(LOGO_KEY, file)
   res.json({ ok: true, logoUrl: `/api/product-images/logo` })
 })
@@ -282,7 +322,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
         dimensionSpec = spec
       }
 
-      // 同角色同槽位替换：先删旧记录与旧文件，避免多次生成后重复堆积
+      // 同角色同槽位替换：先删旧记录与旧文件（含 DB blob），避免多次生成后重复堆积
       for (const old of listImages(productId).filter((i) => i.kind === kind && i.slot === slot)) {
         try {
           fs.unlinkSync(path.join(productDir(productId), old.file))
@@ -290,6 +330,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
           /* 旧文件可能已不存在 */
         }
         db.prepare('DELETE FROM product_images WHERE id = ?').run(old.id)
+        db.prepare('DELETE FROM image_blobs WHERE key = ?').run(`${productId}/${path.basename(old.file)}`)
       }
       const file = saveImageFile(productId, buf)
       const id = randomUUID()
@@ -429,6 +470,7 @@ productImagesRouter.delete('/:imageId', async (req: Request, res: Response) => {
   } catch {
     /* 文件清理失败不阻塞 */
   }
+  db.prepare('DELETE FROM image_blobs WHERE key = ?').run(`${row.product_id}/${path.basename(row.file)}`)
   res.json({ ok: true })
 })
 
@@ -441,6 +483,7 @@ productImagesRouter.delete('/product/:productId/all', async (req: Request, res: 
   } catch {
     /* ignore */
   }
+  db.prepare('DELETE FROM image_blobs WHERE key LIKE ?').run(`${productId}/%`)
   res.json({ ok: true })
 })
 

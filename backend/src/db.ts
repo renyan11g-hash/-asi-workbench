@@ -113,19 +113,11 @@ CREATE TABLE IF NOT EXISTS brand_assets (
   value TEXT NOT NULL
 );
 
--- 历史选品：快速评估自动留档（按 url 去重，重复评估覆盖更新）
-CREATE TABLE IF NOT EXISTS sourcing_history (
-  id TEXT PRIMARY KEY,
-  url TEXT NOT NULL DEFAULT '',
-  title TEXT NOT NULL DEFAULT '',
-  score INTEGER,
-  verdict TEXT,
-  source TEXT NOT NULL DEFAULT '{}',
-  fetched TEXT NOT NULL DEFAULT '{}',
-  evaluation TEXT NOT NULL DEFAULT '{}',
-  price_grid TEXT NOT NULL DEFAULT '[]',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+-- 图片二进制持久化：Render 容器 /tmp 会被部署清空，文件系统仅作缓存，
+-- 真身存 DB（key = 'productId/文件名' 或 '_brand/logo'），读取时缓存缺失自动恢复
+CREATE TABLE IF NOT EXISTS image_blobs (
+  key TEXT PRIMARY KEY,
+  data BLOB NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
@@ -258,7 +250,7 @@ CREATE TABLE IF NOT EXISTS after_sales (
   FOREIGN KEY (customer_id) REFERENCES customers(id)
 );
 
--- 订单运营中心索引
+-- 索引
 CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
 CREATE INDEX IF NOT EXISTS idx_inquiries_customer ON inquiries(customer_id);
 CREATE INDEX IF NOT EXISTS idx_inquiries_status ON inquiries(status);
@@ -293,6 +285,20 @@ ensureColumn('carton_gw_kg', 'carton_gw_kg REAL')
 ensureColumn('similar', "similar TEXT NOT NULL DEFAULT '{}'")
 ensureColumn('trashed_at', 'trashed_at TEXT')
 ensureColumn('draft_id', 'draft_id TEXT')
+
+// 订单运营中心表兼容性检查
+function ensureTableColumn(tableName: string, name: string, ddl: string) {
+  const cols = (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map(
+    (c) => c.name
+  )
+  if (!cols.includes(name)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${ddl}`)
+  }
+}
+
+// 确保订单表有所有必需的列
+ensureTableColumn('orders', 'deposit_amount', 'deposit_amount REAL')
+ensureTableColumn('orders', 'balance_amount', 'balance_amount REAL')
 
 /**
  * libsql 的 get() 结果可能带 _metadata 字段（查询耗时元数据），剥离后返回纯数据行
