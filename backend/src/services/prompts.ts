@@ -228,7 +228,7 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
     if (similar.asiSearchTerms?.length) parts.push(`- ASI distributor search terms: ${similar.asiSearchTerms.join(', ')}`)
     if (similar.likelyAsins?.length) parts.push(`- Likely ASINs: ${similar.likelyAsins.join(', ')}`)
     if (similar.competingBrands?.length) parts.push(`- Competing brands: ${similar.competingBrands.join(', ')}`)
-    const asins = similar.amazonItems.filter((it) => it.asin).map((it) => `${it.asin} (${it.title})`)
+    const asins = (similar.amazonItems ?? []).filter((it) => it.asin).map((it) => `${it.asin} (${it.title})`)
     if (asins.length) parts.push(`- Amazon same-product ASINs: ${asins.join('; ')}`)
     if (similar.referenceTitles?.length) parts.push(`- Reference titles: ${similar.referenceTitles.join(' | ')}`)
     if (!parts.length) return ''
