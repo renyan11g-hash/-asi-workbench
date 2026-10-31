@@ -220,6 +220,8 @@ const generateSchema = z.object({
     .optional(),
   /** 只生成指定角色（默认全部 5 张） */
   kinds: z.array(z.enum(['main', 'dimension', 'intro'])).max(5).optional(),
+  /** 生成前用户注意事项（中文，可空）：融入 Prompt 编排，AI 必须遵循 */
+  notes: z.string().max(2000).optional(),
 })
 
 async function runAi<T>(fn: () => Promise<T>): Promise<T> {
@@ -300,8 +302,8 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   let promptSet: Awaited<ReturnType<typeof buildImagePromptSet>> | null = null
 
   runTask(task, async () => {
-    // 1) 文本模型产出 5 张图 Prompt（带产品参考图 + Logo）
-    const ps = promptSet ?? (promptSet = await runAi(() => buildImagePromptSet(source, settings)))
+    // 1) 文本模型产出 5 张图 Prompt（带产品参考图 + Logo；用户注意点融入编排）
+    const ps = promptSet ?? (promptSet = await runAi(() => buildImagePromptSet(source, settings, body.notes)))
 
     // 2) 逐张生成（任务重试时跳过已完成的，续跑剩余的）
     for (const kind of kinds) {

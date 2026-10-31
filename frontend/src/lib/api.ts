@@ -573,16 +573,18 @@ export const api = {
   },
 
   /**
-   * 产品图片：异步生成 5 张图（主图/尺寸图/介绍图×3）。
+   * 产品图片：异步生成（主图/尺寸图，可选介绍图）。
    * POST 立即返回 taskId，然后轮询 GET /product-images/tasks/:taskId（解决 Render 100 秒代理超时）。
+   * notes：生成前用户注意事项（中文，可空），融入 Prompt 编排。
    */
   async generateProductImages(
     productId: string,
-    onProgress?: (progress: string, elapsedSec: number) => void
+    onProgress?: (progress: string, elapsedSec: number) => void,
+    notes?: string
   ): Promise<ProductImage[]> {
     const { data: start } = await apiClient.post<{ taskId: string; status: string }>(
       `/product-images/generate`,
-      { productId }
+      { productId, notes: (notes ?? '').trim() || undefined }
     )
     const taskId = start.taskId
     if (!taskId) throw new Error('后端未返回 taskId，请检查后端版本')

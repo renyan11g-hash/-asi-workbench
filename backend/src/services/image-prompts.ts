@@ -30,6 +30,7 @@ Rules for every prompt:
 - The product must look EXACTLY like the reference images (same shape, proportions, materials, colors). Never invent a different product.
 - ABSOLUTELY NO TEXT, letters, numbers, watermarks, or logos in the image EXCEPT the user's brand logo when explicitly instructed to blend it onto the product.
 - Keep composition uncluttered; leave breathing room around the product.
+- If the user message contains a "USER NOTES" block, those are the client's hard requirements (composition, colors, which variant to show, where the logo goes, background, etc.). Follow them STRICTLY in the affected prompts; they override the defaults above (but still never add text/numbers).
 
 Output STRICT JSON only:
 {"main":"<prompt>","dimension":"<prompt>","intro":["<prompt1>","<prompt2>","<prompt3>"]}
@@ -41,7 +42,9 @@ Prompt requirements per image:
 
 export async function buildImagePromptSet(
   source: SourceInfo,
-  settings: Parameters<typeof callChatJson>[0]
+  settings: Parameters<typeof callChatJson>[0],
+  /** 生成前用户注意事项（中文，可空）：融入 Prompt 编排，AI 必须遵循 */
+  userNotes?: string
 ): Promise<ImagePromptSet> {
   const productFacts = [
     `Product title: ${source.sourceTitle}`,
@@ -55,11 +58,18 @@ export async function buildImagePromptSet(
     .filter(Boolean)
     .join('\n')
 
+  const notes = (userNotes ?? '').trim()
+  const notesBlock = notes
+    ? `
+USER NOTES (client's hard requirements, MUST follow):
+${notes}
+`
+    : ''
   const user = `Create the 5 image prompts for this 1688 product.
 
 PRODUCT FACTS:
 ${productFacts}
-
+${notesBlock}
 The reference images (if any) show the real product. The LAST reference image (if provided) is the user's brand logo to blend onto the product front in the "main" prompt only.`
 
   const images = (source.images ?? []).filter((u) => /^https?:\/\//.test(u)).slice(0, 4)

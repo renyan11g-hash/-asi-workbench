@@ -454,6 +454,73 @@ function SectionAiTools({
 }
 
 /** 单图 AI 对话窗口：针对主图/尺寸图单独对话修改（每次发送会生成新图，消耗 AI 额度） */
+/**
+ * 生成前注意事项对话框：点「生成图片」先弹出，用户可填写对 AI 的注意点（可留空），
+ * 确认后才开始生成；注意点融入 Prompt 编排，AI 必须遵循。
+ */
+function GenerateNotesDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+  generating,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: (notes: string) => void
+  generating: boolean
+}) {
+  const [notes, setNotes] = useState('')
+  const [openState, setOpenState] = useState(open)
+
+  // 打开时清空输入
+  useEffect(() => {
+    if (open) setNotes('')
+  }, [open])
+
+  // 受 open 控制的内部同步（避免 onOpenChange 被外层覆盖）
+  useEffect(() => {
+    setOpenState(open)
+  }, [open])
+
+  return (
+    <Dialog
+      open={openState}
+      onOpenChange={(o) => {
+        setOpenState(o)
+        onOpenChange(o)
+      }}
+    >
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <MessageSquare className="h-4 w-4 text-blue-600" /> 生成前：告诉 AI 注意点（可选）
+          </DialogTitle>
+          <DialogDescription>
+            例如「主图不要出现其他颜色缩略图」「Logo 印在腕带正面居中」「背景用浅蓝色」。
+            留空直接开始生成。生成后每张图仍可单独「AI 修改」。
+          </DialogDescription>
+        </DialogHeader>
+        <Textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={5}
+          placeholder="例：产品是绿色的那款，Logo 用白筒印在正面，不要出现任何文字…"
+          className="resize-none text-sm"
+        />
+        <DialogFooter className="gap-2">
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={generating}>
+            取消
+          </Button>
+          <Button size="sm" onClick={() => onConfirm(notes.trim())} disabled={generating}>
+            {generating ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Sparkles className="mr-1 h-3 w-3" />}
+            {generating ? '生成中…' : '开始生成'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function ImageChatDialog({
   image,
   onClose,
@@ -804,14 +871,20 @@ export default function ListingEditor() {
     }
   }, [product])
 
-  const generateImages = async () => {
+  const [genNotesOpen, setGenNotesOpen] = useState(false)
+
+  const generateImages = async (notes = '') => {
     if (!product) return
     setGeneratingImages(true)
     setImgProgress('正在提交生成任务…')
     try {
-      const imgs = await api.generateProductImages(product.id, (progress, elapsed) => {
-        setImgProgress(progress ? `${progress}（已耗时 ${elapsed} 秒）` : `生成中…（已耗时 ${elapsed} 秒）`)
-      })
+      const imgs = await api.generateProductImages(
+        product.id,
+        (progress, elapsed) => {
+          setImgProgress(progress ? `${progress}（已耗时 ${elapsed} 秒）` : `生成中…（已耗时 ${elapsed} 秒）`)
+        },
+        notes
+      )
       setProductImages(imgs)
       toast.success(`已生成 ${imgs.length} 张产品图片`)
     } catch (err) {
@@ -1189,7 +1262,7 @@ export default function ListingEditor() {
           <Button
             size="sm"
             className="h-7 text-xs"
-            onClick={generateImages}
+            onClick={() => setGenNotesOpen(true)}
             disabled={generatingImages || !product}
           >
             {generatingImages ? (
@@ -1288,6 +1361,15 @@ export default function ListingEditor() {
         </div>
       </SectionCard>
 
+      <GenerateNotesDialog
+        open={genNotesOpen}
+        onOpenChange={setGenNotesOpen}
+        generating={generatingImages}
+        onConfirm={(notes) => {
+          setGenNotesOpen(false)
+          generateImages(notes)
+        }}
+      />
       <ImageChatDialog
         image={chatImage}
         onClose={() => setChatImage(null)}
