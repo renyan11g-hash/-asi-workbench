@@ -9,7 +9,7 @@
 - 用户平时通过 Render 线上地址访问应用，**不是 localhost**。前端改动只有推送到 GitHub 后才会生效。
 - 注意：`c:/Users/Administrator/Desktop/backend` 是一份独立旧副本，**不要**把改动写进那里；所有改动一律写进本仓库。
 
-## 每次代码更新后的标准流程（必须自动执行，无需用户催促）
+## 每次代码更新后的标准流程（硬性要求：每次修改完成后都必须执行 Render 部署，不得只改代码不部署）
 
 1. **编译验证**（改动了哪些端就验证哪些端）：
    ```
@@ -20,9 +20,12 @@
    ```
    git add -A && git commit -m "<中文提交说明>" && git push origin main
    ```
-3. **推送成功后**，用 `git status -sb` 确认本地与远程同步，然后告知用户：
-   - 等待 Render 自动部署（通常 2-5 分钟）
-   - 部署完成后在浏览器 **Ctrl+F5 强制刷新** asi-workbench.onrender.com
+3. **推送即触发 Render 自动部署**：push 成功 = 部署开始（推送目标只有 main 分支，push 到 main 就是执行部署）。
+4. **等待部署完成后主动验证**（约等 5 分钟，不要留给用户自己检查）：
+   - 探测服务在线：`curl -s -o NUL -w "%{http_code}" https://asi-workbench.onrender.com/api/settings` → 应为 200
+   - 确认新 bundle 已上线：从首页 HTML 取 `index-*.js` 文件名（与上次对比应已变化），并在 bundle 内容中查找本次改动的特征串（**用 ASCII 标识符**如 `notes:`、`intro-suggestions`；不要用中文，GBK 终端匹配 UTF-8 会误报）
+   - 涉及后端接口时，可用无效参数探测路由（返回 JSON 业务错误 = 路由已注册）
+5. **告知用户**：部署与验证结果 + 提醒浏览器 **Ctrl+F5 强制刷新** asi-workbench.onrender.com
 
 ## 其他约定
 
