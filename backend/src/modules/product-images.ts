@@ -287,12 +287,15 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   const kinds = body.kinds ?? ['main', 'dimension']
   const logo = readLogo()
 
-  // 参考图：产品图（https URL 直传，火山引擎免下载）+ Logo（base64）
-  const refs: ImageRef[] = (source.images ?? [])
-    .filter((u) => /^https?:\/\//.test(u))
+  // 参考图按 kind 分配（Seedream 按「输入图+输出图」总张数计费，参考图越少越省钱）：
+  // - 主图：3 张产品图 + Logo（Logo 融合 + 颜色适配需要看清 Logo 与产品色）
+  // - 尺寸图/介绍图：1 张产品图即可（不需要 Logo，纯浪费计费）
+  const productUrls = (source.images ?? []).filter((u) => /^https?:\/\//.test(u))
+  const mainRefs: ImageRef[] = productUrls
     .slice(0, 3)
     .map((u) => ({ url: u }) as ImageRef)
-  if (logo) refs.push({ buffer: logo })
+  if (logo) mainRefs.push({ buffer: logo })
+  const plainRefs: ImageRef[] = productUrls.slice(0, 1).map((u) => ({ url: u }) as ImageRef)
 
   // 异步任务：5 张图逐张生成耗时 1-5 分钟，同步等待会超 Render 100 秒代理超时（502）
   const task = createTask('generate-product-images')
@@ -314,7 +317,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
       const prompt =
         kind === 'main' ? ps.main : kind === 'dimension' ? ps.dimension : ps.intro[slot - 1]
 
-      let buf = await runAi(() => generateImage(settings, prompt, refs))
+      let buf = await runAi(() => generateImage(settings, prompt, kind === 'main' ? mainRefs : plainRefs))
 
       // 尺寸图：程序化叠加 inch 标注
       let dimensionSpec: ProductImage['dimensionSpec'] = null

@@ -502,6 +502,10 @@ function GenerateNotesDialog({
           <DialogDescription>
             例如「产品是黑色的那款，Logo 改成白色」「不要出现其他颜色缩略图」「只展示绿色款」。
             留空直接开始生成。生成后每张图仍可单独「AI 修改」。
+            <span className="mt-1 block text-amber-700">
+              费用提示：图像模型按「输入参考图 + 输出图」总张数计费——本次预计消耗{' '}
+              {target === 'main' ? '约 5 张（3 张参考图 + Logo + 1 张输出）' : target === 'dimension' ? '约 2 张（1 张参考图 + 1 张输出）' : '约 7 张'}。
+            </span>
           </DialogDescription>
         </DialogHeader>
         <Textarea
