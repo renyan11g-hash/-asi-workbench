@@ -214,6 +214,11 @@ export interface Product {
   origin?: 'manual' | 'auto' | null
   /** 自动选品时为什么挑中它 */
   selectionReason?: string | null
+  /** 人工核过的市场 list 价（USD） */
+  marketListLow?: number | null
+  marketListHigh?: number | null
+  marketSource?: string | null
+  marketCheckedAt?: string | null
 }
 
 export interface Settings {

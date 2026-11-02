@@ -304,6 +304,12 @@ ensureColumn('reviewed_at', 'reviewed_at TEXT')
 ensureColumn('origin', "origin TEXT NOT NULL DEFAULT 'manual'")
 ensureColumn('selection_reason', 'selection_reason TEXT')
 
+// 市场参考价（人工在 ESP / ASI 目录查到的同款 list 价）：优先级高于 AI 估价
+ensureColumn('market_list_low', 'market_list_low REAL')
+ensureColumn('market_list_high', 'market_list_high REAL')
+ensureColumn('market_source', "market_source TEXT")
+ensureColumn('market_checked_at', 'market_checked_at TEXT')
+
 // 订单运营中心表兼容性检查
 function ensureTableColumn(tableName: string, name: string, ddl: string) {
   const cols = (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map(

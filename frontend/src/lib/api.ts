@@ -136,6 +136,12 @@ export const api = {
     return data
   },
 
+  /** 人工核市场价（ESP 同款 list 价），保存后自动重算 v2 */
+  async setMarketPrice(id: string, low: number, high: number, source = 'ESP'): Promise<Product> {
+    const { data } = await apiClient.post<{ product: Product }>(`/products/${id}/market-price`, { low, high, source })
+    return data.product
+  },
+
   /** 触发一次自动选品（prompt 为空则用内置品类池） */
   async runDailySourcing(payload: { prompt?: string; limit?: number }): Promise<{
     ok: boolean

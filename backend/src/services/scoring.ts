@@ -22,6 +22,8 @@ export interface ScoreGridRow {
 
 export interface ScoreInput {
   priceCny: number | null
+  /** 人工核过的市场价（最高优先级，来自 ESP / ASI 目录同款） */
+  marketList?: { min: number; max: number } | null
   priceAdviceUsd?: { min: number; max: number } | null
   similarPriceRangeUsd?: { min: number; max: number } | null
   priceGrid: ScoreGridRow[]
@@ -40,7 +42,7 @@ export interface ScoreV2 {
   /** 判定用的档位数量 */
   qty: number | null
   parts: { margin: number | null; headroom: number | null; logistics: number | null; category: number }
-  listSource: 'priceAdvice' | 'similar' | 'none'
+  listSource: 'manual' | 'priceAdvice' | 'similar' | 'none'
 }
 
 const TRANSACTION_FEE_RATE = 0.085 // 损耗 3% + 支付 2.5% + 账期 3%
@@ -78,17 +80,19 @@ export function computeScoreV2(input: ScoreInput, fxRate: number): ScoreV2 {
   if (!tier || !Number.isFinite(tier.allInCostUsd ?? NaN)) return empty
 
   let list: number | null = null
-  let listSource: 'priceAdvice' | 'similar' | 'none' = 'none'
+  let listSource: 'manual' | 'priceAdvice' | 'similar' | 'none' = 'none'
+  const manual = input.marketList
   const adv = input.priceAdviceUsd
-  if (adv && Number.isFinite(adv.min) && Number.isFinite(adv.max) && adv.max > 0) {
+  const sim = input.similarPriceRangeUsd
+  if (manual && Number.isFinite(manual.min) && Number.isFinite(manual.max) && manual.max > 0) {
+    list = (manual.min + manual.max) / 2
+    listSource = 'manual'
+  } else if (adv && Number.isFinite(adv.min) && Number.isFinite(adv.max) && adv.max > 0) {
     list = (adv.min + adv.max) / 2
     listSource = 'priceAdvice'
-  } else {
-    const sim = input.similarPriceRangeUsd
-    if (sim && Number.isFinite(sim.min) && Number.isFinite(sim.max) && sim.max > 0) {
-      list = (sim.min + sim.max) / 2
-      listSource = 'similar'
-    }
+  } else if (sim && Number.isFinite(sim.min) && Number.isFinite(sim.max) && sim.max > 0) {
+    list = (sim.min + sim.max) / 2
+    listSource = 'similar'
   }
   if (list == null) return empty
 

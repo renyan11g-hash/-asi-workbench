@@ -132,6 +132,10 @@ interface Row {
   reviewed_at: string | null
   origin: string | null
   selection_reason: string | null
+  market_list_low: number | null
+  market_list_high: number | null
+  market_source: string | null
+  market_checked_at: string | null
 }
 
 const parseJson = <T>(v: string | null, fallback: T): T => {
@@ -188,6 +192,10 @@ function rowToProduct(r: Row): Product {
     reviewedAt: r.reviewed_at ?? null,
     origin: (r.origin as 'manual' | 'auto' | null) ?? 'manual',
     selectionReason: r.selection_reason ?? null,
+    marketListLow: r.market_list_low ?? null,
+    marketListHigh: r.market_list_high ?? null,
+    marketSource: r.market_source ?? null,
+    marketCheckedAt: r.market_checked_at ?? null,
   }
 }
 
@@ -302,9 +310,14 @@ function computeRowScore(row: Row) {
   const evaluation = parseJson<any>(row.evaluation, null)
   const listing = parseJson<any>(row.listing, null)
   const similar = parseJson<any>(row.similar, null)
+  const manual =
+    row.market_list_low != null && row.market_list_high != null
+      ? { min: row.market_list_low, max: row.market_list_high }
+      : null
   return computeScoreV2(
     {
       priceCny: row.price_cny ?? null,
+      marketList: manual,
       priceAdviceUsd: evaluation?.priceAdviceUsd ?? null,
       similarPriceRangeUsd: similar?.priceRangeUsd ?? null,
       priceGrid: listing?.priceGrid ?? [],
@@ -385,6 +398,32 @@ productsRouter.post('/:id/review', async (req: Request, res: Response) => {
   applyReview([req.params.id], body)
   const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id) as unknown as Row
   res.json({ product: rowToProduct(updated) })
+})
+
+// ---------- 市场参考价（人工在 ESP 同款核价） ----------
+const marketPriceSchema = z.object({
+  low: z.coerce.number().min(0).max(100000),
+  high: z.coerce.number().min(0).max(100000),
+  source: z.string().max(60).optional(),
+})
+
+productsRouter.post('/:id/market-price', async (req: Request, res: Response) => {
+  const body = marketPriceSchema.parse(req.body ?? {})
+  if (body.high < body.low) throw new AppError(400, '上限不能小于下限')
+  const row = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id)
+  if (!row) throw new AppError(404, '产品不存在')
+  const now = new Date().toISOString()
+  db.prepare(
+    'UPDATE products SET market_list_low=?, market_list_high=?, market_source=?, market_checked_at=? WHERE id=?'
+  ).run(body.low, body.high, body.source ?? 'ESP', now, req.params.id)
+
+  const fresh = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id) as unknown as Row
+  const s = computeRowScore(fresh)
+  db.prepare(
+    'UPDATE products SET score_v2=?, verdict_v2=?, margin_v2=?, ceiling_cny=?, scored_at=? WHERE id=?'
+  ).run(s.score, s.verdict, s.margin, s.ceilingCny, now, req.params.id)
+
+  res.json({ product: findProduct(req.params.id), scoreV2: s })
 })
 
 // ---------- 回收站统计 ----------

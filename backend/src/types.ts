@@ -231,6 +231,12 @@ export interface Product {
   origin?: 'manual' | 'auto' | null
   /** 自动选品时为什么挑中它（中文，给审核时看） */
   selectionReason?: string | null
+  /** 人工核过的市场 list 价（USD），来自 ESP / ASI 目录同款 */
+  marketListLow?: number | null
+  marketListHigh?: number | null
+  /** 市场价来源，如 ESP / 4imprint / AI */
+  marketSource?: string | null
+  marketCheckedAt?: string | null
 }
 
 export interface Settings {

@@ -42,6 +42,8 @@ interface Row {
   verdict: Verdict2
   reason: string
   parts: { m: number | null; p: number | null; l: number | null; c: number }
+  espQuery: string
+  marketSource: string | null
 }
 
 function computeRow(p: Product, fx: number): Row {
@@ -118,6 +120,8 @@ function computeRow(p: Product, fx: number): Row {
       : verdict,
     reason,
     parts: { m, p: pScore, l, c },
+    espQuery: (p.listing?.keywords?.[0] || p.listing?.title || p.source?.amazonTitle || '').slice(0, 60),
+    marketSource: p.marketSource ?? null,
   }
 }
 
@@ -139,6 +143,7 @@ const FILTERS: Array<{ key: 'all' | Verdict2; label: string }> = [
 export default function Rescore() {
   const [filter, setFilter] = useState<'all' | Verdict2>('all')
   const [msg, setMsg] = useState('')
+  const [pricing, setPricing] = useState<{ id: string; title: string; query: string; low: string; high: string } | null>(null)
   const qc = useQueryClient()
   const { data: products, isLoading } = useQuery({ queryKey: ['products', 'all'], queryFn: () => api.listProducts() })
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 30_000 })
@@ -150,6 +155,16 @@ export default function Rescore() {
       qc.invalidateQueries({ queryKey: ['products'] })
     },
     onError: () => setMsg('写入失败，请稍后重试'),
+  })
+
+  const savePrice = useMutation({
+    mutationFn: (v: { id: string; low: number; high: number }) => api.setMarketPrice(v.id, v.low, v.high),
+    onSuccess: () => {
+      setMsg('市场价已保存，v2 已按 ESP 同款价重算')
+      setPricing(null)
+      qc.invalidateQueries({ queryKey: ['products'] })
+    },
+    onError: () => setMsg('保存失败，请检查数值'),
   })
 
   const fx = (settings as Settings | undefined)?.fxRate || 6.66
@@ -232,19 +247,20 @@ export default function Rescore() {
               <th className="px-3 py-2 text-right">毛利</th>
               <th className="px-3 py-2 text-right">上限 ¥</th>
               <th className="px-3 py-2">依据</th>
+              <th className="px-3 py-2">核价</th>
             </tr>
           </thead>
           <tbody>
             {isLoading && (
               <tr>
-                <td colSpan={9} className="px-3 py-10 text-center text-slate-400">
+                <td colSpan={10} className="px-3 py-10 text-center text-slate-400">
                   加载中…
                 </td>
               </tr>
             )}
             {!isLoading && shown.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-3 py-10 text-center text-slate-400">
+                <td colSpan={10} className="px-3 py-10 text-center text-slate-400">
                   没有符合条件的产品
                 </td>
               </tr>
@@ -267,8 +283,7 @@ export default function Rescore() {
                   </div>
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">{r.priceCny?.toFixed(1) ?? '—'}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{r.list?.toFixed(2) ?? '—'}</td>
-                <td
+                <td className="px-3 py-2 text-right tabular-nums">{r.list?.toFixed(2) ?? '—'}</td>                <td
                   className={cn(
                     'px-3 py-2 text-right font-medium tabular-nums',
                     r.margin == null ? 'text-slate-400' : r.margin >= 0.3 ? 'text-emerald-600' : r.margin > 0 ? 'text-amber-600' : 'text-rose-600'
@@ -278,6 +293,27 @@ export default function Rescore() {
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-600">{r.ceiling?.toFixed(1) ?? '—'}</td>
                 <td className="px-3 py-2 text-[11px] text-slate-500">{r.reason}</td>
+                <td className="px-3 py-2">
+                  <button
+                    className={cn(
+                      'rounded-md border px-2 py-1 text-[11px]',
+                      r.marketSource
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                    )}
+                    onClick={() =>
+                      setPricing({
+                        id: r.id,
+                        title: r.title,
+                        query: r.espQuery,
+                        low: '',
+                        high: '',
+                      })
+                    }
+                  >
+                    {r.marketSource ? `已核 ${r.marketSource}` : '核价'}
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -291,7 +327,72 @@ export default function Rescore() {
           「压价可做」看最后一列你砍价的空间，砍得越多越不现实（超过 25% 基本等于换货源）。
           旧分只作参照，它没有把「按 list 能不能赚钱」算进去，所以大量落在 MAYBE。
         </p>
+        <p className="mt-2">
+          市场 list 价默认来自 AI 估价，只能算粗估。<b>点「核价」</b>会带着这个产品的英文关键词打开
+          ESP 供应商站搜索同款，你把看到的 list 价区间填回来，保存后 v2 会立刻按真实市场价重算。
+        </p>
       </div>
+
+      {pricing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={() => setPricing(null)}>
+          <div className="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-slate-900">核对市场价</h3>
+            <p className="mt-1 line-clamp-2 text-xs text-slate-500">{pricing.title}</p>
+
+            <a
+              href={`https://supplier.espwebsite.com/ProductResults/?SearchTerms=${encodeURIComponent(pricing.query || pricing.title)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100"
+            >
+              在 ESP 搜同款（新标签打开）↗
+            </a>
+            <div className="mt-1 truncate text-[11px] text-slate-400">搜索词：{pricing.query || pricing.title}</div>
+
+            <div className="mt-4 flex items-center gap-2">
+              <label className="text-xs text-slate-600">
+                list 价下限 $
+                <input
+                  className="ml-1 w-24 rounded-md border border-slate-200 px-2 py-1 text-sm"
+                  inputMode="decimal"
+                  value={pricing.low}
+                  onChange={(e) => setPricing({ ...pricing, low: e.target.value })}
+                />
+              </label>
+              <label className="text-xs text-slate-600">
+                上限 $
+                <input
+                  className="ml-1 w-24 rounded-md border border-slate-200 px-2 py-1 text-sm"
+                  inputMode="decimal"
+                  value={pricing.high}
+                  onChange={(e) => setPricing({ ...pricing, high: e.target.value })}
+                />
+              </label>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400">
+              填你看到的同类同款最低—最高价（USD）。只填一个数就上下限都填它。
+            </p>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs" onClick={() => setPricing(null)}>
+                取消
+              </button>
+              <button
+                className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                disabled={savePrice.isPending || !pricing.low || !pricing.high}
+                onClick={() => {
+                  const low = Number(pricing.low)
+                  const high = Number(pricing.high || pricing.low)
+                  if (!Number.isFinite(low) || !Number.isFinite(high)) return
+                  savePrice.mutate({ id: pricing.id, low: Math.min(low, high), high: Math.max(low, high) })
+                }}
+              >
+                {savePrice.isPending ? '保存中…' : '保存并重算'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
