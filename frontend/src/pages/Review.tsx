@@ -59,7 +59,8 @@ export default function Review() {
   const rows = useMemo(() => {
     const all = [...(products ?? [])]
     const scoped = scope === 'all' ? all : all.filter((p) => (p.origin ?? 'manual') === scope)
-    scoped.sort((a, b) => (b.scoreV2 ?? -1) - (a.scoreV2 ?? -1))
+    // 价格还没核过，排序不看那套估算分：新导入的排前面，方便先审今天这批
+    scoped.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
     return scoped
   }, [products, scope])
 
@@ -102,8 +103,8 @@ export default function Review() {
       <div className="rounded-xl border border-slate-200 bg-white p-4">
         <h2 className="text-sm font-semibold text-slate-900">审核队列</h2>
         <p className="mt-1 text-xs leading-relaxed text-slate-500">
-          按 v2 分从高到低审。通过 = 可以开始做 listing；待询价 = 先问 1688 商家箱规/尺寸/打样再定；否决要选理由，
-          方便以后回看为什么没做。
+          按导入时间从新到旧审。通过 = 值得去问箱规 → 拿到实际箱规后再算报价 → 最后去 ASI 对比同行价。
+          这里的分数不是决策依据（价格还没核过），只看产品本身值不值得跟。
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] text-slate-400">范围</span>

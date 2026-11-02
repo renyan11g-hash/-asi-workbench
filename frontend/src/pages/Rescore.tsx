@@ -320,6 +320,12 @@ export default function Rescore() {
         </table>
       </div>
 
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-800">
+        <b>这一页只做参考，不是决策依据。</b>
+        市场 list 价目前大多是 AI 估价，没在 ESP 上核过；而且实际报价必须等拿到真实箱规、和客户谈过数量之后才算得准。
+        真正该看的顺序是：<b>先看产品值不值得跟 → 问箱规 → 算报价 → 再去 ASI 比同行价</b>。
+      </div>
+
       <div className="rounded-xl border border-slate-200 bg-white p-4 text-xs leading-relaxed text-slate-500">
         <div className="mb-1 font-semibold text-slate-700">怎么看这张表</div>
         <p>
