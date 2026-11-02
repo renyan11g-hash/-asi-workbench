@@ -130,6 +130,8 @@ interface Row {
   review_note: string | null
   reject_reasons: string | null
   reviewed_at: string | null
+  origin: string | null
+  selection_reason: string | null
 }
 
 const parseJson = <T>(v: string | null, fallback: T): T => {
@@ -184,6 +186,8 @@ function rowToProduct(r: Row): Product {
     rejectReasons: parseJson<string[]>(r.reject_reasons, []),
     reviewNote: r.review_note ?? null,
     reviewedAt: r.reviewed_at ?? null,
+    origin: (r.origin as 'manual' | 'auto' | null) ?? 'manual',
+    selectionReason: r.selection_reason ?? null,
   }
 }
 
@@ -2020,3 +2024,248 @@ async function grab1688Mobile(offerId: string): Promise<GrabbedFetched | null> {
     image,
   }
 }
+
+// ============================================================
+// 每日自动选品
+// ============================================================
+// 粗筛刻意放宽（用户要求）：只要不是「自带 logo 且完全不能定制」「价格离谱」就进候选，
+// 剩下的判断交给 v2 评分 + 人工审核。
+
+/** 跨境/外贸信号：命中即加分 */
+const CROSS_BORDER_RE = /跨境|外贸|亚马逊|amazon|速卖通|temu|shein|独立站|一件代发|出口|海外|跨境专供/i
+/** 支持定制的信号 */
+const CUSTOM_RE = /定制|订制|LOGO|logo|印刷|丝印|烫金|烫印|刺绣|绣花|贴牌|印图|激光|刻字|可加|打样/
+/** 品牌/侵权风险信号 */
+const BRAND_RE = /品牌|商标|专利|授权|迪士尼|漫威|NBA|卡通|联名/
+
+/** 内置品类池：没有手动输入时按日期轮换，保证每天有不同方向 */
+const DAILY_KEYWORD_POOL = [
+  '定制帆布托特包', '定制不锈钢保温杯', '定制办公笔记本', '定制棒球帽',
+  '定制运动毛巾', '定制鼠标垫', '定制折叠购物袋', '定制硅胶杯垫',
+  '定制行李牌', '定制颈枕', '定制帆布袋 手提', '定制登山扣水壶',
+  '定制车载手机支架', '定制瑜伽垫', '定制野餐垫', '定制笔筒',
+]
+
+async function pickDailyKeywords(prompt: string | undefined, settings: ReturnType<typeof loadSettings>) {
+  if (prompt && prompt.trim()) {
+    try {
+      const d = await callChatJson<{ keywords: string[] }>(
+        settings,
+        '你是外贸选品助手。只输出 JSON：{"keywords":["中文1688搜索词",...]}，4-6 个，每个 ≤12 字，直接可用于 1688 搜索。不要解释。',
+        `用户要求：${prompt.trim()}\n请给出 4-6 个最可能搜到美国促销礼品（ASI）适销产品的 1688 中文搜索词。`,
+        0.4
+      )
+      const kws = (d?.keywords ?? []).map((s) => String(s).trim()).filter(Boolean).slice(0, 6)
+      if (kws.length) return { keywords: kws, source: 'prompt' as const }
+    } catch {
+      // AI 失败就退化为内置池 + 用户原话
+    }
+    return { keywords: [prompt.trim().slice(0, 20)], source: 'prompt-raw' as const }
+  }
+  const day = Math.floor(Date.now() / 86400000)
+  const start = day % DAILY_KEYWORD_POOL.length
+  const kws = [0, 1, 2, 3].map((i) => DAILY_KEYWORD_POOL[(start + i) % DAILY_KEYWORD_POOL.length])
+  return { keywords: kws, source: 'pool' as const }
+}
+
+/** 已存在（含回收站）的 offerId，用于去重，避免重复做过的品 */
+function existingOfferIds(): Set<string> {
+  const rows = db.prepare('SELECT source_url FROM products').all() as unknown as { source_url: string }[]
+  const set = new Set<string>()
+  for (const r of rows) {
+    const m = (r.source_url || '').match(/offer\/(\d{6,})/)
+    if (m) set.add(m[1])
+  }
+  return set
+}
+
+/** 把一条抓取结果落库为「自动选品」产品 */
+function insertAutoProduct(
+  source: SourceInfo,
+  evaluation: Evaluation,
+  selectionReason: string
+): string {
+  const id = randomUUID()
+  const now = new Date().toISOString()
+  db.prepare(
+    `INSERT INTO products (id, draft_id, source_title, source_url, description, source_keywords, amazon_title,
+      price_cny, price_max_cny, moq, supplier, material_cn, colors_cn, size_cn, weight_g,
+      carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg,
+      images, category, notes, score, verdict, evaluation, listing, similar, status, created_at, updated_at,
+      origin, selection_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    null,
+    source.sourceTitle,
+    source.sourceUrl,
+    source.description,
+    JSON.stringify(source.sourceKeywords ?? []),
+    source.amazonTitle,
+    source.priceCny ?? null,
+    source.priceMaxCny ?? null,
+    source.moq ?? null,
+    source.supplier,
+    source.materialCn,
+    source.colorsCn,
+    source.sizeCn,
+    source.weightG ?? null,
+    source.cartonLCm ?? null,
+    source.cartonWCm ?? null,
+    source.cartonHCm ?? null,
+    source.pcsPerCarton ?? null,
+    source.cartonGwKg ?? null,
+    JSON.stringify(source.images ?? []),
+    source.category,
+    source.notes,
+    evaluation.score ?? null,
+    evaluation.verdict ?? null,
+    JSON.stringify(evaluation),
+    null,
+    '{}',
+    'sourced',
+    now,
+    now,
+    'auto',
+    selectionReason
+  )
+  // 落库后立刻算 v2（只写 score_v2 等列）
+  try {
+    const row = db.prepare('SELECT * FROM products WHERE id = ?').get(id) as unknown as Row
+    const s = computeRowScore(row)
+    db.prepare(
+      'UPDATE products SET score_v2=?, verdict_v2=?, margin_v2=?, ceiling_cny=?, scored_at=? WHERE id=?'
+    ).run(s.score, s.verdict, s.margin, s.ceilingCny, new Date().toISOString(), id)
+  } catch {
+    /* 评分失败不影响入库 */
+  }
+  return id
+}
+
+productsRouter.post('/sourcing/daily', async (req: Request, res: Response) => {
+  const body = z
+    .object({ prompt: z.string().max(600).optional(), limit: z.coerce.number().min(1).max(10).optional() })
+    .parse(req.body ?? {})
+  const settings = loadSettings()
+  const limit = body.limit ?? 5
+
+  const { keywords, source: kwSource } = await pickDailyKeywords(body.prompt, settings)
+  const already = existingOfferIds()
+
+  // ① 搜 1688：360（带价格）+ 搜狗（链接互补）
+  const hits = new Map<string, OfferSearchHit & { keyword: string }>()
+  for (const q of keywords.slice(0, 4)) {
+    const [so, sg] = await Promise.all([search1688ViaSo360(q), search1688OffersViaSogou(q)])
+    for (const h of so) if (!hits.has(h.offerId)) hits.set(h.offerId, { ...h, keyword: q })
+    for (const u of sg) {
+      const id = u.match(/offer\/(\d{6,})/)?.[1]
+      if (id && !hits.has(id)) {
+        hits.set(id, { offerId: id, url: u, title: '', desc: '', priceCny: null, keyword: q })
+      }
+    }
+  }
+
+  // ② 粗筛（放宽）：去掉做过的、价格离谱的；跨境信号与有价格的优先
+  const candidates = [...hits.values()]
+    .filter((h) => !already.has(h.offerId))
+    .filter((h) => h.priceCny == null || (h.priceCny >= 0.5 && h.priceCny <= 150))
+    .map((h) => ({
+      ...h,
+      crossBorder: CROSS_BORDER_RE.test(`${h.title} ${h.desc}`),
+      hasPrice: h.priceCny != null,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.crossBorder) - Number(a.crossBorder) || Number(b.hasPrice) - Number(a.hasPrice)
+    )
+
+  // ③ 逐条抓详情 → 判断题设 → AI 评估 → 入库
+  const created: Array<{ id: string; title: string; priceCny: number | null; score: number | null; reason: string }> = []
+  const skipped: Array<{ url: string; reason: string }> = []
+
+  for (const c of candidates) {
+    if (created.length >= limit) break
+    let grabbed
+    try {
+      grabbed = await fetch1688Page(c.url)
+    } catch {
+      skipped.push({ url: c.url, reason: '抓取失败' })
+      continue
+    }
+    if (!grabbed.ok) {
+      skipped.push({ url: c.url, reason: grabbed.message })
+      continue
+    }
+    const f = grabbed.fetched
+    const carton = f.cartonSpecCm.match(
+      /(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)/
+    )
+    const source = toSourceInfo(
+      sourceSchema.parse({
+        sourceUrl: c.url,
+        sourceTitle: f.sourceTitle,
+        sourceKeywords: f.sourceKeywords,
+        description: f.description,
+        materialCn: f.materialCn,
+        colorsCn: f.colorsCn,
+        sizeCn: f.sizeCn,
+        weightG: f.weightG ?? undefined,
+        cartonLCm: carton ? Number(carton[1]) : undefined,
+        cartonWCm: carton ? Number(carton[2]) : undefined,
+        cartonHCm: carton ? Number(carton[3]) : undefined,
+        pcsPerCarton: f.pcsPerCarton ?? undefined,
+        cartonGwKg: f.cartonGwKg ?? undefined,
+        moq: f.moq ?? undefined,
+        priceCny: f.priceCny ?? c.priceCny ?? undefined,
+      })
+    )
+
+    const text = `${source.sourceTitle} ${source.description} ${source.materialCn}`
+    const canCustomize = CUSTOM_RE.test(text)
+    const hasBrand = BRAND_RE.test(source.sourceTitle)
+    // 自带 logo 且完全不支持定制 → 直接 pass（用户要求）
+    if (!canCustomize && hasBrand) {
+      skipped.push({ url: c.url, reason: '疑似自带品牌且不支持定制' })
+      continue
+    }
+
+    let evaluation: Evaluation
+    try {
+      evaluation = await evaluateSource(source, settings)
+    } catch (e) {
+      skipped.push({ url: c.url, reason: `AI 评估失败：${(e as Error).message}` })
+      continue
+    }
+
+    const signals: string[] = []
+    if (c.crossBorder) signals.push('跨境/外贸信号')
+    if (canCustomize) signals.push('支持定制')
+    if (!hasBrand) signals.push('未见品牌风险')
+    if (source.priceCny) signals.push(`1688 报价 ¥${source.priceCny}`)
+    if (source.moq) signals.push(`起订 ${source.moq} 件`)
+
+    const reason =
+      `搜索词「${c.keyword}」命中；` +
+      (signals.length ? signals.join('、') : '仅价格/标题命中') +
+      (evaluation.summary ? `。AI 初判：${evaluation.summary.slice(0, 80)}` : '')
+
+    const id = insertAutoProduct(source, evaluation, reason)
+    created.push({
+      id,
+      title: source.sourceTitle,
+      priceCny: source.priceCny ?? null,
+      score: evaluation.score ?? null,
+      reason,
+    })
+  }
+
+  res.json({
+    ok: true,
+    keywords,
+    keywordSource: kwSource,
+    scanned: hits.size,
+    candidates: candidates.length,
+    created,
+    skipped: skipped.slice(0, 12),
+  })
+})

@@ -300,6 +300,10 @@ ensureColumn('review_note', 'review_note TEXT')
 ensureColumn('reject_reasons', 'reject_reasons TEXT')
 ensureColumn('reviewed_at', 'reviewed_at TEXT')
 
+// 选品来源：manual=自己粘链接/评估库；auto=每日自动选品
+ensureColumn('origin', "origin TEXT NOT NULL DEFAULT 'manual'")
+ensureColumn('selection_reason', 'selection_reason TEXT')
+
 // 订单运营中心表兼容性检查
 function ensureTableColumn(tableName: string, name: string, ddl: string) {
   const cols = (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map(

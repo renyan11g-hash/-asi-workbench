@@ -32,7 +32,7 @@ const STATE_TONE: Record<State, string> = {
   rejected: 'bg-rose-50 text-rose-700 border-rose-200',
 }
 
-const REJECT_REASONS = ['价格压不下来', '工艺做不了', '合规/认证风险', '体积重·运费太高', '同款太多没差异', '质量存疑', '客户群不匹配']
+const REJECT_REASONS = ['不满意商家', '定制太复杂', '价格太贵（有更合适的）', '体积重·运费太高', '同款太多没差异', '质量存疑', '产品本身不适合', '其他']
 
 const FILTERS: Array<{ key: State | 'all'; label: string }> = [
   { key: 'pending', label: '待审' },
@@ -46,6 +46,7 @@ const stateOf = (p: Product): State => (p.reviewState as State) || 'pending'
 
 export default function Review() {
   const qc = useQueryClient()
+  const [scope, setScope] = useState<'auto' | 'manual' | 'all'>('auto')
   const [filter, setFilter] = useState<State | 'all'>('pending')
   const [selected, setSelected] = useState<string[]>([])
   const [rejectingId, setRejectingId] = useState<string | null>(null)
@@ -56,10 +57,11 @@ export default function Review() {
   const { data: products, isLoading } = useQuery({ queryKey: ['products', 'all'], queryFn: () => api.listProducts() })
 
   const rows = useMemo(() => {
-    const list = [...(products ?? [])]
-    list.sort((a, b) => (b.scoreV2 ?? -1) - (a.scoreV2 ?? -1))
-    return list
-  }, [products])
+    const all = [...(products ?? [])]
+    const scoped = scope === 'all' ? all : all.filter((p) => (p.origin ?? 'manual') === scope)
+    scoped.sort((a, b) => (b.scoreV2 ?? -1) - (a.scoreV2 ?? -1))
+    return scoped
+  }, [products, scope])
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { pending: 0, approved: 0, parked: 0, rejected: 0 }
@@ -100,9 +102,32 @@ export default function Review() {
       <div className="rounded-xl border border-slate-200 bg-white p-4">
         <h2 className="text-sm font-semibold text-slate-900">审核队列</h2>
         <p className="mt-1 text-xs leading-relaxed text-slate-500">
-          按 v2 分从高到低审。通过 = 可以开始做 listing；待询价 = 先问 1688 商家箱规/尺寸/打样再定；否决必须选理由，
-          这些理由会沉淀成数据，用来校准评分。
+          按 v2 分从高到低审。通过 = 可以开始做 listing；待询价 = 先问 1688 商家箱规/尺寸/打样再定；否决要选理由，
+          方便以后回看为什么没做。
         </p>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-slate-400">范围</span>
+          {(
+            [
+              { k: 'auto', label: '自动选品' },
+              { k: 'manual', label: '我手动录的' },
+              { k: 'all', label: '全部' },
+            ] as const
+          ).map((s) => (
+            <button
+              key={s.k}
+              onClick={() => setScope(s.k)}
+              className={cn(
+                'rounded-full border px-2.5 py-0.5 text-[11px]',
+                scope === s.k
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'
+              )}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
         {msg && <div className="mt-2 text-xs text-emerald-600">{msg}</div>}
       </div>
 
@@ -188,7 +213,9 @@ export default function Review() {
             {!isLoading && shown.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-3 py-10 text-center text-slate-400">
-                  这个分类下没有产品
+                  {scope === 'auto'
+                    ? '还没有自动选品的候选。去「自动选品」页跑一次，或等每天 08:00 的定时任务。'
+                    : '这个分类下没有产品'}
                 </td>
               </tr>
             )}
@@ -209,6 +236,11 @@ export default function Review() {
                         <div className="truncate text-[11px] text-slate-400">
                           ¥{p.source.priceCny ?? '—'} · {(p.evaluation?.asiCategories ?? []).slice(0, 2).join(' / ') || '未分类'}
                         </div>
+                        {p.selectionReason && (
+                          <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-sky-600" title={p.selectionReason}>
+                            {p.selectionReason}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </td>

@@ -227,6 +227,10 @@ export interface Product {
   rejectReasons?: string[]
   reviewNote?: string | null
   reviewedAt?: string | null
+  /** 来源：manual 手动 / auto 自动选品 */
+  origin?: 'manual' | 'auto' | null
+  /** 自动选品时为什么挑中它（中文，给审核时看） */
+  selectionReason?: string | null
 }
 
 export interface Settings {

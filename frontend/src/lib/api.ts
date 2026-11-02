@@ -136,6 +136,20 @@ export const api = {
     return data
   },
 
+  /** 触发一次自动选品（prompt 为空则用内置品类池） */
+  async runDailySourcing(payload: { prompt?: string; limit?: number }): Promise<{
+    ok: boolean
+    keywords: string[]
+    keywordSource: string
+    scanned: number
+    candidates: number
+    created: Array<{ id: string; title: string; priceCny: number | null; score: number | null; reason: string }>
+    skipped: Array<{ url: string; reason: string }>
+  }> {
+    const { data } = await apiClient.post('/products/sourcing/daily', payload, { timeout: 600000 })
+    return data as any
+  },
+
   async createProduct(payload: {
     source: SourceInfo
     evaluation?: Evaluation | null

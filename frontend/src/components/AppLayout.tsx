@@ -23,6 +23,7 @@ const NAV = [
   { to: '/library', label: '产品库', icon: Package, end: false },
   { to: '/rescore', label: '评分对照', icon: BarChart3, end: false },
   { to: '/review', label: '审核队列', icon: CheckSquare, end: false },
+  { to: '/sourcing-daily', label: '自动选品', icon: Sparkles, end: false },
   { to: '/order-center', label: '订单运营中心', icon: ShoppingBag, end: false },
   { to: '/settings', label: '设置', icon: SettingsIcon, end: false },
 ]
@@ -35,6 +36,7 @@ const TITLES: Record<string, { title: string; sub: string }> = {
   '/library': { title: '产品库', sub: '所有已保存的选品与生成的英文链接' },
   '/rescore': { title: '评分对照', sub: '同一批产品：AI 印象分 vs 按市场 list 价反算能不能赚钱' },
   '/review': { title: '审核队列', sub: '按 v2 分逐条审：通过 / 待询价 / 否决（带理由）' },
+  '/sourcing-daily': { title: '自动选品', sub: '手动或每天定时去 1688 找新品：粗筛 → 抓详情 → AI 评估 → 进审核队列' },
   '/order-center': { title: '订单运营中心', sub: '客户、询盘、订单、供应商沟通与邮件草稿一站式管理' },
   '/settings': { title: '设置', sub: 'AI 接口、成本参数与报价规则' },
 }
