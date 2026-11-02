@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { Product, Settings } from '@/types'
 import { cn } from '@/lib/utils'
@@ -105,14 +105,17 @@ function computeRow(p: Product, fx: number): Row {
     priceCny,
     list,
     net: list != null ? 0.6 * list : null,
-    margin,
-    ceiling,
+    // 已经写进库里的以库为准，没写过就用页面现算的
+    margin: p.marginV2 ?? margin,
+    ceiling: p.ceilingCny ?? ceiling,
     cut,
     landedUsd,
     oldScore: p.evaluation?.score ?? null,
     oldVerdict: p.evaluation?.verdict ?? '未评',
-    v2,
-    verdict,
+    v2: p.scoreV2 ?? v2,
+    verdict: p.verdictV2
+      ? (({ GO: '可做', NEGOTIATE: '压价可做', NO: '做不了' } as const)[p.verdictV2])
+      : verdict,
     reason,
     parts: { m, p: pScore, l, c },
   }
@@ -135,8 +138,19 @@ const FILTERS: Array<{ key: 'all' | Verdict2; label: string }> = [
 
 export default function Rescore() {
   const [filter, setFilter] = useState<'all' | Verdict2>('all')
+  const [msg, setMsg] = useState('')
+  const qc = useQueryClient()
   const { data: products, isLoading } = useQuery({ queryKey: ['products', 'all'], queryFn: () => api.listProducts() })
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 30_000 })
+
+  const rescore = useMutation({
+    mutationFn: () => api.rescoreAll(),
+    onSuccess: (r) => {
+      setMsg(`已写入 ${r.updated} 条：可做 ${r.counts.GO ?? 0} / 压价可做 ${r.counts.NEGOTIATE ?? 0} / 做不了 ${r.counts.NO ?? 0}`)
+      qc.invalidateQueries({ queryKey: ['products'] })
+    },
+    onError: () => setMsg('写入失败，请稍后重试'),
+  })
 
   const fx = (settings as Settings | undefined)?.fxRate || 6.66
 
@@ -162,6 +176,19 @@ export default function Rescore() {
           原评分（AI 印象分）保持不变，这里另算一版：先按「市场 list 价 × 0.6」得到你能报的净价，再扣掉真实全成本，
           看能不能赚到 30%。毛利 40 分 + 价格空间 30 分 + 物流 10 分 + 品类 20 分，同样的数据永远算出同样的分。
         </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => rescore.mutate()}
+            disabled={rescore.isPending}
+            className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {rescore.isPending ? '写入中…' : '把这一版分数写入产品库'}
+          </button>
+          {msg && <span className="text-[11px] text-slate-500">{msg}</span>}
+          {!msg && (
+            <span className="text-[11px] text-slate-400">写入只新增 score_v2 等字段，原来的评分和评估内容不会被改动</span>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

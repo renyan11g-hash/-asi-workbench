@@ -14,6 +14,7 @@ import { buildGlsWorkbook } from '../services/gls-export'
 import { recommendImprintMethods } from '../services/imprint-recommend'
 import { Evaluation, Listing, Product, ProductStatus, SimilarResearch, SourceInfo } from '../types'
 import { loadSettings } from './settings'
+import { computeScoreV2 } from '../services/scoring'
 import { createTask, getTask, runTask, TaskRecord } from '../services/task-manager'
 
 export const productsRouter: Router = Router()
@@ -120,6 +121,11 @@ interface Row {
   created_at: string
   updated_at: string
   trashed_at: string | null
+  score_v2: number | null
+  verdict_v2: string | null
+  margin_v2: number | null
+  ceiling_cny: number | null
+  scored_at: string | null
 }
 
 const parseJson = <T>(v: string | null, fallback: T): T => {
@@ -165,6 +171,11 @@ function rowToProduct(r: Row): Product {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     trashedAt: r.trashed_at ?? null,
+    scoreV2: r.score_v2 ?? null,
+    verdictV2: (r.verdict_v2 as 'GO' | 'NEGOTIATE' | 'NO' | null) ?? null,
+    marginV2: r.margin_v2 ?? null,
+    ceilingCny: r.ceiling_cny ?? null,
+    scoredAt: r.scored_at ?? null,
   }
 }
 
@@ -268,6 +279,58 @@ productsRouter.get('/', async (req: Request, res: Response) => {
   sql += ' ORDER BY updated_at DESC LIMIT 500'
   const rows = db.prepare(sql).all(...params) as unknown as Row[]
   res.json({ products: rows.map(rowToProduct) })
+})
+
+// ---------- 评分 v2：按市场 list 反算能不能赚钱 ----------
+// 只写 score_v2 / verdict_v2 / margin_v2 / ceiling_cny / scored_at 这几个新增列，
+// 原来的 score / verdict / evaluation 一律不动，方便对照。
+
+function computeRowScore(row: Row) {
+  const settings = loadSettings()
+  const evaluation = parseJson<any>(row.evaluation, null)
+  const listing = parseJson<any>(row.listing, null)
+  const similar = parseJson<any>(row.similar, null)
+  return computeScoreV2(
+    {
+      priceCny: row.price_cny ?? null,
+      priceAdviceUsd: evaluation?.priceAdviceUsd ?? null,
+      similarPriceRangeUsd: similar?.priceRangeUsd ?? null,
+      priceGrid: listing?.priceGrid ?? [],
+      asiCategories: evaluation?.asiCategories ?? [],
+    },
+    settings.fxRate
+  )
+}
+
+/** 全量重算（不动原评分），返回各类判定条数 */
+productsRouter.post('/rescore-all', async (_req: Request, res: Response) => {
+  const rows = db
+    .prepare("SELECT * FROM products WHERE status != 'trashed'")
+    .all() as unknown as Row[]
+  const now = new Date().toISOString()
+  const stmt = db.prepare(
+    'UPDATE products SET score_v2=?, verdict_v2=?, margin_v2=?, ceiling_cny=?, scored_at=? WHERE id=?'
+  )
+  const counts = { GO: 0, NEGOTIATE: 0, NO: 0, UNKNOWN: 0 }
+  for (const row of rows) {
+    const s = computeRowScore(row)
+    counts[s.verdict] += 1
+    stmt.run(s.score, s.verdict, s.margin, s.ceilingCny, now, row.id)
+  }
+  res.json({ updated: rows.length, counts })
+})
+
+/** 单条重算 */
+productsRouter.post('/:id/rescore', async (req: Request, res: Response) => {
+  const row = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id) as unknown as
+    | Row
+    | undefined
+  if (!row) throw new AppError(404, '产品不存在')
+  const s = computeRowScore(row)
+  db.prepare(
+    'UPDATE products SET score_v2=?, verdict_v2=?, margin_v2=?, ceiling_cny=?, scored_at=? WHERE id=?'
+  ).run(s.score, s.verdict, s.margin, s.ceilingCny, new Date().toISOString(), row.id)
+  res.json({ scoreV2: s })
 })
 
 // ---------- 回收站统计 ----------

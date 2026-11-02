@@ -186,6 +186,27 @@ export default function Library() {
                   </td>
                   <td className="px-4 py-3">
                     <VerdictBadge verdict={p.evaluation?.verdict} score={p.evaluation?.score} />
+                    {p.verdictV2 && (
+                      <div className="mt-1">
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] ${
+                            p.verdictV2 === 'GO'
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : p.verdictV2 === 'NEGOTIATE'
+                                ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                : 'border-rose-200 bg-rose-50 text-rose-700'
+                          }`}
+                          title={
+                            p.marginV2 != null
+                              ? `250 件档毛利 ${(p.marginV2 * 100).toFixed(0)}%，采购价上限 ¥${p.ceilingCny?.toFixed(1) ?? '—'}`
+                              : '评分 v2'
+                          }
+                        >
+                          v2 {p.scoreV2 ?? '—'} ·{' '}
+                          {p.verdictV2 === 'GO' ? '可做' : p.verdictV2 === 'NEGOTIATE' ? '压价' : '不做'}
+                        </span>
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-600">
                     {p.listing?.category || p.source.category || '—'}

@@ -199,6 +199,12 @@ export interface Product {
   updatedAt: string
   /** 进入回收站的时间（status='trashed' 时才有） */
   trashedAt: string | null
+  /** 评分 v2（按市场 list 反算，只读展示；原 evaluation 不动） */
+  scoreV2?: number | null
+  verdictV2?: 'GO' | 'NEGOTIATE' | 'NO' | null
+  marginV2?: number | null
+  ceilingCny?: number | null
+  scoredAt?: string | null
 }
 
 export interface Settings {

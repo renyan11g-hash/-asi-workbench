@@ -287,6 +287,13 @@ ensureColumn('similar', "similar TEXT NOT NULL DEFAULT '{}'")
 ensureColumn('trashed_at', 'trashed_at TEXT')
 ensureColumn('draft_id', 'draft_id TEXT')
 
+// 评分 v2（按市场 list 反算能不能赚钱）：只新增列，原 score/verdict/evaluation 一律不动
+ensureColumn('score_v2', 'score_v2 INTEGER')
+ensureColumn('verdict_v2', 'verdict_v2 TEXT')
+ensureColumn('margin_v2', 'margin_v2 REAL')
+ensureColumn('ceiling_cny', 'ceiling_cny REAL')
+ensureColumn('scored_at', 'scored_at TEXT')
+
 // 订单运营中心表兼容性检查
 function ensureTableColumn(tableName: string, name: string, ddl: string) {
   const cols = (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map(

@@ -104,6 +104,20 @@ export const api = {
     return data.product
   },
 
+  /** 全量重算评分 v2（只写 score_v2 等新列，不动原评分） */
+  async rescoreAll(): Promise<{ updated: number; counts: Record<string, number> }> {
+    const { data } = await apiClient.post<{ updated: number; counts: Record<string, number> }>(
+      '/products/rescore-all'
+    )
+    return data
+  },
+
+  /** 单条重算评分 v2 */
+  async rescoreOne(id: string): Promise<Product> {
+    await apiClient.post(`/products/${id}/rescore`)
+    return api.getProduct(id)
+  },
+
   async createProduct(payload: {
     source: SourceInfo
     evaluation?: Evaluation | null

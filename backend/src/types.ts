@@ -212,6 +212,15 @@ export interface Product {
   updatedAt: string
   /** 进入回收站的时间（status='trashed' 时才有） */
   trashedAt: string | null
+  /** 评分 v2（按市场 list 反算）：0-100，null=未评分 */
+  scoreV2?: number | null
+  /** 'GO' 可做 / 'NEGOTIATE' 压价可做 / 'NO' 做不了 */
+  verdictV2?: 'GO' | 'NEGOTIATE' | 'NO' | null
+  /** 250 件档毛利率（0-1） */
+  marginV2?: number | null
+  /** 采购价上限（¥/件），低于它才有 30% 毛利 */
+  ceilingCny?: number | null
+  scoredAt?: string | null
 }
 
 export interface Settings {
