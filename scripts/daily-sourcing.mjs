@@ -123,6 +123,7 @@ async function main() {
     for (const h of so ? parse360(so) : []) if (!hits.has(h.offerId)) hits.set(h.offerId, { ...h, keyword: kw })
     for (const h of sg ? parseSogou(sg) : []) if (!hits.has(h.offerId)) hits.set(h.offerId, { ...h, keyword: kw })
     log(`「${kw}」累计 ${hits.size} 条`)
+    await new Promise((r) => setTimeout(r, 1500)) // 放慢一点，降低被搜索站限流的概率
   }
   if (!hits.size) { log('没有搜到任何 1688 链接，退出'); return }
 
@@ -134,38 +135,47 @@ async function main() {
   log(`粗筛后 ${cands.length} 条候选`)
 
   // ③ 抓详情 + 组装
+  // 1688 对无 Cookie 的请求基本都返回反爬桩页（详情抓不到是常态），
+  // 所以详情失败不丢候选：退化成用搜索结果里的标题/价格/摘要导入，详情等你在站上点「评估」时再抓。
   const items = []
+  let detailOk = 0
   for (const c of cands) {
     if (items.length >= LIMIT) break
     const d = await fetchDetail(c.offerId)
-    if (!d) { log('详情抓取失败', c.offerId); continue }
-    const text = `${d.title} ${d.description}`
-    if (!CUSTOM.test(text) && BRAND.test(d.title)) { log('自带品牌且不支持定制，跳过', c.offerId); continue }
+    const title = d?.title || c.title
+    const priceCny = d?.priceCny ?? c.priceCny ?? null
+    const desc = d?.description || c.desc || ''
+    if (!title) { log('无标题，跳过', c.offerId); continue }
+    if (d) detailOk++
+    const text = `${title} ${desc}`
+    if (!CUSTOM.test(text) && BRAND.test(title)) { log('自带品牌且不支持定制，跳过', c.offerId); continue }
     const signals = []
     if (c.cross) signals.push('跨境/外贸信号')
     if (CUSTOM.test(text)) signals.push('支持定制')
-    if (d.priceCny) signals.push(`1688 报价 ¥${d.priceCny}`)
+    if (priceCny) signals.push(`1688 报价 ¥${priceCny}`)
+    if (!d) signals.push('详情页被反爬拦截（已按搜索结果导入，需在站内补抓）')
     items.push({
       source: {
         sourceUrl: c.url,
-        sourceTitle: d.title,
-        description: d.description,
+        sourceTitle: title,
+        description: desc,
         sourceKeywords: [],
         amazonTitle: '',
-        priceCny: d.priceCny ?? c.priceCny ?? undefined,
+        priceCny: priceCny ?? undefined,
         moq: undefined,
         supplier: '',
         materialCn: '',
         colorsCn: '',
         sizeCn: '',
-        images: d.images,
+        images: d?.images ?? [],
         category: '',
         notes: '',
       },
       selectionReason: `搜索词「${c.keyword}」命中；${signals.join('、') || '价格/标题命中'}`,
     })
-    log('候选:', d.title.slice(0, 30))
+    log('候选:', title.slice(0, 30), d ? '(详情OK)' : '(仅搜索结果)')
   }
+  log(`详情抓取成功 ${detailOk} / 候选 ${items.length}`)
   if (!items.length) { log('没有可导入的候选，退出'); return }
 
   // ④ 导入
