@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS product_images (
   history TEXT NOT NULL DEFAULT '[]',
   file TEXT NOT NULL,
   dimension_spec TEXT,
+  with_logo INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -299,6 +300,9 @@ function ensureTableColumn(tableName: string, name: string, ddl: string) {
 // 确保订单表有所有必需的列
 ensureTableColumn('orders', 'deposit_amount', 'deposit_amount REAL')
 ensureTableColumn('orders', 'balance_amount', 'balance_amount REAL')
+
+// 产品图片表：老库补 with_logo 列（主图是否融合 Logo，0/1）
+ensureTableColumn('product_images', 'with_logo', 'with_logo INTEGER NOT NULL DEFAULT 1')
 
 /**
  * libsql 的 get() 结果可能带 _metadata 字段（查询耗时元数据），剥离后返回纯数据行

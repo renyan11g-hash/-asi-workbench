@@ -468,6 +468,8 @@ export interface ProductImage {
   productId: string
   /** 图片角色：main=主图（含 Logo+多色缩略图） / dimension=尺寸图（inch） / intro=介绍图 */
   kind: ProductImageKind
+  /** 主图是否融合了品牌 Logo（false=干净产品图；对话修改/重生成时据此决定是否带 Logo 参考） */
+  withLogo?: boolean
   /** 第几张介绍图（1-3），非 intro 为 0 */
   slot: number
   /** 生成该图使用的英文 Prompt（文本模型产出） */

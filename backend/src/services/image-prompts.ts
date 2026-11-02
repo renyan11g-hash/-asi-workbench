@@ -29,6 +29,9 @@ Rules for every prompt:
 - Photorealistic commercial product photography, studio lighting.
 - The product must look EXACTLY like the reference images (same shape, proportions, materials, colors). Only use content described in the product facts or visible in the reference images — NEVER invent products, props, accessories, packaging, or text that are not described or shown. No fabricated details.
 - ABSOLUTELY NO TEXT, letters, numbers, watermarks, or logos in the image EXCEPT the user's brand logo when explicitly instructed to blend it onto the product.
+- LOGO HANDLING — obey the "LOGO:" directive in the user message:
+  * "LOGO: none" → the main image must NOT contain any logo, brand mark, or imprint anywhere; the product stays completely clean.
+  * Otherwise → the user's logo (provided as the LAST reference image) is blended onto the product as described in the "main" rules below.
 - Keep composition uncluttered; leave breathing room around the product.
 - If the user message contains a "USER NOTES" block, those are the client's hard requirements (composition, colors, which variant to show, where the logo goes, background, etc.). Follow them STRICTLY in the affected prompts; they override the defaults above (but still never add text/numbers or invented content).
 
@@ -36,7 +39,7 @@ Output STRICT JSON only:
 {"main":"<prompt>","dimension":"<prompt>","intro":["<prompt1>","<prompt2>","<prompt3>"]}
 
 Prompt requirements per image:
-- "main": Hero shot on a PURE WHITE seamless background (required). The main product large and centered; smaller thumbnails of the SAME product in its other available colors arranged below or to the right of the main product (a neat grid/row, evenly spaced, same scale). The user's logo (provided as the LAST reference image) is blended naturally onto the FRONT of the main product, like a real factory imprint — correct perspective, subtle texture, not a floating sticker. The logo MUST be clearly visible against the product color: if the product (or the area where the logo sits) is dark, recolor the logo to WHITE (or another high-contrast light tone); if the product is light-colored, keep the logo dark or in its original colors. Only the logo artwork's color may change for contrast — its shape and content stay identical. No text anywhere else.
+- "main": Hero shot on a PURE WHITE seamless background (required). The main product large and centered; smaller thumbnails of the SAME product in its other available colors arranged below or to the right of the main product (a neat grid/row, evenly spaced, same scale). If the user message says "LOGO: none", the product front stays completely clean — no logo, no brand mark, no imprint of any kind. Otherwise the user's logo (provided as the LAST reference image) is blended naturally onto the FRONT of the main product, like a real factory imprint — correct perspective, subtle texture, not a floating sticker. The logo MUST be clearly visible against the product color: if the product (or the area where the logo sits) is dark, recolor the logo to WHITE (or another high-contrast light tone); if the product is light-colored, keep the logo dark or in its original colors. Only the logo artwork's color may change for contrast — its shape and content stay identical. No text anywhere else.
 - "dimension": A single clean product shot, straight-on angle, centered on pure white background, generous margins on all sides (the system will overlay dimension lines programmatically). NO dimension lines, NO arrows, NO numbers, NO text.
 - "intro": 3 lifestyle/context prompts showcasing selling points and usage scenarios (e.g. office, outdoor, gift-giving). Each prompt must describe ONE scene, photorealistic, no text.`
 
@@ -44,7 +47,9 @@ export async function buildImagePromptSet(
   source: SourceInfo,
   settings: Parameters<typeof callChatJson>[0],
   /** 生成前用户注意事项（中文，可空）：融入 Prompt 编排，AI 必须遵循 */
-  userNotes?: string
+  userNotes?: string,
+  /** 主图是否融合品牌 Logo（false=干净产品图，禁止出现任何 Logo） */
+  withLogo = true
 ): Promise<ImagePromptSet> {
   const productFacts = [
     `Product title: ${source.sourceTitle}`,
@@ -65,12 +70,16 @@ USER NOTES (client's hard requirements, MUST follow):
 ${notes}
 `
     : ''
+  const logoDirective = withLogo
+    ? `LOGO: blend the user's brand logo (the LAST reference image) onto the product front in the "main" prompt only.`
+    : `LOGO: none — the "main" prompt must describe a completely clean product with NO logo, brand mark, or imprint anywhere.`
   const user = `Create the 5 image prompts for this 1688 product.
 
 PRODUCT FACTS:
 ${productFacts}
 ${notesBlock}
-The reference images (if any) show the real product. The LAST reference image (if provided) is the user's brand logo to blend onto the product front in the "main" prompt only.`
+${logoDirective}
+The reference images (if any) show the real product.${withLogo ? ' The LAST reference image (if provided) is the user\'s brand logo to blend onto the product front in the "main" prompt only.' : ' No logo reference image is provided — do not include any logo in any prompt.'}`
 
   const images = (source.images ?? []).filter((u) => /^https?:\/\//.test(u)).slice(0, 4)
   const raw = await callChatJson<RawPromptSet>(
@@ -88,7 +97,7 @@ The reference images (if any) show the real product. The LAST reference image (i
     )
   }
   return {
-    main: String(raw.main ?? '').trim() || fallbackMain(source),
+    main: String(raw.main ?? '').trim() || fallbackMain(source, withLogo),
     dimension:
       String(raw.dimension ?? '').trim() ||
       `A single ${source.sourceTitle || 'product'} photographed straight-on, centered on a pure white seamless background, studio lighting, generous empty margins around the product, photorealistic, no text, no lines, no numbers.`,
@@ -96,8 +105,11 @@ The reference images (if any) show the real product. The LAST reference image (i
   }
 }
 
-function fallbackMain(source: SourceInfo): string {
-  return `Hero product photography of the ${source.sourceTitle || 'product'} exactly as shown in the reference images, large and centered, with smaller thumbnails of the same product in its other color variants arranged in a neat row below it, the brand logo from the last reference image blended naturally onto the front of the main product like a real factory imprint, studio lighting, clean light-gray seamless background, photorealistic, no text anywhere.`
+function fallbackMain(source: SourceInfo, withLogo = true): string {
+  const logoPart = withLogo
+    ? ', the brand logo from the last reference image blended naturally onto the front of the main product like a real factory imprint'
+    : ', completely clean product front with no logo, brand mark, or imprint anywhere'
+  return `Hero product photography of the ${source.sourceTitle || 'product'} exactly as shown in the reference images, large and centered, with smaller thumbnails of the same product in its other color variants arranged in a neat row below it${logoPart}, studio lighting, clean light-gray seamless background, photorealistic, no text anywhere.`
 }
 
 /**

@@ -73,6 +73,7 @@ interface ImageRow {
   history: string
   file: string
   dimension_spec: string | null
+  with_logo: number | null
   created_at: string
   updated_at: string
 }
@@ -84,6 +85,7 @@ function rowToImage(r: ImageRow): ProductImage {
     kind: r.kind as ProductImageKind,
     slot: r.slot,
     prompt: r.prompt,
+    withLogo: r.with_logo == null ? undefined : r.with_logo === 1,
     history: JSON.parse(r.history || '[]'),
     file: r.file,
     dimensionSpec: r.dimension_spec ? JSON.parse(r.dimension_spec) : null,
@@ -222,6 +224,8 @@ const generateSchema = z.object({
   kinds: z.array(z.enum(['main', 'dimension', 'intro'])).max(5).optional(),
   /** 生成前用户注意事项（中文，可空）：融入 Prompt 编排，AI 必须遵循 */
   notes: z.string().max(2000).optional(),
+  /** 主图是否融合品牌 Logo（默认 true；false=干净产品图，禁止出现任何 Logo） */
+  withLogo: z.boolean().optional(),
 })
 
 async function runAi<T>(fn: () => Promise<T>): Promise<T> {
@@ -286,6 +290,8 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   // 默认只生成主图 + 尺寸图（介绍图改为文字建议，省 AI 费用）；需要时可传 kinds 指定
   const kinds = body.kinds ?? ['main', 'dimension']
   const logo = readLogo()
+  // 主图 Logo 开关：默认加 Logo；用户明确选择不加时不传 Logo 参考图（还省 1 张输入费）
+  const withLogo = body.withLogo !== false
 
   // 参考图按 kind 分配（Seedream 按「输入图+输出图」总张数计费，参考图越少越省钱）：
   // - 主图：3 张产品图 + Logo（Logo 融合 + 颜色适配需要看清 Logo 与产品色）
@@ -294,7 +300,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   const mainRefs: ImageRef[] = productUrls
     .slice(0, 3)
     .map((u) => ({ url: u }) as ImageRef)
-  if (logo) mainRefs.push({ buffer: logo })
+  if (logo && withLogo) mainRefs.push({ buffer: logo })
   const plainRefs: ImageRef[] = productUrls.slice(0, 1).map((u) => ({ url: u }) as ImageRef)
 
   // 异步任务：5 张图逐张生成耗时 1-5 分钟，同步等待会超 Render 100 秒代理超时（502）
@@ -306,7 +312,9 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
 
   runTask(task, async () => {
     // 1) 文本模型产出 5 张图 Prompt（带产品参考图 + Logo；用户注意点融入编排）
-    const ps = promptSet ?? (promptSet = await runAi(() => buildImagePromptSet(source, settings, body.notes)))
+    const ps =
+      promptSet ??
+      (promptSet = await runAi(() => buildImagePromptSet(source, settings, body.notes, withLogo)))
 
     // 2) 逐张生成（任务重试时跳过已完成的，续跑剩余的）
     for (const kind of kinds) {
@@ -348,12 +356,13 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
         history: [],
         file,
         dimensionSpec,
+        withLogo,
         createdAt: now(),
         updatedAt: now(),
       }
       db.prepare(
-        `INSERT INTO product_images (id, product_id, kind, slot, prompt, history, file, dimension_spec, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO product_images (id, product_id, kind, slot, prompt, history, file, dimension_spec, with_logo, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         record.id,
         record.productId,
@@ -363,6 +372,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
         JSON.stringify(record.history),
         record.file,
         record.dimensionSpec ? JSON.stringify(record.dimensionSpec) : null,
+        withLogo ? 1 : 0,
         record.createdAt,
         record.updatedAt
       )
@@ -403,10 +413,10 @@ productImagesRouter.post('/chat', async (req: Request, res: Response) => {
     translateImageEditInstruction(body.message, image.prompt, image.kind, settings)
   )
 
-  // 2) 用当前图 + Logo 作为参考图进行编辑
+  // 2) 用当前图（+ Logo，仅当该主图原本就带 Logo）作为参考图进行编辑
   const refs: ImageRef[] = [{ buffer: readImageFile(body.productId, image.file) }]
   const logo = readLogo()
-  if (logo && image.kind === 'main') refs.push({ buffer: logo })
+  if (logo && image.kind === 'main' && image.withLogo !== false) refs.push({ buffer: logo })
 
   let buf = await runAi(() => editImage(settings, editPrompt, refs))
 
@@ -501,8 +511,8 @@ productImagesRouter.post('/:imageId/regenerate', async (req: Request, res: Respo
 
   const logo = readLogo()
   let buf: Buffer
-  if (image.kind === 'main' && logo) {
-    // 主图需要 Logo 参考：用旧图 + Logo 编辑重生成
+  if (image.kind === 'main' && logo && image.withLogo !== false) {
+    // 带 Logo 的主图：用旧图 + Logo 编辑重生成
     buf = await runAi(() =>
       editImage(settings, image.prompt, [
         { buffer: readImageFile(body.productId, image.file) },

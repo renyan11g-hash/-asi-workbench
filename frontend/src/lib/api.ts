@@ -582,11 +582,18 @@ export const api = {
     onProgress?: (progress: string, elapsedSec: number) => void,
     notes?: string,
     /** 只生成指定角色：['main'] 主图 / ['dimension'] 尺寸图；缺省=两者 */
-    kinds?: Array<'main' | 'dimension' | 'intro'>
+    kinds?: Array<'main' | 'dimension' | 'intro'>,
+    /** 主图是否融合品牌 Logo（默认 true；false=干净产品图） */
+    withLogo?: boolean
   ): Promise<ProductImage[]> {
     const { data: start } = await apiClient.post<{ taskId: string; status: string }>(
       `/product-images/generate`,
-      { productId, notes: (notes ?? '').trim() || undefined, kinds }
+      {
+        productId,
+        notes: (notes ?? '').trim() || undefined,
+        kinds,
+        withLogo: withLogo === undefined ? undefined : withLogo,
+      }
     )
     const taskId = start.taskId
     if (!taskId) throw new Error('后端未返回 taskId，请检查后端版本')

@@ -26,6 +26,7 @@ import {
 import { toast } from 'sonner'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -467,23 +468,38 @@ function GenerateNotesDialog({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onConfirm: (notes: string) => void
+  onConfirm: (notes: string, withLogo: boolean) => void
   generating: boolean
   /** 本次生成目标：main=主图 dimension=尺寸图 both=两者 */
   target: 'main' | 'dimension' | 'both'
 }) {
   const [notes, setNotes] = useState('')
+  const [withLogo, setWithLogo] = useState(true)
   const [openState, setOpenState] = useState(open)
 
-  // 打开时清空输入
+  // 打开时清空输入、重置 Logo 开关为默认（添加）
   useEffect(() => {
-    if (open) setNotes('')
+    if (open) {
+      setNotes('')
+      setWithLogo(true)
+    }
   }, [open])
 
   // 受 open 控制的内部同步（避免 onOpenChange 被外层覆盖）
   useEffect(() => {
     setOpenState(open)
   }, [open])
+
+  const showLogoSwitch = target !== 'dimension'
+  const costHint = showLogoSwitch
+    ? withLogo
+      ? target === 'main'
+        ? '约 5 张（3 张参考图 + Logo + 1 张输出）'
+        : '约 7 张（主图 5 张 + 尺寸图 2 张）'
+      : target === 'main'
+        ? '约 4 张（3 张参考图 + 1 张输出，不加 Logo 省 1 张）'
+        : '约 6 张（主图 4 张 + 尺寸图 2 张）'
+    : '约 2 张（1 张参考图 + 1 张输出）'
 
   return (
     <Dialog
@@ -503,11 +519,19 @@ function GenerateNotesDialog({
             例如「产品是黑色的那款，Logo 改成白色」「不要出现其他颜色缩略图」「只展示绿色款」。
             留空直接开始生成。生成后每张图仍可单独「AI 修改」。
             <span className="mt-1 block text-amber-700">
-              费用提示：图像模型按「输入参考图 + 输出图」总张数计费——本次预计消耗{' '}
-              {target === 'main' ? '约 5 张（3 张参考图 + Logo + 1 张输出）' : target === 'dimension' ? '约 2 张（1 张参考图 + 1 张输出）' : '约 7 张'}。
+              费用提示：图像模型按「输入参考图 + 输出图」总张数计费——本次预计消耗 {costHint}。
             </span>
           </DialogDescription>
         </DialogHeader>
+        {showLogoSwitch && (
+          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+            <Checkbox checked={withLogo} onCheckedChange={(v) => setWithLogo(v === true)} disabled={generating} />
+            <span className="font-medium">添加 Logo</span>
+            <span className="text-xs text-slate-500">
+              {withLogo ? '将把您上传的品牌 Logo 融合到主图产品正面' : '主图为干净产品图，不出现任何 Logo'}
+            </span>
+          </label>
+        )}
         <Textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
@@ -519,7 +543,7 @@ function GenerateNotesDialog({
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={generating}>
             取消
           </Button>
-          <Button size="sm" onClick={() => onConfirm(notes.trim())} disabled={generating}>
+          <Button size="sm" onClick={() => onConfirm(notes.trim(), withLogo)} disabled={generating}>
             {generating ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Sparkles className="mr-1 h-3 w-3" />}
             {generating ? '生成中…' : '开始生成'}
           </Button>
@@ -882,7 +906,11 @@ export default function ListingEditor() {
   const [genNotesOpen, setGenNotesOpen] = useState(false)
   const [genTarget, setGenTarget] = useState<'main' | 'dimension' | 'both'>('both')
 
-  const generateImages = async (notes = '', kinds?: Array<'main' | 'dimension'>) => {
+  const generateImages = async (
+    notes = '',
+    kinds?: Array<'main' | 'dimension'>,
+    withLogo?: boolean
+  ) => {
     if (!product) return
     setGeneratingImages(true)
     setImgProgress('正在提交生成任务…')
@@ -893,7 +921,8 @@ export default function ListingEditor() {
           setImgProgress(progress ? `${progress}（已耗时 ${elapsed} 秒）` : `生成中…（已耗时 ${elapsed} 秒）`)
         },
         notes,
-        kinds
+        kinds,
+        withLogo
       )
       setProductImages(imgs)
       toast.success(`已生成 ${imgs.length} 张产品图片`)
@@ -1398,9 +1427,9 @@ export default function ListingEditor() {
         onOpenChange={setGenNotesOpen}
         generating={generatingImages}
         target={genTarget}
-        onConfirm={(notes) => {
+        onConfirm={(notes, withLogo) => {
           setGenNotesOpen(false)
-          generateImages(notes, genTarget === 'both' ? undefined : [genTarget])
+          generateImages(notes, genTarget === 'both' ? undefined : [genTarget], withLogo)
         }}
       />
       <ImageChatDialog
