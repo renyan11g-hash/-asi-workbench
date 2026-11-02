@@ -40,13 +40,44 @@ function openDatabase(): DatabaseLike {
 
 export const db = openDatabase()
 
+/** 同步等待（初始化重试用；libsql 是同步 API，不能用 await） */
+const sleepSync = (ms: number) => {
+  const sab = new SharedArrayBuffer(4)
+  Atomics.wait(new Int32Array(sab), 0, 0, ms)
+}
+
+/**
+ * 启动期建表/补列的容错包装。
+ *
+ * 2026-11-02 线上事故：新实例启动时某一条 PRAGMA 返回 `invalid token`，
+ * 整个进程直接退出 → Render 判定部署失败 → 线上一直停在旧版本，前端改动永远上不去。
+ * 建表/补列失败不该等于服务不可用：重试几次，仍失败就记日志继续启动，
+ * 让健康检查通过、让页面能打开（接口会各自报错），留出人工修复的空间。
+ */
+function tryExec(label: string, fn: () => void) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      fn()
+      return
+    } catch (e) {
+      const msg = (e as Error)?.message ?? String(e)
+      if (attempt === 3) {
+        console.error(`[db] 初始化步骤「${label}」失败（已跳过，服务继续启动）: ${msg}`)
+      } else {
+        console.warn(`[db] 初始化步骤「${label}」第 ${attempt} 次失败，重试: ${msg}`)
+        sleepSync(800)
+      }
+    }
+  }
+}
+
 // 本地模式启用 WAL 并发；远程模式由 Turso 自行管理，PRAGMA 会报错则跳过
 if (!process.env.LIBSQL_URL || !/^libsql:\/\//.test(process.env.LIBSQL_URL)) {
   db.exec('PRAGMA journal_mode = WAL;')
   db.exec('PRAGMA synchronous = NORMAL;')
 }
 
-db.exec(`
+const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   source_title TEXT NOT NULL DEFAULT '',
@@ -263,16 +294,19 @@ CREATE INDEX IF NOT EXISTS idx_email_drafts_customer ON email_drafts(customer_id
 CREATE INDEX IF NOT EXISTS idx_shipments_order ON shipments(order_id);
 CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id);
 CREATE INDEX IF NOT EXISTS idx_after_sales_order ON after_sales(order_id);
-`)
+`
+tryExec('建表 + 索引', () => db.exec(SCHEMA_SQL))
 
 // 老表结构兼容：缺列则补齐
 function ensureColumn(name: string, ddl: string) {
-  const cols = (db.prepare('PRAGMA table_info(products)').all() as Array<{ name: string }>).map(
-    (c) => c.name
-  )
-  if (!cols.includes(name)) {
-    db.exec(`ALTER TABLE products ADD COLUMN ${ddl}`)
-  }
+  tryExec(`products.${name}`, () => {
+    const cols = (db.prepare('PRAGMA table_info(products)').all() as Array<{ name: string }>).map(
+      (c) => c.name
+    )
+    if (!cols.includes(name)) {
+      db.exec(`ALTER TABLE products ADD COLUMN ${ddl}`)
+    }
+  })
 }
 
 ensureColumn('description', "description TEXT NOT NULL DEFAULT ''")
@@ -312,12 +346,14 @@ ensureColumn('market_checked_at', 'market_checked_at TEXT')
 
 // 订单运营中心表兼容性检查
 function ensureTableColumn(tableName: string, name: string, ddl: string) {
-  const cols = (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map(
-    (c) => c.name
-  )
-  if (!cols.includes(name)) {
-    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${ddl}`)
-  }
+  tryExec(`${tableName}.${name}`, () => {
+    const cols = (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map(
+      (c) => c.name
+    )
+    if (!cols.includes(name)) {
+      db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${ddl}`)
+    }
+  })
 }
 
 // 确保订单表有所有必需的列

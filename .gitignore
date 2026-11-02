@@ -43,6 +43,7 @@ coverage/
 tmp/
 temp/
 *.tmp
+frontend/tmpbuild/
 
 # OS
 Thumbs.db

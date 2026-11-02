@@ -14,7 +14,7 @@ import { env } from '../config/env'
  */
 
 // 无需鉴权的路径（前缀匹配）
-const PUBLIC_PATHS = ['/api/health', '/api/ping', '/favicon.svg', '/favicon.ico', '/robots.txt']
+const PUBLIC_PATHS = ['/api/health', '/api/ping', '/api/version', '/favicon.svg', '/favicon.ico', '/robots.txt']
 
 const sha256 = (value: string) => crypto.createHash('sha256').update(value, 'utf8').digest()
 

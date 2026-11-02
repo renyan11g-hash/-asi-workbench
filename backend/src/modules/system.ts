@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import { db } from '../db'
 
 export const systemRouter: Router = Router()
 
@@ -29,15 +30,25 @@ systemRouter.get('/health', async (_req: Request, res: Response) => {
 })
 
 /**
- * Readiness check
+ * Readiness check —— 真连一次数据库。
+ *
+ * 这个接口在 PUBLIC_PATHS 的 `/api/health` 前缀下，不需要登录就能访问，
+ * 所以部署后可以从外面直接确认 Turso 连接是否正常（token 过期/写错会在这里暴露）。
  */
 systemRouter.get('/health/ready', async (_req: Request, res: Response) => {
+  let database = 'ok'
+  try {
+    db.prepare('SELECT 1 AS ok').get()
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e)
+    database = `error: ${msg.slice(0, 200)}`
+  }
   res.json({
-    status: 'ready',
+    status: database === 'ok' ? 'ready' : 'degraded',
     timestamp: new Date().toISOString(),
-    checks: {
-      database: 'TCB managed (frontend SDK)',
-    },
+    dbMode: /^libsql:\/\//.test(process.env.LIBSQL_URL || '') ? 'turso' : 'local',
+    hasAuthToken: Boolean(process.env.LIBSQL_AUTH_TOKEN),
+    checks: { database },
   })
 })
 
@@ -58,6 +69,11 @@ systemRouter.get('/version', async (_req: Request, res: Response) => {
   res.json({
     version: '1.0.0',
     apiVersion: 'v1',
+    // 部署核对用：Render 会把本次构建的 commit 注入环境变量
+    commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '',
+    branch: process.env.RENDER_GIT_BRANCH || '',
+    startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+    uptimeSec: Math.round(process.uptime()),
     nodeVersion: process.version,
     environment: process.env.NODE_ENV || 'development',
     timestamp: new Date().toISOString(),
