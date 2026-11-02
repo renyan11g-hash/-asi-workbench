@@ -409,13 +409,23 @@ const marketPriceSchema = z.object({
 
 productsRouter.post('/:id/market-price', async (req: Request, res: Response) => {
   const body = marketPriceSchema.parse(req.body ?? {})
-  if (body.high < body.low) throw new AppError(400, '上限不能小于下限')
   const row = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id)
   if (!row) throw new AppError(404, '产品不存在')
   const now = new Date().toISOString()
+
+  // low=high=0 → 清空（误填时用），退回 AI 估价口径
+  const clearing = body.low === 0 && body.high === 0
+  if (!clearing && body.high < body.low) throw new AppError(400, '上限不能小于下限')
+
   db.prepare(
     'UPDATE products SET market_list_low=?, market_list_high=?, market_source=?, market_checked_at=? WHERE id=?'
-  ).run(body.low, body.high, body.source ?? 'ESP', now, req.params.id)
+  ).run(
+    clearing ? null : body.low,
+    clearing ? null : body.high,
+    clearing ? null : (body.source ?? 'ESP'),
+    clearing ? null : now,
+    req.params.id
+  )
 
   const fresh = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id) as unknown as Row
   const s = computeRowScore(fresh)
@@ -423,7 +433,7 @@ productsRouter.post('/:id/market-price', async (req: Request, res: Response) => 
     'UPDATE products SET score_v2=?, verdict_v2=?, margin_v2=?, ceiling_cny=?, scored_at=? WHERE id=?'
   ).run(s.score, s.verdict, s.margin, s.ceilingCny, now, req.params.id)
 
-  res.json({ product: findProduct(req.params.id), scoreV2: s })
+  res.json({ product: findProduct(req.params.id), scoreV2: s, cleared: clearing })
 })
 
 // ---------- 回收站统计 ----------
