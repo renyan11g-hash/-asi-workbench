@@ -61,9 +61,13 @@ function parse360(html) {
     const start = block.indexOf('data-mdurl')
     const around = block.slice(Math.max(0, start - 2000), start + 3000)
     let title = clean(around.match(/<h3[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? '')
-    if (!title) title = clean(block).slice(0, 60)
+    if (!title) title = clean(around.match(/<a[^>]*data-mdurl="[^"]*"[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? '')
+    // 解析不出干净标题的条目直接丢弃（以前会拼进 HTML 属性，脏数据）
+    if (!title || /[<>"]|data-|class=|href=/.test(title) || title.length < 4) continue
     const desc = clean(block.match(/class="res-desc[^"]*"[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? '')
-    const price = desc.match(/[¥￥]\s*(\d{1,5}(?:\.\d{1,2})?)/)?.[1]
+    // 价格：摘要里没有就扫整块纯文本（搜索结果里常带 "¥12.5" 或 "价格：￥9.90"）
+    const blockText = clean(block)
+    const price = (desc.match(/[¥￥]\s*(\d{1,5}(?:\.\d{1,2})?)/) || blockText.match(/[¥￥]\s*(\d{1,5}(?:\.\d{1,2})?)/))?.[1]
     out.push({ url: m[1], offerId: m[2], title, desc, priceCny: price ? Number(price) : null })
   }
   return out
@@ -78,6 +82,7 @@ function parseSogou(html) {
 
 /** 移动端详情页：标题 / 价格 / 主图 / 描述片段 */
 async function fetchDetail(offerId) {
+  if (process.env.NO_DETAIL === '1') return null // 方案 B：完全不碰详情页
   const html = await get(`https://m.1688.com/offer/${offerId}.html`, MOBILE_UA, 20000)
   if (!html) return null
   const title = clean(html.match(/<title>([^<]{5,150})<\/title>/)?.[1] ?? '').replace(/[-–—|｜]\s*(阿里巴巴|1688).*$/i, '')
