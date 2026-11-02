@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Clock, MessageSquare, X } from 'lucide-react'
+import { Check, Clock, Copy, ExternalLink, MessageSquare, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Product } from '@/types'
 import { cn } from '@/lib/utils'
@@ -43,6 +43,28 @@ const FILTERS: Array<{ key: State | 'all'; label: string }> = [
 ]
 
 const stateOf = (p: Product): State => (p.reviewState as State) || 'pending'
+
+/** 剪贴板兜底（Render 是 https，navigator.clipboard 可用；老浏览器退回 execCommand） */
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch {
+      return false
+    }
+  }
+}
 
 export default function Review() {
   const qc = useQueryClient()
@@ -157,7 +179,26 @@ export default function Review() {
             {f.key !== 'all' && <span className="ml-1 opacity-70">{counts[f.key] ?? 0}</span>}
           </button>
         ))}
-        <span className="ml-auto text-[11px] text-slate-400">共 {shown.length} 条</span>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600 hover:border-sky-300 hover:text-sky-700"
+            onClick={async () => {
+              const lines = shown
+                .filter((p) => p.source.sourceUrl)
+                .map((p) => `${p.listing?.titleZh || p.source.sourceTitle || '(未命名)'}\t${p.source.sourceUrl}`)
+              if (!lines.length) {
+                setMsg('本页没有可复制的 1688 链接')
+                return
+              }
+              const ok = await copyText(lines.join('\n'))
+              setMsg(ok ? `已复制 ${lines.length} 条链接，可直接粘到 Excel / 微信` : '复制失败，请手动选中链接复制')
+            }}
+          >
+            <Copy className="h-3 w-3" />
+            复制本页链接清单
+          </button>
+          <span className="text-[11px] text-slate-400">共 {shown.length} 条</span>
+        </div>
       </div>
 
       {selected.length > 0 && (
@@ -235,13 +276,44 @@ export default function Review() {
                           {p.listing?.titleZh || p.source.sourceTitle || '(未命名)'}
                         </div>
                         <div className="truncate text-[11px] text-slate-400">
-                          ¥{p.source.priceCny ?? '—'} · {(p.evaluation?.asiCategories ?? []).slice(0, 2).join(' / ') || '未分类'}
+                          {p.source.priceCny ? `1688 报价 ¥${p.source.priceCny}` : '1688 报价待抓'} ·{' '}
+                          {(p.evaluation?.asiCategories ?? []).slice(0, 2).join(' / ') || '未分类'}
                         </div>
                         {p.selectionReason && (
                           <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-sky-600" title={p.selectionReason}>
                             {p.selectionReason}
                           </div>
                         )}
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          {p.source.sourceUrl ? (
+                            <>
+                              <a
+                                href={p.source.sourceUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 hover:border-sky-300 hover:text-sky-700"
+                                title={p.source.sourceUrl}
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                                打开 1688
+                              </a>
+                              <button
+                                className="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-500 hover:border-sky-300 hover:text-sky-700"
+                                onClick={async () => {
+                                  const ok = await copyText(p.source.sourceUrl)
+                                  setMsg(ok ? '已复制链接' : '复制失败，请手动复制')
+                                }}
+                              >
+                                <Copy className="h-3 w-3" />
+                                复制链接
+                              </button>
+                            </>
+                          ) : (
+                            <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-700">
+                              没有 1688 链接（这条只有搜索词，建议直接否决重抓）
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </td>
