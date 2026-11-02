@@ -7,6 +7,7 @@ import 'express-async-errors'
 import { env } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { httpLogger } from './middleware/logger'
+import { basicAuth, sameOriginGuard } from './middleware/auth'
 import { systemRouter } from './modules/system'
 import { productsRouter } from './modules/products'
 import { settingsRouter } from './modules/settings'
@@ -25,6 +26,11 @@ export const createApp = (): Application => {
 
   // HTTP request logging
   app.use(httpLogger)
+
+  // 访问保护：全站（含前端静态文件与所有 /api 接口）默认需要登录，/api/health 放行
+  app.use(basicAuth)
+  // 同源守卫：防止其他站点借用浏览器缓存的凭据发起写请求
+  app.use(sameOriginGuard)
 
   app.use(
     cors({

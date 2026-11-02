@@ -141,6 +141,12 @@ git push -u origin main
 | `PORT` | `3000` |
 | `DATA_DIR` | `/tmp/data` |
 | `CORS_ORIGIN` | `*` |
+| `BASIC_AUTH_USER` | 你想要的登录名（如 `asi`） |
+| `BASIC_AUTH_PASS` | 强密码（建议 16 位以上随机串） |
+
+> `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` 两项都填 = 全站需要登录（浏览器首次访问弹系统登录框，可勾选记住）；
+> 两项留空 = 不鉴权（仅适合本地开发）。`/api/health` 始终放行，供 Render 健康检查使用。
+> 注意执行顺序：**先加变量再重新部署**；只加变量不部署不会生效，只部署不加变量则站点仍然对外开放。
 
 #### 3.3 部署
 

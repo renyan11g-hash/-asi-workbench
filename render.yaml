@@ -22,4 +22,10 @@ services:
         sync: false
       - key: LIBSQL_AUTH_TOKEN
         sync: false
+      # 访问保护（HTTP Basic Auth）：在 Render Dashboard 填任意用户名 + 强密码。
+      # 两项都填 = 全站需要登录；两项留空 = 不鉴权。改完需重新部署生效。
+      - key: BASIC_AUTH_USER
+        sync: false
+      - key: BASIC_AUTH_PASS
+        sync: false
     healthCheckPath: /api/health

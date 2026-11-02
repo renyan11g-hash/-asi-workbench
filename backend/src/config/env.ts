@@ -14,6 +14,10 @@ const envSchema = z.object({
   ).default('*'),
   RATE_LIMIT_WINDOW_MS: z.string().transform(Number).default('900000'),
   RATE_LIMIT_MAX_REQUESTS: z.string().transform(Number).default('100'),
+
+  // 访问保护（HTTP Basic Auth）：两项都配置才启用；留空 = 不鉴权（本地开发默认关闭）
+  BASIC_AUTH_USER: z.string().default(''),
+  BASIC_AUTH_PASS: z.string().default(''),
 })
 
 const parseEnv = () => {
