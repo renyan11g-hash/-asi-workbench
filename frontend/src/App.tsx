@@ -10,6 +10,7 @@ import Sourcing from "./pages/Sourcing";
 import SourcingSuggest from "./pages/SourcingSuggest";
 import Evaluations from "./pages/Evaluations";
 import Library from "./pages/Library";
+import Rescore from "./pages/Rescore";
 import ListingEditor from "./pages/ListingEditor";
 import SettingsPage from "./pages/SettingsPage";
 import NotFound from "./pages/NotFound";
@@ -75,6 +76,12 @@ function App() {
                 data-genie-key="Library"
                 data-genie-title="产品库"
                 element={<PageTransition transition="fade"><Library /></PageTransition>}
+              />
+              <Route
+                path="rescore"
+                data-genie-key="Rescore"
+                data-genie-title="评分对照"
+                element={<PageTransition transition="fade"><Rescore /></PageTransition>}
               />
               <Route
                 path="listing/:id"
