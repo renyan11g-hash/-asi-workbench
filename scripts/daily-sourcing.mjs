@@ -171,6 +171,12 @@ async function main() {
   // ④ 导入
   const imp = await api('/api/products/import', { method: 'POST', body: JSON.stringify({ items }) })
   log('导入结果', imp.status, JSON.stringify(imp.body).slice(0, 200))
+  if (imp.status === 401) {
+    throw new Error(
+      '导入被拒（401）：网站那边还没配 SYNC_TOKEN。去 Render → 你的服务 → Environment，' +
+        '新增 SYNC_TOKEN，值要和本仓库 Secrets 里的 SYNC_TOKEN 完全一致，保存后等重新部署完成再跑一次。'
+    )
+  }
   if (imp.status !== 200) throw new Error('导入失败')
   const created = imp.body.created || []
 
