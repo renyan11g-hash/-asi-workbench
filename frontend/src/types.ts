@@ -205,6 +205,11 @@ export interface Product {
   marginV2?: number | null
   ceilingCny?: number | null
   scoredAt?: string | null
+  /** 审核状态：null/pending 待审；approved 通过；rejected 否决；parked 待询价 */
+  reviewState?: 'pending' | 'approved' | 'rejected' | 'parked' | null
+  rejectReasons?: string[]
+  reviewNote?: string | null
+  reviewedAt?: string | null
 }
 
 export interface Settings {

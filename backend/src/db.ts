@@ -294,6 +294,12 @@ ensureColumn('margin_v2', 'margin_v2 REAL')
 ensureColumn('ceiling_cny', 'ceiling_cny REAL')
 ensureColumn('scored_at', 'scored_at TEXT')
 
+// 审核队列：null 一律视为待审（pending），老数据不用批量回填
+ensureColumn('review_state', 'review_state TEXT')
+ensureColumn('review_note', 'review_note TEXT')
+ensureColumn('reject_reasons', 'reject_reasons TEXT')
+ensureColumn('reviewed_at', 'reviewed_at TEXT')
+
 // 订单运营中心表兼容性检查
 function ensureTableColumn(tableName: string, name: string, ddl: string) {
   const cols = (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map(

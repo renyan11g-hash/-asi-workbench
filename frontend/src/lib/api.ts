@@ -118,6 +118,24 @@ export const api = {
     return api.getProduct(id)
   },
 
+  /** 单条审核 */
+  async reviewProduct(
+    id: string,
+    payload: { state: 'pending' | 'approved' | 'rejected' | 'parked'; reasons?: string[]; note?: string }
+  ): Promise<Product> {
+    const { data } = await apiClient.post<{ product: Product }>(`/products/${id}/review`, payload)
+    return data.product
+  },
+
+  /** 批量审核 */
+  async reviewBulk(
+    ids: string[],
+    payload: { state: 'pending' | 'approved' | 'rejected' | 'parked'; reasons?: string[]; note?: string }
+  ): Promise<{ updated: number }> {
+    const { data } = await apiClient.post<{ updated: number }>('/products/review-bulk', { ids, ...payload })
+    return data
+  },
+
   async createProduct(payload: {
     source: SourceInfo
     evaluation?: Evaluation | null

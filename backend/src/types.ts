@@ -221,6 +221,12 @@ export interface Product {
   /** 采购价上限（¥/件），低于它才有 30% 毛利 */
   ceilingCny?: number | null
   scoredAt?: string | null
+  /** 审核状态：null/pending 待审；approved 通过；rejected 否决；parked 待询价 */
+  reviewState?: 'pending' | 'approved' | 'rejected' | 'parked' | null
+  /** 否决理由标签（JSON 数组） */
+  rejectReasons?: string[]
+  reviewNote?: string | null
+  reviewedAt?: string | null
 }
 
 export interface Settings {

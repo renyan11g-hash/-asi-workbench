@@ -126,6 +126,10 @@ interface Row {
   margin_v2: number | null
   ceiling_cny: number | null
   scored_at: string | null
+  review_state: string | null
+  review_note: string | null
+  reject_reasons: string | null
+  reviewed_at: string | null
 }
 
 const parseJson = <T>(v: string | null, fallback: T): T => {
@@ -176,6 +180,10 @@ function rowToProduct(r: Row): Product {
     marginV2: r.margin_v2 ?? null,
     ceilingCny: r.ceiling_cny ?? null,
     scoredAt: r.scored_at ?? null,
+    reviewState: (r.review_state as 'pending' | 'approved' | 'rejected' | 'parked' | null) ?? null,
+    rejectReasons: parseJson<string[]>(r.reject_reasons, []),
+    reviewNote: r.review_note ?? null,
+    reviewedAt: r.reviewed_at ?? null,
   }
 }
 
@@ -331,6 +339,48 @@ productsRouter.post('/:id/rescore', async (req: Request, res: Response) => {
     'UPDATE products SET score_v2=?, verdict_v2=?, margin_v2=?, ceiling_cny=?, scored_at=? WHERE id=?'
   ).run(s.score, s.verdict, s.margin, s.ceilingCny, new Date().toISOString(), row.id)
   res.json({ scoreV2: s })
+})
+
+// ---------- 审核队列 ----------
+// 状态：pending 待审 / approved 通过 / parked 待询价 / rejected 否决（带理由标签）
+
+const reviewBodySchema = z.object({
+  state: z.enum(['pending', 'approved', 'rejected', 'parked']),
+  reasons: z.array(z.string().max(40)).max(10).optional(),
+  note: z.string().max(1000).optional(),
+})
+
+function applyReview(
+  ids: string[],
+  body: { state: string; reasons?: string[]; note?: string }
+): number {
+  const now = new Date().toISOString()
+  const stmt = db.prepare(
+    'UPDATE products SET review_state=?, reject_reasons=?, review_note=?, reviewed_at=? WHERE id=?'
+  )
+  for (const id of ids) {
+    stmt.run(body.state, JSON.stringify(body.reasons ?? []), body.note ?? null, now, id)
+  }
+  return ids.length
+}
+
+/** 批量审核（一次最多 200 条） */
+productsRouter.post('/review-bulk', async (req: Request, res: Response) => {
+  const body = reviewBodySchema
+    .extend({ ids: z.array(z.string()).min(1).max(200) })
+    .parse(req.body)
+  const updated = applyReview(body.ids, body)
+  res.json({ updated })
+})
+
+/** 单条审核 */
+productsRouter.post('/:id/review', async (req: Request, res: Response) => {
+  const body = reviewBodySchema.parse(req.body)
+  const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id)
+  if (!existing) throw new AppError(404, '产品不存在')
+  applyReview([req.params.id], body)
+  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id) as unknown as Row
+  res.json({ product: rowToProduct(updated) })
 })
 
 // ---------- 回收站统计 ----------
