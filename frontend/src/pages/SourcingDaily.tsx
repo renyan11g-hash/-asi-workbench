@@ -15,6 +15,12 @@ import { api } from '@/lib/api'
 
 type Result = Awaited<ReturnType<typeof api.runDailySourcing>>
 
+/**
+ * 临时开关：每日选品的接口在免费实例上会占用较多内存（实测触发过一次数据库连接中断），
+ * 加固完成前先禁用按钮，避免误点把站点打挂。
+ */
+const DAILY_ENABLED = false
+
 export default function SourcingDaily() {
   const [prompt, setPrompt] = useState('')
   const [limit, setLimit] = useState(5)
@@ -70,12 +76,22 @@ export default function SourcingDaily() {
 
           <button
             onClick={() => run.mutate()}
-            disabled={run.isPending}
+            disabled={run.isPending || !DAILY_ENABLED}
             className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
           >
             {run.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-            {run.isPending ? '正在搜 1688 并评估，可能需要 1-3 分钟…' : '开始选品'}
+            {!DAILY_ENABLED
+              ? '加固中，暂不可用'
+              : run.isPending
+                ? '正在搜 1688 并评估，可能需要 1-3 分钟…'
+                : '开始选品'}
           </button>
+
+          {!DAILY_ENABLED && (
+            <span className="text-[11px] text-amber-600">
+              接口正在加固（上次试跑导致数据库连接中断约 10 分钟，已恢复、数据无损）。先看下面的流程说明。
+            </span>
+          )}
 
           <span className="text-[11px] text-slate-400">
             会消耗 AI 额度：每个候选一次评估调用（约 ¥0.02-0.05/条）
