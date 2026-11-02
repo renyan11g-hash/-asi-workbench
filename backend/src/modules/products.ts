@@ -14,6 +14,7 @@ import { buildGlsWorkbook } from '../services/gls-export'
 import { recommendImprintMethods } from '../services/imprint-recommend'
 import { Evaluation, Listing, Product, ProductStatus, SimilarResearch, SourceInfo } from '../types'
 import { loadSettings } from './settings'
+import { env } from '../config/env'
 import { computeScoreV2 } from '../services/scoring'
 import { createTask, getTask, runTask, TaskRecord } from '../services/task-manager'
 
@@ -434,6 +435,45 @@ productsRouter.post('/:id/market-price', async (req: Request, res: Response) => 
   ).run(s.score, s.verdict, s.margin, s.ceilingCny, now, req.params.id)
 
   res.json({ product: findProduct(req.params.id), scoreV2: s, cleared: clearing })
+})
+
+// ---------- 外部任务导入（GitHub Actions 每日选品） ----------
+// 只负责「把外面抓好的候选写进来」，重活在外部跑；AI 评估由脚本逐条调 /:id/evaluate。
+const importSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        source: sourceSchema,
+        selectionReason: z.string().max(600).optional(),
+      })
+    )
+    .min(1)
+    .max(50),
+})
+
+productsRouter.post('/import', async (req: Request, res: Response) => {
+  if (!env.SYNC_TOKEN || (req.get('x-sync-token') ?? '') !== env.SYNC_TOKEN) {
+    throw new AppError(401, '同步令牌无效或未配置')
+  }
+  const body = importSchema.parse(req.body ?? {})
+  const already = existingOfferIds()
+  const created: Array<{ id: string; title: string; reason: string }> = []
+  const skipped: string[] = []
+
+  for (const item of body.items) {
+    const s = toSourceInfo(item.source)
+    const offerId = (s.sourceUrl || '').match(/offer\/(\d{6,})/)?.[1]
+    if (offerId && already.has(offerId)) {
+      skipped.push(`${offerId} 已存在`)
+      continue
+    }
+    const reason = item.selectionReason || '外部定时任务导入'
+    const id = insertAutoProduct(s, null, reason)
+    if (offerId) already.add(offerId)
+    created.push({ id, title: s.sourceTitle, reason })
+  }
+
+  res.json({ ok: true, created, skipped })
 })
 
 // ---------- 回收站统计 ----------
@@ -2131,7 +2171,7 @@ function existingOfferIds(): Set<string> {
 /** 把一条抓取结果落库为「自动选品」产品 */
 function insertAutoProduct(
   source: SourceInfo,
-  evaluation: Evaluation,
+  evaluation: Evaluation | null,
   selectionReason: string
 ): string {
   const id = randomUUID()
@@ -2167,9 +2207,9 @@ function insertAutoProduct(
     JSON.stringify(source.images ?? []),
     source.category,
     source.notes,
-    evaluation.score ?? null,
-    evaluation.verdict ?? null,
-    JSON.stringify(evaluation),
+    evaluation?.score ?? null,
+    evaluation?.verdict ?? null,
+    evaluation ? JSON.stringify(evaluation) : null,
     null,
     '{}',
     'sourced',

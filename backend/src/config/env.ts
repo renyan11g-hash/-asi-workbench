@@ -18,6 +18,9 @@ const envSchema = z.object({
   // 访问保护（HTTP Basic Auth）：两项都配置才启用；留空 = 不鉴权（本地开发默认关闭）
   BASIC_AUTH_USER: z.string().default(''),
   BASIC_AUTH_PASS: z.string().default(''),
+
+  // 机器调用令牌：外部定时任务（GitHub Actions）用 x-sync-token 访问，留空则禁用该通道
+  SYNC_TOKEN: z.string().default(''),
 })
 
 const parseEnv = () => {

@@ -30,4 +30,7 @@ services:
         sync: false
       - key: BASIC_AUTH_PASS
         sync: false
+      # 外部定时任务（GitHub Actions）用它代替密码访问导入接口；留空则该通道关闭
+      - key: SYNC_TOKEN
+        sync: false
     healthCheckPath: /api/health

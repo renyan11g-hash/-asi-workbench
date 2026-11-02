@@ -1,0 +1,40 @@
+name: 每日自动选品
+
+# 每天北京时间 08:00（= UTC 00:00）跑一次；也可以手动触发。
+# 所有重活（搜 1688、抓详情）在 GitHub 的机器上做，你的 Render 实例只负责接收结果。
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: '本次最多导入几条'
+        required: false
+        default: '5'
+      keywords:
+        description: '自定义搜索词（逗号分隔，留空用内置池）'
+        required: false
+        default: ''
+
+concurrency:
+  group: daily-sourcing
+  cancel-in-progress: false
+
+jobs:
+  sourcing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 跑选品脚本
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          LIMIT: ${{ github.event.inputs.limit || '5' }}
+          KEYWORDS: ${{ github.event.inputs.keywords }}
+        run: node scripts/daily-sourcing.mjs

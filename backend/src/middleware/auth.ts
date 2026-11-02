@@ -35,6 +35,12 @@ export const basicAuth: RequestHandler = (req, res, next) => {
   const path = req.path
   if (PUBLIC_PATHS.some((p) => path === p || path.startsWith(`${p}/`))) return next()
 
+  // 机器调用：GitHub Actions 等外部任务用 x-sync-token 代替 Basic（密码不适合放进 workflow 日志）
+  if (env.SYNC_TOKEN) {
+    const token = req.get('x-sync-token') ?? ''
+    if (token && safeEqual(token, env.SYNC_TOKEN)) return next()
+  }
+
   const header = req.headers.authorization ?? ''
   if (header.startsWith('Basic ')) {
     let decoded = ''
