@@ -140,7 +140,7 @@ git push -u origin main
 | `NODE_ENV` | `production` |
 | `PORT` | `3000` |
 | `DATA_DIR` | `/tmp/data` |
-| `CORS_ORIGIN` | `*` |
+| `CORS_ORIGIN` | `https://asi-workbench.onrender.com`（换成你自己的线上域名；本地开发用 `*`） |
 | `BASIC_AUTH_USER` | 你想要的登录名（如 `asi`） |
 | `BASIC_AUTH_PASS` | 强密码（建议 16 位以上随机串） |
 

@@ -16,7 +16,9 @@ services:
       - key: DATA_DIR
         value: /tmp/data
       - key: CORS_ORIGIN
-        value: "*"
+        value: https://asi-workbench.onrender.com
+      # 注：已收紧为自有域名（原来是 *）。若以后绑定自定义域名，这里和 Render 的
+      # 环境变量都要同步改成新域名，否则前端跨域请求会被浏览器拦掉。
       # Turso 云数据库：在 Render Dashboard 填入实际值（数据持久化必需）
       - key: LIBSQL_URL
         sync: false
