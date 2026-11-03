@@ -101,11 +101,21 @@ function spreadScoreOf(p25: number, p75: number, median: number): number {
   return 30
 }
 
+/** 只依赖最小形状，避免 @types/node 版本差异导致 fetch 类型缺失（本地没有 tsc 可验） */
+type SimpleResponse = { ok: boolean; text(): Promise<string> }
+type SimpleFetch = (
+  url: string,
+  init?: { signal?: unknown; headers?: Record<string, string> }
+) => Promise<SimpleResponse>
+
+const nativeFetch = (globalThis as unknown as { fetch?: SimpleFetch }).fetch
+
 async function fetchRss(query: string, timeoutMs: number): Promise<string | null> {
+  if (!nativeFetch) return null
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const res = await fetch(ENDPOINT + encodeURIComponent(query), {
+    const res = await nativeFetch(ENDPOINT + encodeURIComponent(query), {
       signal: ctrl.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',

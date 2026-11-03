@@ -7,6 +7,7 @@ import {
   SearchCheck,
   Settings as SettingsIcon,
   ShoppingBag,
+  Sparkles,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
