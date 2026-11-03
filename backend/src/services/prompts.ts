@@ -2,7 +2,7 @@ import { Settings, SourceInfo, Evaluation, Listing, SimilarResearch } from '../t
 import { ASI_CATEGORIES, ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { costSummaryForPrompt, convertUnits } from './pricing'
-import { recommendImprintMethods } from './imprint-recommend'
+import { formatImprintConstraint } from './imprint-recommend'
 import type { MarketSnapshot } from './market-probe'
 
 /**
@@ -124,7 +124,7 @@ ASI Listing field rules (strict):
 - Themes: choose EXACTLY 5 from the ASI themes list below; ALWAYS include "Anniversary" and "Sustainable" as two of the five (they are universal); the other 3 must genuinely match this product's audience/use case.
 - Material: choose ONE OR MORE from the ASI material list (max 4), joined by English comma (e.g. "Stainless Steel, Aluminum"). Pick every material actually present in the product.
 - Colors: translate each Chinese color into its ASI English equivalent and join with "/" (e.g. "Black/Gray/Brown/Orange/Army Green").
-- Imprint Methods: choose from the ASI imprint methods list below. ALWAYS include exactly these three: "Silkscreen", "Unimprinted", and "Full Color". Then add as many additional methods as the product's MATERIAL genuinely supports (Laser Engraved/Etched only for metal/wood/leather; Embroidered only for fabric; Sublimation only for polyester/coated surfaces; Debossed/Foil Stamped only for leather/paper; Pad Print for curved small surfaces). Never add a method the material cannot support.
+- Imprint Methods: choose from the ASI imprint methods list below. ALWAYS include exactly these three: "Silkscreen", "Unimprinted", and "Full Color". Then add only methods from the MATERIAL CONSTRAINT block supplied below — that block is computed from this product's actual material and is authoritative; never add a method listed there as unusable.
 - Imprint Area: estimate the printable area in inches for each printable face (Front/Back/Wrap), e.g. 'Front: 2.5" W x 2" H; Wrap: 8" W x 3" H'. Use the uploaded product images + size data.
 - Do NOT invent certifications (FDA, UL, CPSIA, BPA-free, etc.) unless the 1688 source explicitly states them.
 - Do NOT mention brand names, licensed characters, or trademarks.
@@ -162,6 +162,10 @@ HOW TO USE THIS EVIDENCE:
 `
     : ''
 
+  // 印刷方式同理：把材质驱动规则引擎的结论直接给它，别让模型自己推算材质适配性
+  const imprintBlock = `${formatImprintConstraint(source)}
+ASI IMPRINT METHODS (exact strings ONLY): ${ASI_IMPRINT_METHODS.join(', ')}`
+
   const user = `Evaluate this 1688 product for the US promotional products (ASI) market.
 
 PRODUCT DATA
@@ -182,6 +186,8 @@ PRODUCT DATA
 
 ${marketBlock}COST MODEL (already calculated)
 ${costSummaryForPrompt(source, settings)}
+
+${imprintBlock}
 
 OUTPUT JSON SCHEMA (all fields required):
 {
@@ -250,8 +256,8 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
   const categoriesPick = pickRelevantCategories(source, 80).join(', ')
   const materialsPick = ASI_MATERIALS.join(', ')
   const imprintsPick = ASI_IMPRINT_METHODS.join(', ')
-  // 印刷方式材质驱动：先用本地规则引擎按 1688 材质描述算出兼容方法，AI 只能在此基础上补充
-  const imprintRecoPick = recommendImprintMethods(source).recommendations.map((r) => r.method).join(', ')
+  // 印刷方式材质驱动：先用本地规则引擎按 1688 材质算出「能用/必含/绝不能用」，AI 只在该集合里挑
+  const imprintConstraint = formatImprintConstraint(source)
 
   const answersBlock = answers?.length
     ? `\n\nANSWERS FROM THE SALESPERSON (use as the source of truth for selling points; do NOT add anything not stated here):\n${answers
@@ -296,8 +302,8 @@ REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)
 - ASI Themes (exactly 5, MUST include 'Anniversary' and 'Sustainable'): ${themesPick}
   The other 3 themes must GENUINELY match this product's audience/use case (e.g. camping gear → 'Camping', 'Outdoor'; office giveaway → 'Corporate', 'Trade Show'). Do NOT pad with unrelated themes.
 - ASI Materials (one or more, max 4): ${materialsPick}
-- ASI Imprint Methods (REQUIRED: 'Silkscreen', 'Unimprinted', 'Full Color', then extras): ${imprintsPick}
-  MATERIAL CONSTRAINT — based on this product's material, the compatible methods are: ${imprintRecoPick || 'Silkscreen, Full Color, Heat Transfer'}. Add extras ONLY from compatible ones (e.g. Laser Engraved/Etched only for metal/wood/leather; Embroidered only for fabric; Sublimation only for polyester or coated surfaces; Debossed/Foil Stamped only for leather/paper). Never add a method the material cannot support.
+- ASI Imprint Methods (exact strings ONLY, never invent one): ${imprintsPick}
+  ${imprintConstraint}
 - Color style: translate each Chinese color to its ASI English form, join with "/" (e.g. "Black/Gray/Brown/Orange/Army Green").
 
 KEYWORD SEED LIBRARY (high-frequency US promo terms, drawn from asinseed / Amazon promo research, already deduplicated; pick only ones that are RELEVANT to this product, do NOT stuff):
@@ -395,6 +401,10 @@ Respond with STRICT JSON only (no markdown, no commentary). Output the FULL upda
 
 CURRENT EVALUATION (this is the baseline — you may keep, adjust, or rewrite any field based on the conversation):
 ${JSON.stringify(currentEval, null, 2)}
+
+${formatImprintConstraint(source)}
+ASI IMPRINT METHODS (exact strings ONLY): ${ASI_IMPRINT_METHODS.join(', ')}
+When the conversation touches imprint methods, follow the MATERIAL CONSTRAINT above as FACT — do not invent a method it rules out, and explain the limitation in Chinese if the salesperson asks for one.
 
 CONVERSATION
 ${conv || '(no messages yet)'}
@@ -638,7 +648,7 @@ Respond with STRICT JSON only (no markdown, no commentary):
 CURRENT LISTING (may be partial)
 ${JSON.stringify(listing ?? {}, null, 2)}
 
-CONVERSATION
+${scopeFields?.includes('imprintMethods') ? `${formatImprintConstraint(source)}\nASI IMPRINT METHODS (exact strings ONLY): ${ASI_IMPRINT_METHODS.join(', ')}\n` : ''}CONVERSATION
 ${conv || '(no messages yet — greet briefly and summarize what you can already do)'}
 
 Rules:
@@ -669,9 +679,7 @@ export function buildFieldsRegeneratePrompt(
       : '',
     needsThemes ? `ASI THEMES (exact strings ONLY):\n${ASI_THEMES.join(', ')}` : '',
     needsImprints
-      ? `ASI IMPRINT METHODS (exact strings ONLY): ${ASI_IMPRINT_METHODS.join(', ')}\nMATERIAL CONSTRAINT — based on this product's material, the compatible methods are: ${
-          recommendImprintMethods(source).recommendations.map((r) => r.method).join(', ') || 'Silkscreen, Full Color, Heat Transfer'
-        }. Add extras ONLY from compatible ones; never add a method the material cannot support.`
+      ? `ASI IMPRINT METHODS (exact strings ONLY): ${ASI_IMPRINT_METHODS.join(', ')}\n${formatImprintConstraint(source)}`
       : '',
   ]
     .filter(Boolean)

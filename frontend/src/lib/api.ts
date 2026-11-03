@@ -5,6 +5,7 @@ import {
   DashboardOverview,
   EmailDraft,
   Evaluation,
+  ImprintRecommendResult,
   Inquiry,
   InquiryStatus,
   Listing,
@@ -353,21 +354,7 @@ export const api = {
   },
 
   // ---------- 印刷方式推荐（本地规则引擎，无需 AI） ----------
-  async imprintRecommend(
-    source: SourceInfo
-  ): Promise<{
-    recommendations: Array<{
-      id: string
-      nameZh: string
-      why: string
-      pros: string[]
-      cons: string[]
-      bestFor: string
-    }>
-    materialProfiles: Array<{ name: string; nameZh: string; pros: string[]; cons: string[] }>
-    materialTags: string[]
-    summary: string
-  }> {
+  async imprintRecommend(source: SourceInfo): Promise<ImprintRecommendResult> {
     const { data } = await apiClient.post('/products/imprint-recommend', { source })
     return data
   },

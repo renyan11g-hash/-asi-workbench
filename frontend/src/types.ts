@@ -84,6 +84,35 @@ export interface SimilarResearch {
   generatedAt?: string
 }
 
+/** 印刷方式推荐（材质驱动规则引擎的输出） */
+export interface ImprintRecommendationItem {
+  /** ASI 枚举值（英文，写入 ESP 用这个） */
+  method: string
+  nameZh: string
+  /** 3 首选 / 2 适合 / 1 有条件 / 0 平台必含但本例未必最优 */
+  score: number
+  tier: 'required' | 'primary' | 'suitable' | 'conditional'
+  why: string
+  pros: string[]
+  cons: string[]
+  bestFor: string
+  /** 条件/风险提示 */
+  caveat?: string
+  matchedMaterials: string[]
+  required?: boolean
+}
+
+export interface ImprintRecommendResult {
+  recommendations: ImprintRecommendationItem[]
+  /** 明确不适用 + 原因 */
+  excluded: Array<{ method: string; nameZh: string; reason: string }>
+  materialProfiles: Array<{ name: string; nameZh: string; pros: string[]; cons: string[] }>
+  materialTags: string[]
+  families: string[]
+  summary: string
+  materialDetected: boolean
+}
+
 export interface PriceRow {
   qty: number
   billableKg: number

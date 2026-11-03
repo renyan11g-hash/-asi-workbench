@@ -42,8 +42,16 @@ import { api, getErrorMessage } from '@/lib/api'
 import { formatMarketHits } from '@/lib/market-format'
 import { useProducts, useSettings } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
-import { EMPTY_SOURCE, Evaluation, PriceRow, SourceInfo } from '@/types'
+import { EMPTY_SOURCE, Evaluation, ImprintRecommendResult, PriceRow, SourceInfo } from '@/types'
 import { GLS_CATEGORIES } from '@/constants/gls-categories'
+
+/** 印刷方式推荐的分组样式：首选 / 适合 / 有条件 / 平台必含 */
+const TIER_META: Record<string, { label: string; cls: string }> = {
+  primary: { label: '首选', cls: 'bg-emerald-100 text-emerald-700' },
+  suitable: { label: '适合', cls: 'bg-blue-100 text-blue-700' },
+  conditional: { label: '有条件', cls: 'bg-amber-100 text-amber-700' },
+  required: { label: '平台必含', cls: 'bg-slate-200 text-slate-600' },
+}
 
 function Field({
   label,
@@ -140,12 +148,7 @@ export default function Sourcing() {
 
   // ---------- 新功能状态 ----------
   const [busyImprint, setBusyImprint] = useState(false)
-  const [imprintRec, setImprintRec] = useState<{
-    recommendations: Array<{ id: string; nameZh: string; why: string; pros: string[]; cons: string[]; bestFor: string }>
-    materialProfiles: Array<{ name: string; nameZh: string; pros: string[]; cons: string[] }>
-    materialTags: string[]
-    summary: string
-  } | null>(null)
+  const [imprintRec, setImprintRec] = useState<ImprintRecommendResult | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
   const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
   const [chatInput, setChatInput] = useState('')
@@ -1422,42 +1425,84 @@ export default function Sourcing() {
             title="印刷方式推荐（按材质适配）"
             hint={imprintRec.summary}
             right={
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  navigator.clipboard.writeText(
-                    imprintRec.recommendations
-                      .map((r, i) => `${i + 1}. ${r.nameZh}：${r.why}\n   优点：${r.pros.join('、')}\n   缺点：${r.cons.join('、')}`)
-                      .join('\n')
-                  )
-                  toast.success('已复制')
-                }}
-              >
-                <Copy className="mr-1 h-3 w-3" /> 复制
-              </Button>
+              <div className="flex gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    // 直接复制成 ESP 的 Imprint Method 字段格式：英文 / 分隔、无空格
+                    const picked = imprintRec.recommendations
+                      .filter((r) => r.required || r.tier !== 'conditional')
+                      .map((r) => r.method)
+                    const required = ['Silkscreen', 'Unimprinted', 'Full Color']
+                    const merged = Array.from(new Set([...required, ...picked]))
+                    navigator.clipboard.writeText(merged.join('/'))
+                    toast.success(`已复制 ${merged.length} 项（可直接粘到 Imprint Method）`)
+                  }}
+                >
+                  <Copy className="mr-1 h-3 w-3" /> 复制英文
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    navigator.clipboard.writeText(
+                      imprintRec.recommendations
+                        .map((r, i) => `${i + 1}. ${r.method}（${r.nameZh}）：${r.why}\n   优点：${r.pros.join('、')}\n   缺点：${r.cons.join('、')}`)
+                        .join('\n')
+                    )
+                    toast.success('已复制')
+                  }}
+                >
+                  复制说明
+                </Button>
+              </div>
             }
           >
             <div className="space-y-3">
               {imprintRec.recommendations.map((r, i) => (
-                <div key={r.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <div className="flex items-center gap-2">
+                <div key={r.method} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white">
                       {i + 1}
                     </span>
-                    <span className="text-sm font-semibold text-slate-800">{r.nameZh}</span>
+                    <span className="text-sm font-semibold text-slate-800">{r.method}</span>
+                    <span className="text-[11px] text-slate-500">{r.nameZh}</span>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${TIER_META[r.tier].cls}`}>
+                      {TIER_META[r.tier].label}
+                    </span>
+                    {r.required ? (
+                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-600">ESP 必含</span>
+                    ) : null}
                     <span className="text-[11px] text-slate-400">{r.bestFor}</span>
                   </div>
                   <p className="mt-1.5 text-[12px] leading-relaxed text-slate-600">
                     <span className="font-medium text-slate-700">为什么适合：</span>
                     {r.why}
                   </p>
+                  {r.caveat ? (
+                    <p className="mt-1 text-[11px] leading-relaxed text-amber-700">⚠ 前提：{r.caveat}</p>
+                  ) : null}
                   <div className="mt-1.5 grid gap-1 text-[11px] sm:grid-cols-2">
                     <div className="text-emerald-700">✓ {r.pros.join('；')}</div>
                     <div className="text-amber-700">✗ {r.cons.join('；')}</div>
                   </div>
                 </div>
               ))}
+              {imprintRec.excluded?.length > 0 && (
+                <div className="rounded-md border border-rose-200 bg-rose-50/60 px-3 py-2">
+                  <div className="mb-1 text-[11px] font-semibold text-rose-700">
+                    这款材质不适用的工艺（别选）
+                  </div>
+                  <div className="space-y-0.5 text-[11px] leading-relaxed text-rose-700/90">
+                    {imprintRec.excluded.map((e) => (
+                      <div key={e.method}>
+                        ✗ {e.method}（{e.nameZh}）— {e.reason}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {imprintRec.materialProfiles?.length > 0 && (
                 <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
                   <div className="mb-1 text-[11px] font-semibold text-slate-700">材质分析（优缺点）</div>
