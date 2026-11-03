@@ -297,24 +297,84 @@ export function heuristicEvaluate(source: SourceInfo, settings: Settings): Evalu
   }
 }
 
-/** 用 AI 把中文品名翻成海外买家会搜的英文词组（拿不到就退回 amazonTitle） */
-async function marketSearchTerms(source: SourceInfo, settings: Settings): Promise<string[]> {
+/** 中文品名 → 英文搜索词（AI 翻不出来时的兜底，覆盖常见促销礼品品类） */
+const ZH_EN_QUERIES: Array<[RegExp, string]> = [
+  [/托特|帆布包|购物袋|手提袋/, 'tote bag'],
+  [/保温杯|真空杯|焖烧|焖烧罐/, 'insulated tumbler'],
+  [/马克杯|陶瓷杯/, 'ceramic mug'],
+  [/杯垫|锅垫/, 'silicone coaster'],
+  [/行李牌|登机牌|挂牌/, 'luggage tag'],
+  [/棒球帽|鸭舌帽|遮阳帽/, 'baseball cap'],
+  [/笔记本|记事本|便签本/, 'notebook'],
+  [/毛巾/, 'towel'],
+  [/瑜伽垫/, 'yoga mat'],
+  [/野餐垫|防潮垫|地垫/, 'picnic blanket'],
+  [/颈枕|U型枕|u型枕|护颈枕/, 'neck pillow'],
+  [/鼠标垫/, 'mouse pad'],
+  [/雨伞|折叠伞/, 'umbrella'],
+  [/背包|双肩包|书包/, 'backpack'],
+  [/钥匙扣|钥匙链/, 'keychain'],
+  [/水壶|运动水壶|水瓶/, 'water bottle'],
+  [/圆珠笔|中性笔|签字笔|铅笔/, 'pen'],
+  [/保温袋|冰包|冷藏包|保温包/, 'cooler bag'],
+  [/化妆包|洗漱包|收纳包|旅行包/, 'travel organizer'],
+  [/束口袋|抽绳袋/, 'drawstring bag'],
+  [/手机支架|手机座/, 'phone stand'],
+  [/充电宝|移动电源/, 'power bank'],
+  [/数据线|充电线/, 'charging cable'],
+  [/手电筒/, 'flashlight'],
+  [/手套/, 'gloves'],
+  [/围巾/, 'scarf'],
+  [/桌垫|餐垫/, 'placemat'],
+  [/徽章|胸针/, 'lapel pin'],
+  [/挂绳/, 'lanyard'],
+  [/行李|旅行收纳|折叠/, 'travel organizer'],
+]
+
+function zhToEnQueries(title: string): string[] {
+  const hits: string[] = []
+  for (const [re, en] of ZH_EN_QUERIES) {
+    if (re.test(title) && !hits.includes(en)) hits.push(en)
+  }
+  return hits.slice(0, 2)
+}
+
+/** 用 AI 把中文品名翻成海外买家会搜的英文词组；失败时退回 amazonTitle / 本地词表，并说明原因 */
+async function marketSearchTerms(
+  source: SourceInfo,
+  settings: Settings
+): Promise<{ queries: string[]; why: string }> {
   const ascii = (s: string) => s.replace(/[^\x20-\x7E]/g, ' ').replace(/\s+/g, ' ').trim()
   const fallback = ascii(source.amazonTitle || '')
-  if (!settings.aiApiKey?.trim()) return fallback ? [fallback.slice(0, 60)] : []
-  try {
-    const d = await callChatJson<{ queries?: string[] }>(
-      settings,
-      '你是美国促销礼品选品员。把产品翻译成海外买家在 4imprint 上会搜的英文词组。只输出 JSON：{"queries":["...","..."]}，2 个，每个 2-4 个英文单词，不要品牌名，不要中文。',
-      `产品名：${source.sourceTitle}\n材质：${source.materialCn || '(未知)'}\n描述：${(source.description || '').slice(0, 200)}`,
-      0.2
-    )
-    const q = (d?.queries ?? []).map((s) => ascii(String(s))).filter(Boolean).slice(0, 2)
-    if (q.length) return q
-  } catch {
-    /* 翻译失败就用兜底 */
+  const userText = `产品名：${source.sourceTitle}\n材质：${source.materialCn || '(未知)'}\n描述：${(source.description || '').slice(0, 200)}`
+
+  if (!settings.aiApiKey?.trim()) {
+    const q = fallback ? [fallback.slice(0, 60)] : zhToEnQueries(source.sourceTitle)
+    return { queries: q, why: q.length ? '' : '未配置 AI，且无法从品名推断英文搜索词' }
   }
-  return fallback ? [fallback.slice(0, 60)] : []
+
+  let lastRaw = ''
+  // 第一次中文提示；若模型仍回中文（被 ascii 过滤成空），换一条纯英文提示再试一次
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const system =
+      attempt === 0
+        ? '你是美国促销礼品选品员。把产品翻译成海外买家在 4imprint 上会搜的英文词组。只输出 JSON：{"queries":["...","..."]}，2 个，每个 2-4 个英文单词，不要品牌名，不要中文。'
+        : 'Output STRICT JSON only: {"queries":["english phrase","english phrase"]}. Two short English search phrases (2-4 words each) describing this product for a US promotional-products catalog. English letters only, no Chinese, no brand names.'
+    try {
+      const d = await callChatJson<{ queries?: unknown }>(settings, system, userText, 0.2)
+      lastRaw = JSON.stringify(d ?? null).slice(0, 200)
+      const list = Array.isArray(d?.queries) ? (d.queries as unknown[]) : []
+      const q = list.map((s) => ascii(String(s))).filter(Boolean).slice(0, 2)
+      if (q.length) return { queries: q, why: '' }
+    } catch (e) {
+      lastRaw = (e as Error)?.message ?? ''
+    }
+  }
+
+  if (fallback) return { queries: [fallback.slice(0, 60)], why: '' }
+  const dict = zhToEnQueries(source.sourceTitle)
+  if (dict.length) return { queries: dict, why: '' }
+  return { queries: [], why: `翻译没给出英文词（AI 返回：${lastRaw || '空'}）` }
 }
 
 export async function evaluateSource(source: SourceInfo, settings: Settings): Promise<Evaluation> {
@@ -324,11 +384,11 @@ export async function evaluateSource(source: SourceInfo, settings: Settings): Pr
   let market: MarketSnapshot | null = null
   let marketError = ''
   try {
-    const queries = await marketSearchTerms(source, settings)
-    if (!queries.length) {
-      marketError = '没能把品名翻成英文搜索词'
+    const terms = await marketSearchTerms(source, settings)
+    if (!terms.queries.length) {
+      marketError = terms.why || '没能把品名翻成英文搜索词'
     } else {
-      const diag = await probeWithDiag(queries)
+      const diag = await probeWithDiag(terms.queries)
       market = diag.snapshot
       if (!market) marketError = diag.error ?? '未取到海外同款数据'
     }
