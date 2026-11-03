@@ -1,6 +1,6 @@
 import Jimp from 'jimp'
 import { AiError } from './ai'
-import { detectProductBox, inflateBox, normalizeWhiteBackground } from './image-post'
+import { CANVAS_SIZE, detectProductBox, normalizeWhiteBackground } from './image-post'
 
 /**
  * 尺寸图程序化标注：
@@ -8,10 +8,13 @@ import { detectProductBox, inflateBox, normalizeWhiteBackground } from './image-
  * Jimp 原生绘图 API 直接叠加，保证数字 100% 精确（AI 直接画数字经常出错）。
  *
  * 关键设计（2026-11 重写）：
- *  1. **先扩画布**：无论 AI 出图留白多少，一律往四周扩出足够的白边，
- *     尺寸线和数字只画在这圈新增的空白里 —— 物理上不可能压到产品上。
+ *  0. **画布固定 1200×1200**（ESP 上传要求方图），任何情况下成品尺寸都不变。
+ *  1. 画布不能变大，那就把产品**等比缩进可用区**：按产品包围盒算缩放比，
+ *     四周留出的白边正好用来画尺寸线 —— 标注线物理上不可能压到产品上。
  *     旧实现是在原图上找空隙画，空隙不够时 pad 被压缩到 12px，仍会贴住甚至压住产品。
- *  2. 标注前先把外圈刷成纯白，保证成品是 ASI 目录要求的纯白底。
+ *  2. 标注前先把背景刷成纯白，保证成品是 ASI 目录要求的纯白底。
+ *  3. 数字先渲染量尺寸，再反推可用区宽度 —— 保证标签一定放得下、不被裁掉。
+ *  4. 方向（宽/高）必须在渲染数字之前用包围盒长宽比定下来，否则数字会和线标反。
  *  3. 数字先渲染量尺寸，再决定留白宽度 —— 保证标签一定放得下、不被裁掉。
  *  4. 包围盒外扩 2% 再画线，避免箭头尖端顶到产品边缘。
  */
@@ -105,26 +108,31 @@ async function renderText(text: string): Promise<{ img: Jimp; w: number; h: numb
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi))
 
-/** 画尺寸线 + 文字：先扩白边再画，线与数字永远在产品框外 */
+/**
+ * 画尺寸线 + 文字。
+ *
+ * 画布固定 1200×1200（ESP 上传要求），所以不能靠"往外扩画布"腾地方，
+ * 而是反过来：**按包围盒把产品等比缩进可用区**，四周留出的白边正好用来画标注线。
+ * 这样既不改变成品尺寸，又保证标注永远落在产品框外。
+ */
 export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promise<Buffer> {
-  const img: Jimp = await Jimp.read(input).catch(() => {
+  const src: Jimp = await Jimp.read(input).catch(() => {
     throw new AiError('尺寸图叠加失败：无法解析生成的图片')
   })
 
   // 1) 先量包围盒（必须在刷白之前：刷白会把"浅色产品 vs 浅灰底"的差异抹平）
-  const raw = detectProductBox(img, 14)
-  const W = img.bitmap.width
-  const H = img.bitmap.height
-  const minDim = Math.min(W, H)
-  // 外扩 2%：箭头尖端不顶到产品
-  const box = inflateBox(raw, Math.round(minDim * 0.02), W, H)
-
+  const raw = detectProductBox(src, 14)
   // 2) 统一成纯白背景（标注区必须是干净白底）
-  normalizeWhiteBackground(img, 0.14)
+  normalizeWhiteBackground(src, 0.14)
 
-  // 3) 标注方向与图片里的实际朝向对齐：AI 摆放朝向不可控
-  const boxW = box.right - box.left
-  const boxH = box.bottom - box.top
+  const S = CANVAS_SIZE
+  const fmt = (n: number) => (Math.round(n * 10) / 10).toFixed(1)
+
+  const boxW = Math.max(1, raw.right - raw.left)
+  const boxH = Math.max(1, raw.bottom - raw.top)
+
+  // 3) 标注方向与图片里的实际朝向对齐：AI 摆放朝向不可控。
+  //    必须在渲染文字之前定下来，否则数字和线会标反。
   let widthIn = spec.widthIn
   let heightIn = spec.heightIn
   if (
@@ -133,56 +141,69 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
   ) {
     ;[widthIn, heightIn] = [heightIn, widthIn]
   }
-  const fmt = (n: number) => (Math.round(n * 10) / 10).toFixed(1)
 
-  // 3) 先把文字渲染出来量尺寸，再决定画布留白宽度（保证标签放得下）
+  // 4) 先把文字渲染出来量尺寸，再反推可用区（保证标签一定放得下、不被裁）
   const wText = await renderText(`${fmt(widthIn)} in`)
   const hText = await renderText(`${fmt(heightIn)} in`)
   hText.img.rotate(90, true) // 顺时针 90°：文字自上而下
   const hw = hText.img.bitmap.width
   const hh = hText.img.bitmap.height
 
-  const gap = Math.max(10, Math.round(minDim * 0.035)) // 线到产品的间距
-  const basePad = Math.max(8, Math.round(minDim * 0.03)) // 画布最小外边距
-  const depthPad = spec.depthIn && spec.depthIn > 0 ? Math.round(minDim * 0.10) : 0 // 深度斜线要的空间
+  const gap = Math.round(S * 0.030) // 线到产品框的间距
+  const basePad = Math.round(S * 0.030) // 画布最外边距
+  const hasDepth = Boolean(spec.depthIn && spec.depthIn > 0)
+  const depthPad = hasDepth ? Math.round(S * 0.11) : 0 // 左上斜深度线要的空间
   const padLeft = basePad + depthPad
   const padTop = basePad + depthPad
   const padRight = gap + 8 + hw + basePad
   const padBottom = gap + 8 + wText.h + basePad
 
-  const canvas = new Jimp(W + padLeft + padRight, H + padTop + padBottom, WHITE_BG)
-  canvas.composite(img, padLeft, padTop)
+  const availW = S - padLeft - padRight
+  const availH = S - padTop - padBottom
 
-  const left = box.left + padLeft
-  const right = box.right + padLeft
-  const top = box.top + padTop
-  const bottom = box.bottom + padTop
+  // 按包围盒（而不是整张图）缩放：产品能占到最大，图里原有的大片留白被消化掉
+  const scale = Math.min(availW / boxW, availH / boxH)
 
-  // 4) 底部：宽度线（画在产品下方的白边里）
-  const yW = bottom + gap
+  // 5) 画布固定 1200×1200：产品等比缩放后，包围盒在可用区内居中
+  const canvas = new Jimp(S, S, WHITE_BG)
+  const dw = Math.max(1, Math.round(src.bitmap.width * scale))
+  const dh = Math.max(1, Math.round(src.bitmap.height * scale))
+  const scaled = src.clone().scaleToFit(dw, dh)
+  const destX = Math.round(padLeft + (availW - boxW * scale) / 2 - raw.left * scale)
+  const destY = Math.round(padTop + (availH - boxH * scale) / 2 - raw.top * scale)
+  canvas.composite(scaled, destX, destY)
+
+  // 6) 缩放后产品框在画布上的位置（与 composite 用同一套取整）
+  const left = destX + Math.round(raw.left * scale)
+  const right = destX + Math.round(raw.right * scale)
+  const top = destY + Math.round(raw.top * scale)
+  const bottom = destY + Math.round(raw.bottom * scale)
+
+  // 5) 底部：宽度线（落在产品框下方的白边里）
+  const yW = Math.min(bottom + gap, S - basePad - 8 - wText.h)
   drawLine(canvas, left, yW, right, yW)
   drawArrow(canvas, left, yW, 'l')
   drawArrow(canvas, right, yW, 'r')
   {
-    const tx = clamp(Math.round((left + right) / 2 - wText.w / 2), 2, canvas.bitmap.width - wText.w - 2)
-    const ty = clamp(yW + 8, 2, canvas.bitmap.height - wText.h - 2)
+    const tx = clamp(Math.round((left + right) / 2 - wText.w / 2), 2, S - wText.w - 2)
+    const ty = clamp(yW + 8, 2, S - wText.h - 2)
     canvas.composite(wText.img, tx, ty)
   }
 
-  // 5) 右侧：高度线（画在产品右侧的白边里，文字旋转 90°）
-  const xH = right + gap
+  // 6) 右侧：高度线（落在产品框右侧的白边里，文字旋转 90°）
+  const xH = Math.min(right + gap, S - basePad - 8 - hw)
   drawLine(canvas, xH, top, xH, bottom)
   drawArrow(canvas, xH, top, 'u')
   drawArrow(canvas, xH, bottom, 'd')
   {
-    const tx = clamp(xH + 8, 2, canvas.bitmap.width - hw - 2)
-    const ty = clamp(Math.round((top + bottom) / 2 - hh / 2), 2, canvas.bitmap.height - hh - 2)
+    const tx = clamp(xH + 8, 2, S - hw - 2)
+    const ty = clamp(Math.round((top + bottom) / 2 - hh / 2), 2, S - hh - 2)
     canvas.composite(hText.img, tx, ty)
   }
 
-  // 6) 左上：深度线（斜 45°，只在留白够时画）
-  if (spec.depthIn && spec.depthIn > 0) {
-    const d = Math.round(minDim * 0.09)
+  // 7) 左上：深度线（斜 45°，只在留白够时画）
+  if (hasDepth && spec.depthIn) {
+    const d = Math.round(S * 0.09)
     const x1 = left
     const y1 = top
     const x2 = x1 - d
@@ -191,8 +212,8 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
       drawLine(canvas, x1, y1, x2, y2)
       drawArrow(canvas, x2, y2, 'u')
       const t = await renderText(`${fmt(spec.depthIn)} in`)
-      const tx = clamp(x2 - t.w - 6, 2, canvas.bitmap.width - t.w - 2)
-      const ty = clamp(y2 - t.h - 6, 2, canvas.bitmap.height - t.h - 2)
+      const tx = clamp(x2 - t.w - 6, 2, S - t.w - 2)
+      const ty = clamp(y2 - t.h - 6, 2, S - t.h - 2)
       canvas.composite(t.img, tx, ty)
     }
   }

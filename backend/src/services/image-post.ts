@@ -2,13 +2,16 @@ import Jimp from 'jimp'
 
 /**
  * 出图后处理（纯本地像素操作，不再调 AI）：
- *  1. 把**外圈空白**统一刷成纯白 —— 生图模型经常给一点点灰底/渐变，ASI 目录要求纯白
- *  2. 检测产品包围盒 —— 尺寸图要靠它把标注线画在产品外面，不能压在产品上
+ *  1. 统一成**纯白背景** —— 生图模型经常给一点点灰底/渐变，ASI 目录要求纯白
+ *  2. 统一成**固定 1200×1200 画布** —— ESP 上传要求方图，画布尺寸不能随生图结果浮动
+ *  3. 检测产品包围盒 —— 尺寸图要靠它把标注线画在产品外面，不能压在产品上
  *
- * 为什么只刷「外圈」而不做全图泛洪：
- * 白色产品和白背景同色，全图泛洪会把产品本身的浅色边缘一起吃掉（看起来像缺角）。
- * 而提示词已经要求四边留出 ≥12% 空白，所以只清理这一圈是最安全的做法。
+ * 刷白为什么分档：白色产品和白背景同色，无脑泛洪会把产品本身的浅色边缘一起吃掉。
+ * 所以先估背景有多白，再决定是「只清外圈」还是「小容差全图刷」，彩色底一律不动。
  */
+
+/** 固定画布边长（像素）。ESP 要求方图，前端展示也按方图裁切，所以统一到这个尺寸 */
+export const CANVAS_SIZE = Number(process.env.IMAGE_CANVAS_SIZE) || 1200
 
 export interface Box {
   left: number
@@ -135,12 +138,30 @@ export function normalizeWhiteBackground(img: Jimp, bandRatio = 0.10): void {
   }
 }
 
-/** Buffer 入口：读图 → 统一白底 → 返回 PNG */
-export async function whitenImageBuffer(buf: Buffer, bandRatio = 0.10): Promise<Buffer> {
+/** Buffer 入口：读图 → 统一白底 → 统一 1200×1200（主图用） */
+export async function finalizeMainImage(buf: Buffer, bandRatio = 0.10): Promise<Buffer> {
   const img = await Jimp.read(buf).catch(() => null)
   if (!img) return buf // 解析不了就原样返回，绝不因为后处理把生成结果弄丢
   normalizeWhiteBackground(img, bandRatio)
-  return img.getBufferAsync(Jimp.MIME_PNG)
+  const squared = fitToCanvas(img)
+  return squared.getBufferAsync(Jimp.MIME_PNG)
+}
+
+/**
+ * 把图片等比缩放后居中放进固定画布（默认 1200×1200）：
+ * 不裁切、不变形，四周补纯白。已经是目标尺寸时直接返回，避免二次编码损失。
+ */
+export function fitToCanvas(img: Jimp, size = CANVAS_SIZE): Jimp {
+  const W = img.bitmap.width
+  const H = img.bitmap.height
+  if (W === size && H === size) return img
+  const canvas = new Jimp(size, size, 0xffffffff)
+  const s = Math.min(size / W, size / H)
+  const w = Math.max(1, Math.round(W * s))
+  const h = Math.max(1, Math.round(H * s))
+  const scaled = s === 1 ? img : img.clone().scaleToFit(w, h)
+  canvas.composite(scaled, Math.round((size - scaled.bitmap.width) / 2), Math.round((size - scaled.bitmap.height) / 2))
+  return canvas
 }
 
 /**
