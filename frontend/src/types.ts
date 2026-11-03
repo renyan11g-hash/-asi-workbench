@@ -48,6 +48,10 @@ export interface Evaluation {
   channels: string[]
   asiCategories: string[]
   suggestedThemes?: string[]
+  /** AI 建议的印刷方式（已按材质规则引擎过滤并补齐平台必含三项；旧数据没有） */
+  suggestedImprintMethods?: string[]
+  /** AI 建议的主材质（旧数据没有） */
+  suggestedMaterial?: string
   priceAdviceUsd: { min: number; max: number }
   sourcingTips: string
   listingHooks: string[]

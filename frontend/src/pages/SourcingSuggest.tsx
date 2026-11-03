@@ -380,6 +380,12 @@ export default function SourcingSuggest() {
                     ))}
                   </div>
                 )}
+                {quick.evaluation.suggestedImprintMethods?.length ? (
+                  <div className="mt-1">
+                    <span className="text-slate-400">建议印刷方式 </span>
+                    <span className="text-slate-700">{quick.evaluation.suggestedImprintMethods.join(' / ')}</span>
+                  </div>
+                ) : null}
                 {quick.evaluation.marketSnapshot && (
                   <div className="mt-1">
                     <span className="text-slate-400">海外同款 </span>

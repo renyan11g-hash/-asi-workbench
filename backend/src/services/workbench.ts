@@ -130,7 +130,11 @@ const materialCompatibleImprints = (source: SourceInfo, extras: string[]): strin
 const anchorTo = (v: number, base: number, span: number) =>
   Math.max(0, Math.min(100, Math.min(Math.max(v, base - span), base + span)))
 
-function normalizeEvaluation(raw: Record<string, unknown>, market?: MarketSnapshot | null): Evaluation {
+function normalizeEvaluation(
+  raw: Record<string, unknown>,
+  market?: MarketSnapshot | null,
+  source?: SourceInfo
+): Evaluation {
   const aiScore = Math.max(0, Math.min(100, Math.round(num(raw.score, 50))))
   // 有五个维度 → 总分由系统按权重算（可复现、可解释），AI 自评分只作兜底
   const parsed = parseBreakdown(raw.scoreBreakdown)
@@ -162,6 +166,25 @@ function normalizeEvaluation(raw: Record<string, unknown>, market?: MarketSnapsh
   const marketNote = market?.price
     ? `｜海外同款 ${market.matched}/${market.total} 条同类，list $${market.price.p25}–$${market.price.p75}`
     : ''
+
+  /*
+   * 印刷方式建议：AI 会自己挑，但必须过一遍材质规则引擎。
+   * 只在「材质已识别」时过滤——材质未知时的兜底集合很窄，拿它过滤反而会误删合理工艺。
+   */
+  const imprintSuggest = ((): string[] => {
+    const rawList = pickEnumMany(ASI_IMPRINT_METHODS, raw.suggestedImprintMethods ?? [])
+    let kept = rawList
+    if (source) {
+      const reco = recommendImprintMethods(source)
+      if (reco.materialDetected) {
+        const compatible = new Set(reco.recommendations.map((r) => r.method as string))
+        kept = rawList.filter((m) => compatible.has(m))
+      }
+    }
+    // 平台 QC 要求必含三项，评估建议里也带上，业务员一眼能看到最终要勾什么
+    return Array.from(new Set(['Silkscreen', 'Unimprinted', 'Full Color', ...kept]))
+  })()
+  const materialSuggest = String(raw.suggestedMaterial ?? '').trim()
 
   return {
     score,
@@ -202,6 +225,8 @@ function normalizeEvaluation(raw: Record<string, unknown>, market?: MarketSnapsh
     channels: arr(raw.channels),
     asiCategories: arr(raw.asiCategories),
     suggestedThemes: pickEnumMany(ASI_THEMES, raw.suggestedThemes ?? []),
+    suggestedImprintMethods: imprintSuggest,
+    ...(materialSuggest ? { suggestedMaterial: materialSuggest } : {}),
     priceAdviceUsd,
     sourcingTips: String(raw.sourcingTips ?? '').trim(),
     listingHooks: arr(raw.listingHooks),
@@ -478,7 +503,7 @@ export async function evaluateSource(
 
   const { system, user } = buildEvaluatePrompt(source, settings, market)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.3)
-  const evaluation = normalizeEvaluation(raw, market)
+  const evaluation = normalizeEvaluation(raw, market, source)
   if (!market && marketError) evaluation.marketError = marketError.slice(0, 200)
   return evaluation
 }
@@ -499,7 +524,7 @@ export async function chatEvaluateSource(
   }
   const { system, user } = buildChatEvaluationPrompt(source, currentEval, messages)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.4)
-  const evaluation = normalizeEvaluation(raw)
+  const evaluation = normalizeEvaluation(raw, null, source)
   // 把最后一条 assistant 内容作为对话气泡——重新解析
   return {
     evaluation,
