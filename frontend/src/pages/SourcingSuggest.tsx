@@ -357,6 +357,44 @@ export default function SourcingSuggest() {
                 <p className="text-[13px] leading-relaxed text-slate-600">{quick.evaluation.summary}</p>
               </div>
             </div>
+
+            {(quick.evaluation.scoreBreakdown ||
+              quick.evaluation.marketSnapshot ||
+              quick.evaluation.scoreNote) && (
+              <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-600">
+                {quick.evaluation.scoreBreakdown && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="text-slate-400">评分拆解</span>
+                    {[
+                      { k: '差异化', v: quick.evaluation.scoreBreakdown.differentiation },
+                      { k: '定制', v: quick.evaluation.scoreBreakdown.customization },
+                      { k: '物流', v: quick.evaluation.scoreBreakdown.shipping },
+                      { k: '竞争', v: quick.evaluation.scoreBreakdown.competition },
+                      { k: '合规', v: quick.evaluation.scoreBreakdown.compliance },
+                    ].map((d) => (
+                      <span key={d.k} className="tabular-nums">
+                        {d.k}{' '}
+                        <span className={d.v < 40 ? 'font-semibold text-rose-600' : 'font-semibold text-slate-800'}>{d.v}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {quick.evaluation.marketSnapshot && (
+                  <div className="mt-1">
+                    <span className="text-slate-400">海外同款 </span>
+                    <span className="text-slate-700">
+                      {quick.evaluation.marketSnapshot.total} 条 · list ${quick.evaluation.marketSnapshot.priceLow ?? '—'}–$
+                      {quick.evaluation.marketSnapshot.priceHigh ?? '—'}
+                    </span>
+                    {quick.evaluation.marketSnapshot.queries?.length ? (
+                      <span className="text-slate-400"> · 「{quick.evaluation.marketSnapshot.queries.join(' / ')}」</span>
+                    ) : null}
+                  </div>
+                )}
+                {quick.evaluation.scoreNote && <div className="mt-1 text-slate-500">{quick.evaluation.scoreNote}</div>}
+              </div>
+            )}
+
             {quick.evaluation.risks?.length ||
             quick.evaluation.cons?.length ||
             quick.evaluation.suggestions?.length ? (
