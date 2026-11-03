@@ -1,19 +1,19 @@
 import Jimp from 'jimp'
 import { AiError } from './ai'
+import { detectProductBox, inflateBox, normalizeWhiteBackground } from './image-post'
 
 /**
  * 尺寸图程序化标注：
- * AI 只负责生成"干净的产品图"（无文字无标线），尺寸线与 inch 数字由本模块用
+ * AI 只负责生成"干净的白底产品图"（无文字无标线），尺寸线与 inch 数字由本模块用
  * Jimp 原生绘图 API 直接叠加，保证数字 100% 精确（AI 直接画数字经常出错）。
  *
- * 注：早期版本用 SVG overlay + Jimp.read(Buffer.from(svg))，但 Jimp 不支持
- * SVG buffer 输入（报 "Could not find MIME for Buffer <null>"），故改为纯
- * Jimp 画线/箭头/文字（loadFont + print + rotate），不再依赖 SVG。
- *
- * 标注方式：产品包围盒（自动检测非白像素范围）四周画箭头尺寸线：
- *   - 底部：宽度 W in
- *   - 右侧：高度 H in
- *   - 左上：深度 D in（可选，仅当提供 depthIn）
+ * 关键设计（2026-11 重写）：
+ *  1. **先扩画布**：无论 AI 出图留白多少，一律往四周扩出足够的白边，
+ *     尺寸线和数字只画在这圈新增的空白里 —— 物理上不可能压到产品上。
+ *     旧实现是在原图上找空隙画，空隙不够时 pad 被压缩到 12px，仍会贴住甚至压住产品。
+ *  2. 标注前先把外圈刷成纯白，保证成品是 ASI 目录要求的纯白底。
+ *  3. 数字先渲染量尺寸，再决定留白宽度 —— 保证标签一定放得下、不被裁掉。
+ *  4. 包围盒外扩 2% 再画线，避免箭头尖端顶到产品边缘。
  */
 
 interface OverlaySpec {
@@ -25,42 +25,7 @@ interface OverlaySpec {
 const LINE_W = 6
 const ARROW_S = 18
 const INK = { r: 0x00, g: 0x00, b: 0x00, a: 255 } // 纯黑，保证清晰可见
-
-/** 检测产品包围盒：扫描非白色（且非透明）像素 */
-function detectBoundingBox(img: Jimp): { left: number; top: number; right: number; bottom: number } {
-  const { width, height } = img.bitmap
-  const data = img.bitmap.data
-  let left = width
-  let top = height
-  let right = -1
-  let bottom = -1
-  const threshold = 245 // 接近白色视为背景
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4
-      const r = data[i]
-      const g = data[i + 1]
-      const b = data[i + 2]
-      const a = data[i + 3]
-      if (a < 32) continue // 透明
-      if (r > threshold && g > threshold && b > threshold) continue // 白背景
-      if (x < left) left = x
-      if (x > right) right = x
-      if (y < top) top = y
-      if (y > bottom) bottom = y
-    }
-  }
-  if (right < 0) {
-    // 全白图：退化为中央 60% 区域
-    return {
-      left: Math.round(width * 0.2),
-      top: Math.round(height * 0.2),
-      right: Math.round(width * 0.8),
-      bottom: Math.round(height * 0.8),
-    }
-  }
-  return { left, top, right, bottom }
-}
+const WHITE_BG = 0xffffffff
 
 /* ---------- Jimp 原生绘图工具 ---------- */
 
@@ -138,16 +103,26 @@ async function renderText(text: string): Promise<{ img: Jimp; w: number; h: numb
   return { img: t, w: tw, h: th }
 }
 
-/** 画尺寸线 + 文字，直接叠加到原图（纯 Jimp，无 SVG） */
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi))
+
+/** 画尺寸线 + 文字：先扩白边再画，线与数字永远在产品框外 */
 export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promise<Buffer> {
-  const img = await Jimp.read(input).catch(() => {
+  const img: Jimp = await Jimp.read(input).catch(() => {
     throw new AiError('尺寸图叠加失败：无法解析生成的图片')
   })
-  const { width, height } = img.bitmap
-  const box = detectBoundingBox(img)
 
-  // 标注方向与产品在图中的朝向对齐：AI 摆放朝向不可控，若图片里竖放但数值"宽>高"
-  // （或横放但"高>宽"）则互换，保证底部线标视觉横向尺寸、右侧线标视觉纵向尺寸
+  // 1) 先量包围盒（必须在刷白之前：刷白会把"浅色产品 vs 浅灰底"的差异抹平）
+  const raw = detectProductBox(img, 14)
+  const W = img.bitmap.width
+  const H = img.bitmap.height
+  const minDim = Math.min(W, H)
+  // 外扩 2%：箭头尖端不顶到产品
+  const box = inflateBox(raw, Math.round(minDim * 0.02), W, H)
+
+  // 2) 统一成纯白背景（标注区必须是干净白底）
+  normalizeWhiteBackground(img, 0.14)
+
+  // 3) 标注方向与图片里的实际朝向对齐：AI 摆放朝向不可控
   const boxW = box.right - box.left
   const boxH = box.bottom - box.top
   let widthIn = spec.widthIn
@@ -158,67 +133,69 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
   ) {
     ;[widthIn, heightIn] = [heightIn, widthIn]
   }
-
-  // 尺寸线与产品保持明显间距（不与产品重叠），且不能贴出画布边缘：
-  // 先按产品包围盒向外扩 pad 作为线位置；若空间不足，再把线推回画布内并保证仍在线外留出箭头/文字空间
-  const pad = Math.round(Math.min(width, height) * 0.1) // 尺寸线与产品的最小间距
-  const margin = Math.round(Math.min(width, height) * 0.14) // 画布边缘留白（含箭头+文字）
   const fmt = (n: number) => (Math.round(n * 10) / 10).toFixed(1)
 
-  // 底部宽度线：优先放在产品下方 pad 处；画布下方空间不足时收紧 pad（但至少 12px，仍不与产品重叠）
-  const maxPadW = height - margin - LINE_W - box.bottom
-  const padW = Math.max(12, Math.min(pad, maxPadW))
-  const yW = box.bottom + padW
-  drawLine(img, box.left, yW, box.right, yW)
-  drawArrow(img, box.left, yW, 'l')
-  drawArrow(img, box.right, yW, 'r')
+  // 3) 先把文字渲染出来量尺寸，再决定画布留白宽度（保证标签放得下）
+  const wText = await renderText(`${fmt(widthIn)} in`)
+  const hText = await renderText(`${fmt(heightIn)} in`)
+  hText.img.rotate(90, true) // 顺时针 90°：文字自上而下
+  const hw = hText.img.bitmap.width
+  const hh = hText.img.bitmap.height
+
+  const gap = Math.max(10, Math.round(minDim * 0.035)) // 线到产品的间距
+  const basePad = Math.max(8, Math.round(minDim * 0.03)) // 画布最小外边距
+  const depthPad = spec.depthIn && spec.depthIn > 0 ? Math.round(minDim * 0.10) : 0 // 深度斜线要的空间
+  const padLeft = basePad + depthPad
+  const padTop = basePad + depthPad
+  const padRight = gap + 8 + hw + basePad
+  const padBottom = gap + 8 + wText.h + basePad
+
+  const canvas = new Jimp(W + padLeft + padRight, H + padTop + padBottom, WHITE_BG)
+  canvas.composite(img, padLeft, padTop)
+
+  const left = box.left + padLeft
+  const right = box.right + padLeft
+  const top = box.top + padTop
+  const bottom = box.bottom + padTop
+
+  // 4) 底部：宽度线（画在产品下方的白边里）
+  const yW = bottom + gap
+  drawLine(canvas, left, yW, right, yW)
+  drawArrow(canvas, left, yW, 'l')
+  drawArrow(canvas, right, yW, 'r')
   {
-    const label = `${fmt(widthIn)} in`
-    const t = await renderText(label)
-    let tx = Math.round((box.left + box.right) / 2 - t.w / 2)
-    let ty = yW + 8
-    if (ty + t.h > height) ty = yW - 8 - t.h // 下方放不下就放到线上方
-    tx = Math.max(0, Math.min(tx, Math.max(0, width - t.w)))
-    ty = Math.max(0, ty)
-    img.composite(t.img, tx, ty)
+    const tx = clamp(Math.round((left + right) / 2 - wText.w / 2), 2, canvas.bitmap.width - wText.w - 2)
+    const ty = clamp(yW + 8, 2, canvas.bitmap.height - wText.h - 2)
+    canvas.composite(wText.img, tx, ty)
   }
 
-  // 右侧高度线（文字旋转 90°，自上而下阅读）：同底部线逻辑，保证不与产品重叠且不出画布
-  const maxPadH = width - margin - LINE_W - box.right
-  const padH = Math.max(12, Math.min(pad, maxPadH))
-  const xH = box.right + padH
-  drawLine(img, xH, box.top, xH, box.bottom)
-  drawArrow(img, xH, box.top, 'u')
-  drawArrow(img, xH, box.bottom, 'd')
+  // 5) 右侧：高度线（画在产品右侧的白边里，文字旋转 90°）
+  const xH = right + gap
+  drawLine(canvas, xH, top, xH, bottom)
+  drawArrow(canvas, xH, top, 'u')
+  drawArrow(canvas, xH, bottom, 'd')
   {
-    const label = `${fmt(heightIn)} in`
-    const t = await renderText(label)
-    t.img.rotate(90, true) // 顺时针 90°：文字自上而下
-    const rw = t.img.bitmap.width
-    const rh = t.img.bitmap.height
-    let tx = xH + 8
-    if (tx + rw > width) tx = xH - 8 - rw // 右侧放不下就放到线左侧
-    const ty = Math.round((box.top + box.bottom) / 2 - rh / 2)
-    img.composite(t.img, Math.max(0, tx), Math.max(0, ty))
+    const tx = clamp(xH + 8, 2, canvas.bitmap.width - hw - 2)
+    const ty = clamp(Math.round((top + bottom) / 2 - hh / 2), 2, canvas.bitmap.height - hh - 2)
+    canvas.composite(hText.img, tx, ty)
   }
 
-  // 左上深度线（可选）：斜 45° 表示深度
+  // 6) 左上：深度线（斜 45°，只在留白够时画）
   if (spec.depthIn && spec.depthIn > 0) {
-    const d = Math.round(Math.min(width, height) * 0.12)
-    const x1 = box.left
-    const y1 = box.top
+    const d = Math.round(minDim * 0.09)
+    const x1 = left
+    const y1 = top
     const x2 = x1 - d
     const y2 = y1 - d
-    if (x2 > margin && y2 > margin) {
-      drawLine(img, x1, y1, x2, y2)
-      drawArrow(img, x2, y2, 'u')
-      const label = `${fmt(spec.depthIn)} in`
-      const t = await renderText(label)
-      const tx = Math.max(0, x2 - 8 - t.w)
-      const ty = Math.max(0, y2 - 8 - t.h)
-      img.composite(t.img, tx, ty)
+    if (x2 > 6 && y2 > 6) {
+      drawLine(canvas, x1, y1, x2, y2)
+      drawArrow(canvas, x2, y2, 'u')
+      const t = await renderText(`${fmt(spec.depthIn)} in`)
+      const tx = clamp(x2 - t.w - 6, 2, canvas.bitmap.width - t.w - 2)
+      const ty = clamp(y2 - t.h - 6, 2, canvas.bitmap.height - t.h - 2)
+      canvas.composite(t.img, tx, ty)
     }
   }
 
-  return img.getBufferAsync(Jimp.MIME_PNG)
+  return canvas.getBufferAsync(Jimp.MIME_PNG)
 }

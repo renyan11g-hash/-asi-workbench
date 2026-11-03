@@ -9,6 +9,7 @@ import { AiError } from '../services/ai'
 import { editImage, generateImage, ImageRef, ImageSettings, testImageConnection } from '../services/image-gen'
 import { buildImagePromptSet, buildIntroSuggestions, translateImageEditInstruction } from '../services/image-prompts'
 import { overlayDimensions } from '../services/dimension-overlay'
+import { whitenImageBuffer } from '../services/image-post'
 import { ProductImage, ProductImageKind, SourceInfo } from '../types'
 import { loadSettings } from './settings'
 import { createTask, getTask, runTask, updateTask } from '../services/task-manager'
@@ -327,6 +328,10 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
 
       let buf = await runAi(() => generateImage(settings, prompt, kind === 'main' ? mainRefs : plainRefs))
 
+      // 主图：外圈刷成纯白。生图模型常给一点点灰底/渐变，而 ASI 目录要求纯白背景。
+      // 只清理外圈（提示词保证那里是空白边距），不会动到产品本身的浅色边缘。
+      if (kind === 'main') buf = await whitenImageBuffer(buf, 0.10)
+
       // 尺寸图：程序化叠加 inch 标注
       let dimensionSpec: ProductImage['dimensionSpec'] = null
       if (kind === 'dimension' && dims) {
@@ -522,6 +527,8 @@ productImagesRouter.post('/:imageId/regenerate', async (req: Request, res: Respo
   } else {
     buf = await runAi(() => generateImage(settings, image.prompt))
   }
+  // 重生成主图同样统一成纯白背景
+  if (image.kind === 'main') buf = await whitenImageBuffer(buf, 0.10)
   if (image.kind === 'dimension' && image.dimensionSpec) {
     buf = await overlayDimensions(buf, image.dimensionSpec)
   }

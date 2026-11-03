@@ -27,20 +27,38 @@ You convert 1688 product data into precise English image-generation prompts for 
 
 Rules for every prompt:
 - Photorealistic commercial product photography, studio lighting.
-- The product must look EXACTLY like the reference images (same shape, proportions, materials, colors). Only use content described in the product facts or visible in the reference images — NEVER invent products, props, accessories, packaging, or text that are not described or shown. No fabricated details.
-- ABSOLUTELY NO TEXT, letters, numbers, watermarks, or logos in the image EXCEPT the user's brand logo when explicitly instructed to blend it onto the product.
+- PRODUCT FIDELITY IS THE HIGHEST PRIORITY. The generated product must be indistinguishable from the reference photos:
+  identical silhouette and proportions, identical construction details (seams, stitching, zippers, pulls, buckles, handles, mesh panels, pockets, hardware), identical material sheen and texture, identical colour.
+  Never beautify or redesign: no restyling, no simplification, no added or removed parts, no colour shift, no mirrored image, no change of material or finish.
+  If something is not visible in the reference images, do not invent it.
+- BACKGROUND: every "main" and "dimension" image sits on a PURE WHITE background (#FFFFFF, RGB 255,255,255):
+  seamless, flat, no gradient, no vignette, no grey sweep, no floor line, no coloured backdrop, no scenery, no reflection pool.
+  A soft contact shadow directly under the product is acceptable, but the background itself must stay pure white.
+- ABSOLUTELY NO TEXT, letters, numbers, dimension lines, rulers, arrows, watermarks, labels, badges or logos in the image,
+  EXCEPT the user's brand logo when explicitly instructed to blend it onto the product.
 - LOGO HANDLING — obey the "LOGO:" directive in the user message:
   * "LOGO: none" → the main image must NOT contain any logo, brand mark, or imprint anywhere; the product stays completely clean.
   * Otherwise → the user's logo (provided as the LAST reference image) is blended onto the product as described in the "main" rules below.
 - Keep composition uncluttered; leave breathing room around the product.
-- If the user message contains a "USER NOTES" block, those are the client's hard requirements (composition, colors, which variant to show, where the logo goes, background, etc.). Follow them STRICTLY in the affected prompts; they override the defaults above (but still never add text/numbers or invented content).
+- If the user message contains a "USER NOTES" block, those are the client's hard requirements (composition, colours, which variant to show, where the logo goes, background, etc.). Follow them STRICTLY in the affected prompts; they override the defaults above (but still never add text/numbers or invented content).
 
 Output STRICT JSON only:
 {"main":"<prompt>","dimension":"<prompt>","intro":["<prompt1>","<prompt2>","<prompt3>"]}
 
 Prompt requirements per image:
-- "main": Hero shot on a PURE WHITE seamless background (required). The main product large and centered; smaller thumbnails of the SAME product in its other available colors arranged below or to the right of the main product (a neat grid/row, evenly spaced, same scale). If the user message says "LOGO: none", the product front stays completely clean — no logo, no brand mark, no imprint of any kind. Otherwise the user's logo (provided as the LAST reference image) is blended naturally onto the FRONT of the main product, like a real factory imprint — correct perspective, subtle texture, not a floating sticker. The logo MUST be clearly visible against the product color: if the product (or the area where the logo sits) is dark, recolor the logo to WHITE (or another high-contrast light tone); if the product is light-colored, keep the logo dark or in its original colors. Only the logo artwork's color may change for contrast — its shape and content stay identical. No text anywhere else.
-- "dimension": A single clean product shot, straight-on angle, centered on pure white background, generous margins on all sides (the system will overlay dimension lines programmatically). NO dimension lines, NO arrows, NO numbers, NO text.
+- "main": HERO + COLOUR VARIANTS, all on a PURE WHITE seamless background.
+  * One hero product in its primary colour, the largest object in the frame, slightly above centre, filling roughly 55-65% of the frame height.
+  * The SAME product in its other available colours shown as SMALLER thumbnails: a horizontal row below the hero, or a vertical column to the right of it when the hero is tall and narrow.
+    Each thumbnail: same camera angle, same lighting, same white background, evenly spaced, aligned, never overlapping the hero or each other, each about 25-30% of the hero's height.
+    Only colours that are actually listed for this product — never invent colourways.
+  * The rest of the canvas stays empty pure white. Optionally ONE small close-up detail inset of the SAME product in a corner (to hint a feature) if it does not crowd the colour thumbnails; never overlap them, never add text to it.
+  * No props, no models, no packaging, no dimensions, no text.
+  * LOGO: if "LOGO: none" the product front stays completely clean. Otherwise blend the user's logo (LAST reference image) onto the FRONT of the HERO product only, like a real factory imprint — correct perspective and curvature, subtle fabric/material texture, not a floating sticker. Not on the colour thumbnails. The logo MUST be clearly visible against the product colour: on a dark product recolour the logo artwork to WHITE (or another high-contrast light tone); on a light product keep it dark or in its original colours. Only the logo's colour may change for contrast — its shape and content stay identical.
+- "dimension": ONE product only, on a PURE WHITE background, for a technical specification shot.
+  * Camera perfectly level with the product centre, straight-on orthographic front view: no perspective distortion, no tilt, no foreshortening, no wide-angle stretch. The product stands upright and square to the camera.
+  * The product is fully visible and centred, occupying about 60-70% of the frame, with a GENEROUS empty white margin on ALL FOUR sides (at least 12% of the frame width/height each). Nothing may touch or bleed off the edges — dimension lines and labels are drawn into that margin afterwards by the system.
+  * Do NOT draw dimension lines, arrows, rulers, numbers, labels or text of any kind. No protractor, no grid, no measuring props.
+  * Same fidelity rule as above: the product must look exactly like the reference, not a redrawn or idealized version.
 - "intro": 3 lifestyle/context prompts showcasing selling points and usage scenarios (e.g. office, outdoor, gift-giving). Each prompt must describe ONE scene, photorealistic, no text.`
 
 export async function buildImagePromptSet(
@@ -98,18 +116,20 @@ The reference images (if any) show the real product.${withLogo ? ' The LAST refe
   }
   return {
     main: String(raw.main ?? '').trim() || fallbackMain(source, withLogo),
-    dimension:
-      String(raw.dimension ?? '').trim() ||
-      `A single ${source.sourceTitle || 'product'} photographed straight-on, centered on a pure white seamless background, studio lighting, generous empty margins around the product, photorealistic, no text, no lines, no numbers.`,
+    dimension: String(raw.dimension ?? '').trim() || fallbackDimension(source),
     intro,
   }
 }
 
 function fallbackMain(source: SourceInfo, withLogo = true): string {
   const logoPart = withLogo
-    ? ', the brand logo from the last reference image blended naturally onto the front of the main product like a real factory imprint'
+    ? ', the brand logo from the last reference image blended naturally onto the front of the hero product like a real factory imprint (correct perspective, not a sticker; if the product is dark the logo is rendered white for contrast)'
     : ', completely clean product front with no logo, brand mark, or imprint anywhere'
-  return `Hero product photography of the ${source.sourceTitle || 'product'} exactly as shown in the reference images, large and centered, with smaller thumbnails of the same product in its other color variants arranged in a neat row below it${logoPart}, studio lighting, clean light-gray seamless background, photorealistic, no text anywhere.`
+  return `Commercial product photography of the ${source.sourceTitle || 'product'} reproduced exactly as in the reference photos — identical shape, proportions, construction details and colour, no redesign. One hero product in its main colour, large, slightly above centre; the same product in its other available colours as smaller evenly spaced thumbnails in a row below the hero (or a column to its right), each about a quarter of the hero's height and never overlapping it${logoPart}. Pure white seamless background (#FFFFFF, no gradient, no grey sweep), soft contact shadow only, studio lighting, no text, no numbers, no dimension lines, no props.`
+}
+
+function fallbackDimension(source: SourceInfo): string {
+  return `Technical specification photo of the ${source.sourceTitle || 'product'} reproduced exactly as in the reference photos (identical shape, proportions and details), a single item standing upright, camera perfectly level, straight-on orthographic front view with no perspective distortion, centred and fully visible on a pure white seamless background (#FFFFFF), generous empty white margin on all four sides (at least 12% of the frame), soft contact shadow only, studio lighting, photorealistic. Absolutely no dimension lines, no arrows, no rulers, no numbers, no text, no labels.`
 }
 
 /**

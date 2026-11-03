@@ -1296,7 +1296,7 @@ export default function ListingEditor() {
       {/* 产品图片（AI 生成）：主图 + 尺寸图 + 介绍图文字建议 */}
       <SectionCard
         title="产品图片（AI 生成）"
-        hint="生成主图（Logo 融合）与尺寸图（inch 标注），约需 1-5 分钟；介绍图（第 3-5 张）改为下方文字拍摄建议，不消耗生图费用。每张图可单独与 AI 对话修改。"
+        hint="主图与尺寸图统一纯白背景、不改动产品任何细节与比例；主图＝主色大图 + 其他颜色小图（产品下方或右侧），尺寸图的 inch 标注由系统画在留白区、不会压在产品上。约需 1-5 分钟；介绍图（第 3-5 张）改为下方文字拍摄建议，不消耗生图费用。每张图可单独与 AI 对话修改。"
         right={
           <div className="flex items-center gap-1.5">
             <Button
@@ -1376,6 +1376,11 @@ export default function ListingEditor() {
                     <MessageSquare className="h-3 w-3" /> AI 修改
                   </button>
                 </div>
+                {img.kind === 'dimension' && !img.dimensionSpec ? (
+                  <p className="mt-0.5 text-center text-[10px] leading-tight text-amber-700">
+                    未读到尺寸，这张没有标注线
+                  </p>
+                ) : null}
               </div>
             ))}
           </div>
