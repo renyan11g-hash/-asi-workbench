@@ -142,10 +142,12 @@ Respond with STRICT JSON only (no markdown, no commentary).`
   const marketBlock = market
     ? `OVERSEAS MARKET EVIDENCE (4imprint search — REAL catalogue prices, not guesses)
 - Search terms used: ${market.queries.join(' | ')}
-- Comparable SKUs found: ${market.total} (RSS caps around 28, so treat as "at least this many")
-- Real list price band (bulk tier): $${market.price?.p25 ?? '?'} – $${market.price?.p75 ?? '?'} (median $${market.price?.median ?? '?'}, overall $${market.price?.min ?? '?'} – $${market.price?.max ?? '?'})
+- Raw hits: ${market.total} (RSS caps around 28 per query, so treat as "at least this many")
+- Actual same-product hits after matching on keywords [${market.matchTokens.join(', ') || 'n/a'}]: ${market.matched}
+- Density figure used for scoring (normalised to a 28-item sample): ${market.densityCount}
+- Real list price band (bulk tier, same-product hits only): $${market.price?.p25 ?? '?'} – $${market.price?.p75 ?? '?'} (median $${market.price?.median ?? '?'}, overall $${market.price?.min ?? '?'} – $${market.price?.max ?? '?'})
 - Market-derived rough estimates: differentiation ≈ ${market.diffEstimate}, competition ≈ ${market.competitionEstimate}
-- Closest competitors:
+${market.relevanceNote ? `- Caveat from the probe: ${market.relevanceNote}\n` : ''}- Closest competitors:
 ${market.items
   .slice(0, 8)
   .map((i) => `  · ${i.title} — $${i.priceMin} - $${i.priceMax}`)
@@ -154,6 +156,7 @@ ${market.items
 HOW TO USE THIS EVIDENCE:
 - "differentiation" and "competition" MUST be based on this sample. Land within ±15 of the market-derived estimates above; if you go outside that window, explain in one short Chinese sentence inside "cons" why this product is materially different from the sample.
 - "priceAdviceUsd" MUST come from the real price band above (not a guess). Give a sensible sub-range for THIS product's tier.
+- Few same-product hits (grey area) means the category is thin on this platform — that supports higher differentiation; a saturated count means the opposite. Say which one it is in "summary".
 - If the sample is obviously off-target (different product type), say so in "cons" and still score on product merits.
 
 `
@@ -535,6 +538,47 @@ Rules:
 - Amazon search queries should be 2-5 words, benefit-aware, that a corporate buyer would type.
 - ASI search queries should include category terms distributors use (e.g. '20oz tumbler', 'vacuum insulated drinkware').
 - amazonItems / asiItems: list the 3-6 most representative competitors with a 1-line note. URLs can be generic Amazon/Google search URLs when you don't have the exact ASIN.`
+
+  return { system, user }
+}
+
+/**
+ * 轻量「看图认品类」：只产出三样东西，用来驱动 4imprint 市场探针。
+ * 比 buildFindSimilarPrompt 便宜得多（不要求 ASIN / 竞品清单 / 标题模板），
+ * 目的是让"中文品名 → 英文搜索词"这一步不再靠单独一次翻译，而是看图直接定名。
+ */
+export function buildCatalogKeywordsPrompt(source: SourceInfo) {
+  const system = `You are a US promotional-products (ASI) sourcing analyst. You look at product photos plus 1688 source data and name the product the way a US distributor would. Output STRICT JSON only, no markdown, no commentary.`
+
+  const imageList = (source.images ?? [])
+    .slice(0, 3)
+    .map((u, i) => `${i + 1}. ${u.length > 200 ? '[image ' + u.length + ' chars]' : u}`)
+    .join('\n')
+
+  const user = `Name this 1688 product for the US promotional-products market (4imprint / ASI distributor catalogue).
+
+1688 SOURCE
+- Title: ${source.sourceTitle || '(not provided)'}
+- Description: ${(source.description || '(not provided)').slice(0, 600)}
+- Material: ${source.materialCn || '(unknown)'}
+- Size: ${source.sizeCn || '(unknown)'}
+- Amazon-style title: ${source.amazonTitle || '(not provided)'}
+
+PRODUCT IMAGES (analyze them visually):
+${imageList || '(no image)'}
+
+OUTPUT JSON SCHEMA:
+{
+  "productType": "<2-5 word English product type, e.g. 'Hanging Travel Toiletry Bag'>",
+  "searchTerms": ["<3-5 English search phrases a US promo-gifts buyer would type on a distributor catalogue, most specific first, 2-4 words each>"],
+  "coreKeywords": ["<3-5 SINGLE English nouns that ANY true equivalent product's title must contain, e.g. ['toiletry','bag','hanging']>"]
+}
+
+Rules:
+- ASCII English letters only. Never output Chinese, never output brand/trademark names.
+- coreKeywords decide whether a catalogue hit is really the same product: pick concrete nouns (toiletry, bag, tumbler, umbrella). Do NOT pick vague words like travel, gift, organizer, item, promotional, set.
+- searchTerms[0] must be the MOST specific phrase (it drives the catalogue query).
+- Be concrete about the actual construction (e.g. "roll up toiletry bag" beats "bag").`
 
   return { system, user }
 }

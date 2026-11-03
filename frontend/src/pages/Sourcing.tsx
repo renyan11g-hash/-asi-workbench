@@ -39,6 +39,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ScoreRing, SectionCard, VerdictBadge } from '@/components/ui/primitives'
 import EvaluationChat from '@/components/EvaluationChat'
 import { api, getErrorMessage } from '@/lib/api'
+import { formatMarketHits } from '@/lib/market-format'
 import { useProducts, useSettings } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
 import { EMPTY_SOURCE, Evaluation, PriceRow, SourceInfo } from '@/types'
@@ -408,6 +409,20 @@ export default function Sourcing() {
       .filter(Boolean),
   })
 
+  /** 「看图找类似」算出的英文词：直接拿去搜海外同款，比后端再翻一遍准 */
+  const similarSearchTerms = (): string[] => {
+    if (!similar) return []
+    const strList = (k: string) =>
+      Array.isArray(similar[k]) ? (similar[k] as unknown[]).map((v) => String(v ?? '')).filter(Boolean) : []
+    return [...strList('asiSearchTerms'), ...strList('amazonSearchTerms')].filter((v) => v.trim().length > 2).slice(0, 5)
+  }
+
+  /** 「看图找类似」认出的英文品类名，后端用它判断搜到的算不算同款 */
+  const similarProductType = (): string => {
+    const pt = similar ? similar['productType'] : undefined
+    return typeof pt === 'string' ? pt : ''
+  }
+
   const runEvaluate = async () => {
     const payload = buildSource()
     if (!payload.sourceTitle.trim()) {
@@ -419,7 +434,7 @@ export default function Sourcing() {
     }
     setBusy(true)
     try {
-      const res = await api.previewEvaluate(payload)
+      const res = await api.previewEvaluate(payload, similarSearchTerms(), similarProductType())
       setEvaluation(res.evaluation)
       setPriceGrid(res.priceGrid ?? [])
       setSource(payload)
@@ -441,7 +456,7 @@ export default function Sourcing() {
       const res = await api.previewFindSimilar(payload)
       setSimilar(res.similar)
       setSource(payload)
-      toast.success('已生成类似商品建议')
+      toast.success('已生成类似商品建议（评估时会用这些英文词搜海外同款）')
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
@@ -801,7 +816,7 @@ export default function Sourcing() {
 
         <SectionCard
           title="产品图片（最多 6 张）"
-          hint="AI 会基于图片识别产品类型、推荐亚马逊/ASI 搜索关键词，并估算印刷区域"
+          hint="AI 会基于图片识别产品类型、推荐亚马逊/ASI 搜索关键词；下面的「AI 选品评估」会直接用这些英文词去搜海外同款（4imprint 真实目录价）"
         >
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
@@ -981,6 +996,60 @@ export default function Sourcing() {
                         当前为本地规则评分（未接 AI）。配置 API Key 后可获得买家画像、场景建议与完整风险分析。
                       </AlertDescription>
                     </Alert>
+                  )}
+                  {(evaluation.scoreBreakdown || evaluation.marketSnapshot || evaluation.scoreNote) && (
+                    <div className="mt-3 rounded-md border border-slate-200 bg-slate-50/70 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
+                      {evaluation.scoreBreakdown && (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span className="text-slate-400">评分拆解</span>
+                          {[
+                            { k: '差异化', v: evaluation.scoreBreakdown.differentiation },
+                            { k: '定制', v: evaluation.scoreBreakdown.customization },
+                            { k: '物流', v: evaluation.scoreBreakdown.shipping },
+                            { k: '竞争', v: evaluation.scoreBreakdown.competition },
+                            { k: '合规', v: evaluation.scoreBreakdown.compliance },
+                          ].map((d) => (
+                            <span key={d.k} className="tabular-nums">
+                              {d.k}{' '}
+                              <span
+                                className={
+                                  d.v < 40 ? 'font-semibold text-rose-600' : 'font-semibold text-slate-800'
+                                }
+                              >
+                                {d.v}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {evaluation.marketSnapshot && (
+                        <div className="mt-1">
+                          <span className="text-slate-400">海外同款 </span>
+                          <span className="text-slate-700">
+                            {formatMarketHits(evaluation.marketSnapshot)} · list $
+                            {evaluation.marketSnapshot.priceLow ?? '—'}–$
+                            {evaluation.marketSnapshot.priceHigh ?? '—'}
+                          </span>
+                          {evaluation.marketSnapshot.queries?.length ? (
+                            <span className="text-slate-400">
+                              {' '}
+                              · 「{evaluation.marketSnapshot.queries.join(' / ')}」
+                            </span>
+                          ) : null}
+                          {evaluation.marketSnapshot.relevanceNote ? (
+                            <div className="mt-0.5 text-amber-700">
+                              {evaluation.marketSnapshot.relevanceNote}
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                      {!evaluation.marketSnapshot && evaluation.marketError ? (
+                        <div className="mt-1 text-amber-700">海外同款没取到：{evaluation.marketError}</div>
+                      ) : null}
+                      {evaluation.scoreNote && (
+                        <div className="mt-1 text-slate-500">{evaluation.scoreNote}</div>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>

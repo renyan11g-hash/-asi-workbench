@@ -620,10 +620,35 @@ productsRouter.get('/export/submission.xlsx', async (req: Request, res: Response
 })
 
 // ---------- 预览（不落库） ----------
+
+/**
+ * 前端可以把「看图找类似 / 产品信息预填」已经算出来的英文搜索词带上来，
+ * 后端就不用再让 AI 翻译一遍（少一次往返，也避开了中文品名翻不出英文的老问题）。
+ */
+function parseSearchTerms(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((s) => String(s ?? '').trim())
+    .filter((s) => s.length > 2)
+    .slice(0, 5)
+}
+
+/** 从产品已存的“类似商品调研”里取英文搜索词：分销商目录优先，其次亚马逊词 */
+function searchTermsFromSimilar(similar: unknown): string[] {
+  if (!similar || typeof similar !== 'object') return []
+  const s = similar as Record<string, unknown>
+  const pick = (k: string) => (Array.isArray(s[k]) ? (s[k] as unknown[]).map((v) => String(v ?? '').trim()) : [])
+  return [...pick('asiSearchTerms'), ...pick('amazonSearchTerms')]
+    .filter((v) => v.length > 2)
+    .slice(0, 5)
+}
+
 productsRouter.post('/preview/evaluate', async (req: Request, res: Response) => {
   const source = toSourceInfo(sourceSchema.parse(req.body?.source ?? {}))
   const settings = loadSettings()
-  const evaluation = await runAi(() => evaluateSource(source, settings))
+  const searchTerms = parseSearchTerms((req.body as Record<string, unknown>)?.searchTerms)
+  const productType = String((req.body as Record<string, unknown>)?.productType ?? '').trim().slice(0, 80)
+  const evaluation = await runAi(() => evaluateSource(source, settings, { searchTerms, productType }))
   const { rows } = buildPriceGrid(source, settings)
   res.json({ evaluation, priceGrid: rows })
 })
@@ -954,10 +979,13 @@ productsRouter.post('/preview/quick-evaluate', async (req: Request, res: Respons
       cartonGwKg: f.cartonGwKg ?? undefined,
       moq: f.moq ?? undefined,
       priceCny: f.priceCny ?? undefined,
+      // 首页图一并带上：评估时可以看图直接认品类，英文搜索词质量比纯文本翻译高
+      images: f.image ? [f.image] : undefined,
     })
   )
   const settings = loadSettings()
-  const evaluation = await runAi(() => evaluateSource(source, settings))
+  const searchTerms = parseSearchTerms((req.body as Record<string, unknown>)?.searchTerms)
+  const evaluation = await runAi(() => evaluateSource(source, settings, { searchTerms }))
   const { rows } = buildPriceGrid(source, settings)
   // 自动记录到「历史选品」（按链接去重，重复评估同一链接会覆盖更新）
   try {
@@ -1289,7 +1317,10 @@ productsRouter.post('/:id/evaluate', async (req: Request, res: Response) => {
   const id = String(req.params.id)
   const current = findProduct(id)
   const settings = loadSettings()
-  const evaluation = await runAi(() => evaluateSource(current.source, settings))
+  // 优先用请求里带的词；没有就复用这个产品保存时存下的「类似商品调研」关键词（免费的，不用再调 AI）
+  const fromBody = parseSearchTerms((req.body as Record<string, unknown>)?.searchTerms)
+  const searchTerms = fromBody.length ? fromBody : searchTermsFromSimilar(current.similar)
+  const evaluation = await runAi(() => evaluateSource(current.source, settings, { searchTerms }))
   db.prepare('UPDATE products SET score=?, verdict=?, evaluation=?, updated_at=? WHERE id=?').run(
     evaluation.score,
     evaluation.verdict,

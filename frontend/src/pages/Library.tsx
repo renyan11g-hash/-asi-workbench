@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { StatusBadge, VerdictBadge } from '@/components/ui/primitives'
 import { api, getErrorMessage } from '@/lib/api'
+import { formatMarketHits } from '@/lib/market-format'
 import { useProducts } from '@/hooks/use-data'
 
 const FILTERS = [
@@ -341,7 +342,7 @@ export default function Library() {
                                   <>
                                     <span className="text-slate-400">海外同款</span>
                                     <span className="text-slate-600">
-                                      {p.evaluation.marketSnapshot.total} 条 · list $
+                                      {formatMarketHits(p.evaluation.marketSnapshot)} · list $
                                       {p.evaluation.marketSnapshot.priceLow ?? '—'}–$
                                       {p.evaluation.marketSnapshot.priceHigh ?? '—'}
                                       {p.evaluation.marketSnapshot.queries?.length

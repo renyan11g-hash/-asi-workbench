@@ -20,12 +20,21 @@ export interface Evaluation {
   /** 海外市场探测结果（4imprint 真实目录价），评估时抓的 */
   marketSnapshot?: {
     queries: string[]
+    /** RSS 抓到的原始条数 */
     total: number
+    /** 标题真正命中核心词的同类条数（旧数据没有这个字段） */
+    matched?: number
+    /** 折算到 28 条口径的密度依据（旧数据没有） */
+    densityCount?: number
+    /** 判定相关性用的核心词（旧数据没有） */
+    matchTokens?: string[]
     priceLow: number | null
     priceHigh: number | null
     median: number | null
     diffEstimate: number
     competitionEstimate: number
+    /** 关键词太泛 / 一条都没命中时的提醒（旧数据没有） */
+    relevanceNote?: string
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
     fetchedAt: string
   }

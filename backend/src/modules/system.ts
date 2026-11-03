@@ -55,7 +55,8 @@ systemRouter.get('/health/ready', async (_req: Request, res: Response) => {
 
 /**
  * 海外市场探针自检（免登录，在 /api/health 前缀下）
- * 用法：GET /api/health/market-probe?q=tote%20bag,insulated%20tumbler
+ * 用法：GET /api/health/market-probe?q=tote%20bag&core=toiletry,bag&pt=Hanging%20Travel%20Toiletry%20Bag
+ * core/pt 可选：用来验证"相关性过滤"有没有按预期筛掉泛匹配噪声。
  * 返回每一步抓到多少字节、解析出几条、失败原因——用于排查 Render 上为什么取不到同款数据。
  */
 systemRouter.get('/health/market-probe', async (req: Request, res: Response) => {
@@ -64,14 +65,31 @@ systemRouter.get('/health/market-probe', async (req: Request, res: Response) => 
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 2)
-  const diag = await probeWithDiag(q)
+  const core = String(req.query.core ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const productType = String(req.query.pt ?? '').trim()
+  const diag = await probeWithDiag(q, 9000, { coreKeywords: core, productType })
   res.json({
     ok: Boolean(diag.snapshot),
     error: diag.error ?? null,
     queries: diag.queries,
+    matchTokens: diag.snapshot?.matchTokens ?? [],
     perQuery: diag.perQuery,
     price: diag.snapshot?.price ?? null,
     total: diag.snapshot?.total ?? 0,
+    matched: diag.snapshot?.matched ?? 0,
+    densityCount: diag.snapshot?.densityCount ?? 0,
+    relevanceNote: diag.snapshot?.relevanceNote ?? null,
+    scores: diag.snapshot
+      ? {
+          density: diag.snapshot.densityScore,
+          spread: diag.snapshot.spreadScore,
+          diff: diag.snapshot.diffEstimate,
+          competition: diag.snapshot.competitionEstimate,
+        }
+      : null,
     sample: diag.snapshot?.items?.slice(0, 3) ?? [],
   })
 })

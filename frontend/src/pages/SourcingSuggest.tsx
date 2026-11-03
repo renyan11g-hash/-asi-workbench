@@ -19,6 +19,7 @@ import { Label } from '@/components/ui/label'
 import { ScoreRing, SectionCard, VerdictBadge } from '@/components/ui/primitives'
 import EvaluationChat from '@/components/EvaluationChat'
 import { api, getErrorMessage, SourcingHistoryItem } from '@/lib/api'
+import { formatMarketHits } from '@/lib/market-format'
 import { EMPTY_SOURCE, Evaluation, PriceRow, SourceInfo } from '@/types'
 import { GLS_CATEGORIES } from '@/constants/gls-categories'
 import { glsCategoryLabel } from '@/constants/gls-categories-zh'
@@ -383,11 +384,15 @@ export default function SourcingSuggest() {
                   <div className="mt-1">
                     <span className="text-slate-400">海外同款 </span>
                     <span className="text-slate-700">
-                      {quick.evaluation.marketSnapshot.total} 条 · list ${quick.evaluation.marketSnapshot.priceLow ?? '—'}–$
+                      {formatMarketHits(quick.evaluation.marketSnapshot)} · list $
+                      {quick.evaluation.marketSnapshot.priceLow ?? '—'}–$
                       {quick.evaluation.marketSnapshot.priceHigh ?? '—'}
                     </span>
                     {quick.evaluation.marketSnapshot.queries?.length ? (
                       <span className="text-slate-400"> · 「{quick.evaluation.marketSnapshot.queries.join(' / ')}」</span>
+                    ) : null}
+                    {quick.evaluation.marketSnapshot.relevanceNote ? (
+                      <div className="mt-0.5 text-amber-700">{quick.evaluation.marketSnapshot.relevanceNote}</div>
                     ) : null}
                   </div>
                 )}

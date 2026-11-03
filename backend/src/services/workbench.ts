@@ -15,7 +15,7 @@ import {
   toTitleCase,
   translateColors,
 } from '../constants/asi'
-import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, pickRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
+import { buildAssistantPrompt, buildCatalogKeywordsPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, pickRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
 import { recommendImprintMethods } from './imprint-recommend'
 import { composeScore, parseBreakdown, scoreBand } from './eval-score'
 import { probeWithDiag, type MarketSnapshot } from './market-probe'
@@ -160,7 +160,7 @@ function normalizeEvaluation(raw: Record<string, unknown>, market?: MarketSnapsh
       : { min: num(price.min, 0), max: num(price.max, 0) }
 
   const marketNote = market?.price
-    ? `｜海外同款 ${market.total} 条，list $${market.price.p25}–$${market.price.p75}`
+    ? `｜海外同款 ${market.matched}/${market.total} 条同类，list $${market.price.p25}–$${market.price.p75}`
     : ''
 
   return {
@@ -172,11 +172,15 @@ function normalizeEvaluation(raw: Record<string, unknown>, market?: MarketSnapsh
       ? {
           queries: market.queries,
           total: market.total,
+          matched: market.matched,
+          densityCount: market.densityCount,
+          matchTokens: market.matchTokens,
           priceLow: market.price?.p25 ?? null,
           priceHigh: market.price?.p75 ?? null,
           median: market.price?.median ?? null,
           diffEstimate: market.diffEstimate,
           competitionEstimate: market.competitionEstimate,
+          relevanceNote: market.relevanceNote,
           samples: market.items.slice(0, 5).map((i) => ({
             title: i.title,
             priceMin: i.priceMin,
@@ -297,6 +301,39 @@ export function heuristicEvaluate(source: SourceInfo, settings: Settings): Evalu
   }
 }
 
+/** 给"可选的"AI 调用套一个超时：失败/卡住都不应该拖住整个评估 */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`超时（${ms}ms）`)), ms)
+    p.then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (e) => {
+        clearTimeout(timer)
+        reject(e)
+      }
+    )
+  })
+}
+
+/** 调用方可以先把「看图找类似 / 产品信息预填」算出来的英文词传进来，省一次 AI 往返 */
+export interface MarketTermInput {
+  /** 英文搜索词（优先用第一条，最具体的那个） */
+  searchTerms?: string[]
+  /** AI 认出的英文品类名，探针用它补足相关性判断 */
+  productType?: string
+}
+
+interface MarketTerms {
+  queries: string[]
+  /** AI 指定的"同款标题必须含"的名词 */
+  coreKeywords: string[]
+  productType: string
+  why: string
+}
+
 /** 中文品名 → 英文搜索词（AI 翻不出来时的兜底，覆盖常见促销礼品品类） */
 const ZH_EN_QUERIES: Array<[RegExp, string]> = [
   [/托特|帆布包|购物袋|手提袋/, 'tote bag'],
@@ -342,19 +379,55 @@ function zhToEnQueries(title: string): string[] {
 /** 用 AI 把中文品名翻成海外买家会搜的英文词组；失败时退回 amazonTitle / 本地词表，并说明原因 */
 async function marketSearchTerms(
   source: SourceInfo,
-  settings: Settings
-): Promise<{ queries: string[]; why: string }> {
+  settings: Settings,
+  opts: MarketTermInput = {}
+): Promise<MarketTerms> {
   const ascii = (s: string) => s.replace(/[^\x20-\x7E]/g, ' ').replace(/\s+/g, ' ').trim()
   const fallback = ascii(source.amazonTitle || '')
   const userText = `产品名：${source.sourceTitle}\n材质：${source.materialCn || '(未知)'}\n描述：${(source.description || '').slice(0, 200)}`
 
-  if (!settings.aiApiKey?.trim()) {
-    const q = fallback ? [fallback.slice(0, 60)] : zhToEnQueries(source.sourceTitle)
-    return { queries: q, why: q.length ? '' : '未配置 AI，且无法从品名推断英文搜索词' }
+  // ① 调用方已经给了英文词（例如「看图找类似」刚算出来的 amazonSearchTerms/asiSearchTerms）
+  //    → 直接用，不再多跑一次 AI：既省一次往返，也避开了"翻不出来"这个老毛病
+  const provided = (opts.searchTerms ?? [])
+    .map((s) => ascii(String(s)))
+    .filter((s) => s.length > 2 && /[a-z]{3}/i.test(s))
+  if (provided.length) {
+    return { queries: provided.slice(0, 2), coreKeywords: [], productType: opts.productType ?? '', why: '' }
   }
 
+  if (!settings.aiApiKey?.trim()) {
+    const q = fallback ? [fallback.slice(0, 60)] : zhToEnQueries(source.sourceTitle)
+    return { queries: q, coreKeywords: [], productType: '', why: q.length ? '' : '未配置 AI，且无法从品名推断英文搜索词' }
+  }
+
+  // ② 有产品图 → 看图直接认品类（比纯文本翻译准，还能顺带给出"同款必备名词"用于相关性过滤）
+  const images = (source.images ?? []).filter(Boolean).slice(0, 3)
+  if (images.length) {
+    try {
+      const { system, user } = buildCatalogKeywordsPrompt(source)
+      // 25s 上限：图床防盗链 / 模型不支持 vision 时快速放弃，退到文本翻译
+      const d = await withTimeout(
+        callChatJson<Record<string, unknown>>(settings, system, user, 0.2, images),
+        25000
+      )
+      const terms = (Array.isArray(d?.searchTerms) ? (d.searchTerms as unknown[]) : [])
+        .map((s) => ascii(String(s)))
+        .filter((s) => s.length > 2 && /[a-z]{3}/i.test(s))
+      if (terms.length) {
+        return {
+          queries: terms.slice(0, 2),
+          coreKeywords: (Array.isArray(d?.coreKeywords) ? (d.coreKeywords as unknown[]) : []).map((s) => ascii(String(s))),
+          productType: ascii(String(d?.productType ?? '')),
+          why: '',
+        }
+      }
+    } catch {
+      // 看图失败（图片防盗链 / 模型不支持 vision）→ 退到文本翻译，不影响评估
+    }
+  }
+
+  // ③ 纯文本翻译兜底：第一次中文提示；若模型仍回中文（被 ascii 过滤成空），换纯英文提示再试
   let lastRaw = ''
-  // 第一次中文提示；若模型仍回中文（被 ascii 过滤成空），换一条纯英文提示再试一次
   for (let attempt = 0; attempt < 2; attempt++) {
     const system =
       attempt === 0
@@ -365,30 +438,37 @@ async function marketSearchTerms(
       lastRaw = JSON.stringify(d ?? null).slice(0, 200)
       const list = Array.isArray(d?.queries) ? (d.queries as unknown[]) : []
       const q = list.map((s) => ascii(String(s))).filter(Boolean).slice(0, 2)
-      if (q.length) return { queries: q, why: '' }
+      if (q.length) return { queries: q, coreKeywords: [], productType: '', why: '' }
     } catch (e) {
       lastRaw = (e as Error)?.message ?? ''
     }
   }
 
-  if (fallback) return { queries: [fallback.slice(0, 60)], why: '' }
+  if (fallback) return { queries: [fallback.slice(0, 60)], coreKeywords: [], productType: '', why: '' }
   const dict = zhToEnQueries(source.sourceTitle)
-  if (dict.length) return { queries: dict, why: '' }
-  return { queries: [], why: `翻译没给出英文词（AI 返回：${lastRaw || '空'}）` }
+  if (dict.length) return { queries: dict, coreKeywords: [], productType: '', why: '' }
+  return { queries: [], coreKeywords: [], productType: '', why: `翻译没给出英文词（AI 返回：${lastRaw || '空'}）` }
 }
 
-export async function evaluateSource(source: SourceInfo, settings: Settings): Promise<Evaluation> {
+export async function evaluateSource(
+  source: SourceInfo,
+  settings: Settings,
+  opts: MarketTermInput = {}
+): Promise<Evaluation> {
   if (!settings.aiApiKey?.trim()) return heuristicEvaluate(source, settings)
 
   // 先探一次海外市场（4imprint 真实目录价）：差异化/竞争有据可依，价格不用瞎猜
   let market: MarketSnapshot | null = null
   let marketError = ''
   try {
-    const terms = await marketSearchTerms(source, settings)
+    const terms = await marketSearchTerms(source, settings, opts)
     if (!terms.queries.length) {
       marketError = terms.why || '没能把品名翻成英文搜索词'
     } else {
-      const diag = await probeWithDiag(terms.queries)
+      const diag = await probeWithDiag(terms.queries, 9000, {
+        coreKeywords: terms.coreKeywords,
+        productType: terms.productType,
+      })
       market = diag.snapshot
       if (!market) marketError = diag.error ?? '未取到海外同款数据'
     }

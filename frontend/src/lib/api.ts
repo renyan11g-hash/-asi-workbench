@@ -221,10 +221,16 @@ export const api = {
     return data
   },
 
-  async previewEvaluate(source: SourceInfo): Promise<{ evaluation: Evaluation; priceGrid: PriceRow[] }> {
+  async previewEvaluate(
+    source: SourceInfo,
+    /** 「看图找类似」已算出的英文词：传上去后端就不用再翻一遍，海外同款抓得更准 */
+    searchTerms?: string[],
+    /** 「看图找类似」认出的英文品类名，后端用它判断"搜到的算不算同款" */
+    productType?: string
+  ): Promise<{ evaluation: Evaluation; priceGrid: PriceRow[] }> {
     const { data } = await apiClient.post<{ evaluation: Evaluation; priceGrid: PriceRow[] }>(
       '/products/preview/evaluate',
-      { source },
+      { source, searchTerms, productType },
       LONG_TIMEOUT
     )
     return data

@@ -16,11 +16,19 @@ export interface Evaluation {
   marketSnapshot?: {
     queries: string[]
     total: number
+    /** 标题真正命中核心词的同类条数（旧评估没有这个字段） */
+    matched?: number
+    /** 折算到 28 条口径的密度依据（旧评估没有） */
+    densityCount?: number
+    /** 判定相关性用的核心词（旧评估没有） */
+    matchTokens?: string[]
     priceLow: number | null
     priceHigh: number | null
     median: number | null
     diffEstimate: number
     competitionEstimate: number
+    /** 关键词太泛 / 一条都没命中时的提醒（旧评估没有） */
+    relevanceNote?: string
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
     fetchedAt: string
   }
