@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { db } from '../db'
+import { probeWithDiag } from '../services/market-probe'
 
 export const systemRouter: Router = Router()
 
@@ -49,6 +50,29 @@ systemRouter.get('/health/ready', async (_req: Request, res: Response) => {
     dbMode: /^libsql:\/\//.test(process.env.LIBSQL_URL || '') ? 'turso' : 'local',
     hasAuthToken: Boolean(process.env.LIBSQL_AUTH_TOKEN),
     checks: { database },
+  })
+})
+
+/**
+ * 海外市场探针自检（免登录，在 /api/health 前缀下）
+ * 用法：GET /api/health/market-probe?q=tote%20bag,insulated%20tumbler
+ * 返回每一步抓到多少字节、解析出几条、失败原因——用于排查 Render 上为什么取不到同款数据。
+ */
+systemRouter.get('/health/market-probe', async (req: Request, res: Response) => {
+  const q = String(req.query.q ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+  const diag = await probeWithDiag(q)
+  res.json({
+    ok: Boolean(diag.snapshot),
+    error: diag.error ?? null,
+    queries: diag.queries,
+    perQuery: diag.perQuery,
+    price: diag.snapshot?.price ?? null,
+    total: diag.snapshot?.total ?? 0,
+    sample: diag.snapshot?.items?.slice(0, 3) ?? [],
   })
 })
 

@@ -24,6 +24,8 @@ export interface Evaluation {
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
     fetchedAt: string
   }
+  /** 海外探针失败的原因（成功时为 undefined） */
+  marketError?: string
   verdict: Verdict
   summary: string
   pros: string[]

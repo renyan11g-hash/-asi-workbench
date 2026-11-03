@@ -18,7 +18,7 @@ import {
 import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, pickRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
 import { recommendImprintMethods } from './imprint-recommend'
 import { composeScore, parseBreakdown, scoreBand } from './eval-score'
-import { probeOverseasMarket, type MarketSnapshot } from './market-probe'
+import { probeWithDiag, type MarketSnapshot } from './market-probe'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
@@ -322,16 +322,25 @@ export async function evaluateSource(source: SourceInfo, settings: Settings): Pr
 
   // 先探一次海外市场（4imprint 真实目录价）：差异化/竞争有据可依，价格不用瞎猜
   let market: MarketSnapshot | null = null
+  let marketError = ''
   try {
     const queries = await marketSearchTerms(source, settings)
-    if (queries.length) market = await probeOverseasMarket(queries)
-  } catch {
-    market = null
+    if (!queries.length) {
+      marketError = '没能把品名翻成英文搜索词'
+    } else {
+      const diag = await probeWithDiag(queries)
+      market = diag.snapshot
+      if (!market) marketError = diag.error ?? '未取到海外同款数据'
+    }
+  } catch (e) {
+    marketError = (e as Error)?.message ?? '海外探针异常'
   }
 
   const { system, user } = buildEvaluatePrompt(source, settings, market)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.3)
-  return normalizeEvaluation(raw, market)
+  const evaluation = normalizeEvaluation(raw, market)
+  if (!market && marketError) evaluation.marketError = marketError.slice(0, 200)
+  return evaluation
 }
 
 /** 多轮对话调整评估：保留历史，由 AI 输出完整新评估 */

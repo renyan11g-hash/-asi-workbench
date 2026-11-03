@@ -391,6 +391,9 @@ export default function SourcingSuggest() {
                     ) : null}
                   </div>
                 )}
+                {!quick.evaluation.marketSnapshot && quick.evaluation.marketError ? (
+                  <div className="mt-1 text-amber-700">海外同款没取到：{quick.evaluation.marketError}</div>
+                ) : null}
                 {quick.evaluation.scoreNote && <div className="mt-1 text-slate-500">{quick.evaluation.scoreNote}</div>}
               </div>
             )}

@@ -10,6 +10,9 @@
  *
  * 注意：RSS 每次最多约 28 条，条数是"至少这么多"，不是全量。
  * 所以密度评分按区间分档，不做线性外推。
+ *
+ * 2026-11-03：Render 上探针返回空，需要外部可诊断。
+ * 因此把"抓取过程"也返回出来（probeWithDiag），并开放 /api/health/market-probe?q= 便于远程排查。
  */
 
 export interface MarketItem {
@@ -36,6 +39,14 @@ export interface MarketSnapshot {
   /** 竞争粗估（0-100）：等同于密度分（同款少 = 竞争弱 = 分高） */
   competitionEstimate: number
   fetchedAt: string
+}
+
+export interface ProbeDiag {
+  queries: string[]
+  perQuery: Array<{ query: string; ok: boolean; items: number; bytes: number; status?: number; error?: string }>
+  snapshot: MarketSnapshot | null
+  /** 整体失败原因（给界面/日志看的一句话） */
+  error?: string
 }
 
 const ENDPOINT = 'https://www.4imprint.com/rss/search?searchterm='
@@ -102,7 +113,7 @@ function spreadScoreOf(p25: number, p75: number, median: number): number {
 }
 
 /** 只依赖最小形状，避免 @types/node 版本差异导致 fetch 类型缺失（本地没有 tsc 可验） */
-type SimpleResponse = { ok: boolean; text(): Promise<string> }
+type SimpleResponse = { ok: boolean; status?: number; text(): Promise<string> }
 type SimpleFetch = (
   url: string,
   init?: { signal?: unknown; headers?: Record<string, string> }
@@ -110,50 +121,69 @@ type SimpleFetch = (
 
 const nativeFetch = (globalThis as unknown as { fetch?: SimpleFetch }).fetch
 
-async function fetchRss(query: string, timeoutMs: number): Promise<string | null> {
-  if (!nativeFetch) return null
+async function fetchRss(
+  query: string,
+  timeoutMs: number
+): Promise<{ ok: boolean; text?: string; status?: number; error?: string }> {
+  if (!nativeFetch) return { ok: false, error: '运行时没有 fetch（Node 版本过低）' }
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
     const res = await nativeFetch(ENDPOINT + encodeURIComponent(query), {
       signal: ctrl.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
         Accept: 'application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8',
       },
     })
-    if (!res.ok) return null
-    return await res.text()
-  } catch {
-    return null
+    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` }
+    const text = await res.text()
+    return { ok: true, status: res.status, text }
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e)
+    return { ok: false, error: /abort/i.test(msg) ? `超时（${timeoutMs}ms）` : msg }
   } finally {
     clearTimeout(timer)
   }
 }
 
-/**
- * 跑一次海外市场探测。任何失败都返回 null —— 评估流程不因为探测失败而中断。
- */
-export async function probeOverseasMarket(
-  queries: string[],
-  timeoutMs = 9000
-): Promise<MarketSnapshot | null> {
+/** 带诊断的市场探测：失败也能说清失败在哪一步 */
+export async function probeWithDiag(queries: string[], timeoutMs = 9000): Promise<ProbeDiag> {
   const clean = queries.map((q) => q.trim()).filter(Boolean).slice(0, 2)
-  if (!clean.length) return null
+  const perQuery: ProbeDiag['perQuery'] = []
+  if (!clean.length) return { queries: [], perQuery, snapshot: null, error: '没有可用的英文搜索词' }
 
   const seen = new Set<string>()
   const items: MarketItem[] = []
   for (const q of clean) {
-    const xml = await fetchRss(q, timeoutMs)
-    if (!xml) continue
-    for (const it of parseRss(xml)) {
+    const r = await fetchRss(q, timeoutMs)
+    const parsed = r.ok && r.text ? parseRss(r.text) : []
+    perQuery.push({
+      query: q,
+      ok: r.ok,
+      items: parsed.length,
+      bytes: r.text?.length ?? 0,
+      status: r.status,
+      error: r.error,
+    })
+    for (const it of parsed) {
       const key = it.title.toLowerCase()
       if (seen.has(key)) continue
       seen.add(key)
       items.push(it)
     }
   }
-  if (!items.length) return null
+
+  if (!items.length) {
+    const firstErr = perQuery.find((p) => !p.ok || p.items === 0)
+    const error = firstErr?.error
+      ? firstErr.error
+      : firstErr?.ok && firstErr.bytes > 0
+        ? `${firstErr.query}: 页面抓到了 ${firstErr.bytes} 字节，但没解析出带价格的商品`
+        : '没有解析到任何商品'
+    return { queries: clean, perQuery, snapshot: null, error }
+  }
 
   const lows = items.map((i) => i.priceMin).sort((a, b) => a - b)
   const price = {
@@ -174,13 +204,29 @@ export async function probeOverseasMarket(
 
   return {
     queries: clean,
-    total,
-    items: sorted.slice(0, 12),
-    price,
-    densityScore,
-    spreadScore,
-    diffEstimate,
-    competitionEstimate: densityScore,
-    fetchedAt: new Date().toISOString(),
+    perQuery,
+    snapshot: {
+      queries: clean,
+      total,
+      items: sorted.slice(0, 12),
+      price,
+      densityScore,
+      spreadScore,
+      diffEstimate,
+      competitionEstimate: densityScore,
+      fetchedAt: new Date().toISOString(),
+    },
+  }
+}
+
+/**
+ * 生产路径用的探测：任何失败都返回 null —— 评估流程不因为探测失败而中断。
+ */
+export async function probeOverseasMarket(queries: string[], timeoutMs = 9000): Promise<MarketSnapshot | null> {
+  try {
+    const d = await probeWithDiag(queries, timeoutMs)
+    return d.snapshot
+  } catch {
+    return null
   }
 }
