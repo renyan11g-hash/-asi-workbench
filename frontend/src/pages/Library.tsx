@@ -337,12 +337,41 @@ export default function Library() {
                                     ? `$${p.evaluation.priceAdviceUsd.min} ~ $${p.evaluation.priceAdviceUsd.max}`
                                     : '—'}
                                 </span>
+                                {p.evaluation.marketSnapshot && (
+                                  <>
+                                    <span className="text-slate-400">海外同款</span>
+                                    <span className="text-slate-600">
+                                      {p.evaluation.marketSnapshot.total} 条 · list $
+                                      {p.evaluation.marketSnapshot.priceLow ?? '—'}–$
+                                      {p.evaluation.marketSnapshot.priceHigh ?? '—'}
+                                      {p.evaluation.marketSnapshot.queries?.length
+                                        ? ` · 「${p.evaluation.marketSnapshot.queries.join(' / ')}」`
+                                        : ''}
+                                    </span>
+                                  </>
+                                )}
                                 <span className="text-slate-400">ASI 类目</span>
                                 <span>
                                   {p.evaluation.asiCategories?.length
                                     ? p.evaluation.asiCategories.join('、')
                                     : '—'}
                                 </span>
+                                {p.evaluation.scoreBreakdown && (
+                                  <>
+                                    <span className="text-slate-400">评分拆解</span>
+                                    <span className="text-slate-600">
+                                      差异化 {p.evaluation.scoreBreakdown.differentiation} · 定制{' '}
+                                      {p.evaluation.scoreBreakdown.customization} · 物流 {p.evaluation.scoreBreakdown.shipping} · 竞争{' '}
+                                      {p.evaluation.scoreBreakdown.competition} · 合规 {p.evaluation.scoreBreakdown.compliance}
+                                    </span>
+                                  </>
+                                )}
+                                {p.evaluation.scoreNote && (
+                                  <>
+                                    <span className="text-slate-400">分数线</span>
+                                    <span className="text-slate-600">{p.evaluation.scoreNote}</span>
+                                  </>
+                                )}
                               </div>
                               {(p.evaluation.buyers?.length ?? 0) > 0 && (
                                 <p>

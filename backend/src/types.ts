@@ -7,6 +7,28 @@ export type Verdict = 'GO' | 'MAYBE' | 'NO'
 /** ASI/PPAI 选品评估报告（也用于规则引擎兜底） */
 export interface Evaluation {
   score: number
+  /** 分维度打分：差异化 / 定制可行性 / 物流体积 / 市场竞争 / 合规风险（旧数据可能没有） */
+  scoreBreakdown?: {
+    differentiation: number
+    customization: number
+    shipping: number
+    competition: number
+    compliance: number
+  }
+  /** 总分的由来（哪一维封顶 / 最弱一环），系统生成 */
+  scoreNote?: string
+  /** 海外市场探测结果（4imprint 真实目录价），评估时抓的 */
+  marketSnapshot?: {
+    queries: string[]
+    total: number
+    priceLow: number | null
+    priceHigh: number | null
+    median: number | null
+    diffEstimate: number
+    competitionEstimate: number
+    samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
+    fetchedAt: string
+  }
   verdict: Verdict
   summary: string
   pros: string[]

@@ -10,9 +10,6 @@ import Sourcing from "./pages/Sourcing";
 import SourcingSuggest from "./pages/SourcingSuggest";
 import Evaluations from "./pages/Evaluations";
 import Library from "./pages/Library";
-import Rescore from "./pages/Rescore";
-import Review from "./pages/Review";
-import SourcingDaily from "./pages/SourcingDaily";
 import ListingEditor from "./pages/ListingEditor";
 import SettingsPage from "./pages/SettingsPage";
 import NotFound from "./pages/NotFound";
@@ -78,24 +75,6 @@ function App() {
                 data-genie-key="Library"
                 data-genie-title="产品库"
                 element={<PageTransition transition="fade"><Library /></PageTransition>}
-              />
-              <Route
-                path="rescore"
-                data-genie-key="Rescore"
-                data-genie-title="评分对照"
-                element={<PageTransition transition="fade"><Rescore /></PageTransition>}
-              />
-              <Route
-                path="review"
-                data-genie-key="Review"
-                data-genie-title="审核队列"
-                element={<PageTransition transition="fade"><Review /></PageTransition>}
-              />
-              <Route
-                path="sourcing-daily"
-                data-genie-key="SourcingDaily"
-                data-genie-title="自动选品"
-                element={<PageTransition transition="fade"><SourcingDaily /></PageTransition>}
               />
               <Route
                 path="listing/:id"

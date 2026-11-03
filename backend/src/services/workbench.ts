@@ -17,6 +17,8 @@ import {
 } from '../constants/asi'
 import { buildAssistantPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, pickRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
 import { recommendImprintMethods } from './imprint-recommend'
+import { composeScore, parseBreakdown, scoreBand } from './eval-score'
+import { probeOverseasMarket, type MarketSnapshot } from './market-probe'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
@@ -124,15 +126,66 @@ const materialCompatibleImprints = (source: SourceInfo, extras: string[]): strin
   return extras.filter((m) => compatible.has(m))
 }
 
-function normalizeEvaluation(raw: Record<string, unknown>): Evaluation {
-  const score = Math.max(0, Math.min(100, Math.round(num(raw.score, 50))))
-  const verdict = score >= 75 ? 'GO' : score >= 55 ? 'MAYBE' : 'NO'
+/** 把 AI 的判断锚定在海外市场粗估附近：允许 ±span 的自由度，超出去要说明理由 */
+const anchorTo = (v: number, base: number, span: number) =>
+  Math.max(0, Math.min(100, Math.min(Math.max(v, base - span), base + span)))
+
+function normalizeEvaluation(raw: Record<string, unknown>, market?: MarketSnapshot | null): Evaluation {
+  const aiScore = Math.max(0, Math.min(100, Math.round(num(raw.score, 50))))
+  // 有五个维度 → 总分由系统按权重算（可复现、可解释），AI 自评分只作兜底
+  const parsed = parseBreakdown(raw.scoreBreakdown)
+  const breakdown =
+    parsed && market
+      ? {
+          ...parsed,
+          differentiation: anchorTo(parsed.differentiation, market.diffEstimate, 15),
+          competition: anchorTo(parsed.competition, market.competitionEstimate, 15),
+        }
+      : parsed
+  const composed = breakdown ? composeScore(breakdown) : null
+  const score = composed ? composed.score : aiScore
+
+  const verdictByScore = (score >= 75 ? 'GO' : score >= 55 ? 'MAYBE' : 'NO') as Evaluation['verdict']
+  const verdict = composed
+    ? verdictByScore
+    : ((raw.verdict === 'GO' || raw.verdict === 'MAYBE' || raw.verdict === 'NO'
+        ? raw.verdict
+        : verdictByScore) as Evaluation['verdict'])
+
   const price = (raw.priceAdviceUsd ?? {}) as Record<string, unknown>
+  // 有真实市场价 → 直接用海外目录价区间，不再让 AI 猜
+  const priceAdviceUsd =
+    market?.price != null
+      ? { min: market.price.p25, max: market.price.p75 }
+      : { min: num(price.min, 0), max: num(price.max, 0) }
+
+  const marketNote = market?.price
+    ? `｜海外同款 ${market.total} 条，list $${market.price.p25}–$${market.price.p75}`
+    : ''
+
   return {
     score,
-    verdict: (raw.verdict === 'GO' || raw.verdict === 'MAYBE' || raw.verdict === 'NO'
-      ? raw.verdict
-      : verdict) as Evaluation['verdict'],
+    verdict,
+    scoreBreakdown: breakdown ?? undefined,
+    scoreNote: composed ? `${composed.note}｜${scoreBand(composed.score)}${marketNote}` : undefined,
+    marketSnapshot: market
+      ? {
+          queries: market.queries,
+          total: market.total,
+          priceLow: market.price?.p25 ?? null,
+          priceHigh: market.price?.p75 ?? null,
+          median: market.price?.median ?? null,
+          diffEstimate: market.diffEstimate,
+          competitionEstimate: market.competitionEstimate,
+          samples: market.items.slice(0, 5).map((i) => ({
+            title: i.title,
+            priceMin: i.priceMin,
+            priceMax: i.priceMax,
+            url: i.url,
+          })),
+          fetchedAt: market.fetchedAt,
+        }
+      : undefined,
     summary: String(raw.summary ?? '').trim(),
     pros: arr(raw.pros),
     cons: arr(raw.cons),
@@ -145,7 +198,7 @@ function normalizeEvaluation(raw: Record<string, unknown>): Evaluation {
     channels: arr(raw.channels),
     asiCategories: arr(raw.asiCategories),
     suggestedThemes: pickEnumMany(ASI_THEMES, raw.suggestedThemes ?? []),
-    priceAdviceUsd: { min: num(price.min, 0), max: num(price.max, 0) },
+    priceAdviceUsd,
     sourcingTips: String(raw.sourcingTips ?? '').trim(),
     listingHooks: arr(raw.listingHooks),
     evaluatedAt: new Date().toISOString(),
@@ -244,11 +297,41 @@ export function heuristicEvaluate(source: SourceInfo, settings: Settings): Evalu
   }
 }
 
+/** 用 AI 把中文品名翻成海外买家会搜的英文词组（拿不到就退回 amazonTitle） */
+async function marketSearchTerms(source: SourceInfo, settings: Settings): Promise<string[]> {
+  const ascii = (s: string) => s.replace(/[^\x20-\x7E]/g, ' ').replace(/\s+/g, ' ').trim()
+  const fallback = ascii(source.amazonTitle || '')
+  if (!settings.aiApiKey?.trim()) return fallback ? [fallback.slice(0, 60)] : []
+  try {
+    const d = await callChatJson<{ queries?: string[] }>(
+      settings,
+      '你是美国促销礼品选品员。把产品翻译成海外买家在 4imprint 上会搜的英文词组。只输出 JSON：{"queries":["...","..."]}，2 个，每个 2-4 个英文单词，不要品牌名，不要中文。',
+      `产品名：${source.sourceTitle}\n材质：${source.materialCn || '(未知)'}\n描述：${(source.description || '').slice(0, 200)}`,
+      0.2
+    )
+    const q = (d?.queries ?? []).map((s) => ascii(String(s))).filter(Boolean).slice(0, 2)
+    if (q.length) return q
+  } catch {
+    /* 翻译失败就用兜底 */
+  }
+  return fallback ? [fallback.slice(0, 60)] : []
+}
+
 export async function evaluateSource(source: SourceInfo, settings: Settings): Promise<Evaluation> {
   if (!settings.aiApiKey?.trim()) return heuristicEvaluate(source, settings)
-  const { system, user } = buildEvaluatePrompt(source, settings)
+
+  // 先探一次海外市场（4imprint 真实目录价）：差异化/竞争有据可依，价格不用瞎猜
+  let market: MarketSnapshot | null = null
+  try {
+    const queries = await marketSearchTerms(source, settings)
+    if (queries.length) market = await probeOverseasMarket(queries)
+  } catch {
+    market = null
+  }
+
+  const { system, user } = buildEvaluatePrompt(source, settings, market)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.3)
-  return normalizeEvaluation(raw)
+  return normalizeEvaluation(raw, market)
 }
 
 /** 多轮对话调整评估：保留历史，由 AI 输出完整新评估 */

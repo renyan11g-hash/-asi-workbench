@@ -3,6 +3,7 @@ import { ASI_CATEGORIES, ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_B
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { costSummaryForPrompt, convertUnits } from './pricing'
 import { recommendImprintMethods } from './imprint-recommend'
+import type { MarketSnapshot } from './market-probe'
 
 /**
  * 类目智能筛选：从 GLS 类目表中按产品文本相关性挑出最匹配的 N 个。
@@ -132,11 +133,31 @@ ASI Listing field rules (strict):
 
 You will also produce a Chinese translation of title/summary/description/keywords for the salesperson to verify.`
 
-export function buildEvaluatePrompt(source: SourceInfo, settings: Settings) {
+export function buildEvaluatePrompt(source: SourceInfo, settings: Settings, market?: MarketSnapshot | null) {
   const system = `${ASI_CONTEXT}
 
 Evaluate the 1688 item for fit with US promotional products market.
 Respond with STRICT JSON only (no markdown, no commentary).`
+
+  const marketBlock = market
+    ? `OVERSEAS MARKET EVIDENCE (4imprint search — REAL catalogue prices, not guesses)
+- Search terms used: ${market.queries.join(' | ')}
+- Comparable SKUs found: ${market.total} (RSS caps around 28, so treat as "at least this many")
+- Real list price band (bulk tier): $${market.price?.p25 ?? '?'} – $${market.price?.p75 ?? '?'} (median $${market.price?.median ?? '?'}, overall $${market.price?.min ?? '?'} – $${market.price?.max ?? '?'})
+- Market-derived rough estimates: differentiation ≈ ${market.diffEstimate}, competition ≈ ${market.competitionEstimate}
+- Closest competitors:
+${market.items
+  .slice(0, 8)
+  .map((i) => `  · ${i.title} — $${i.priceMin} - $${i.priceMax}`)
+  .join('\n')}
+
+HOW TO USE THIS EVIDENCE:
+- "differentiation" and "competition" MUST be based on this sample. Land within ±15 of the market-derived estimates above; if you go outside that window, explain in one short Chinese sentence inside "cons" why this product is materially different from the sample.
+- "priceAdviceUsd" MUST come from the real price band above (not a guess). Give a sensible sub-range for THIS product's tier.
+- If the sample is obviously off-target (different product type), say so in "cons" and still score on product merits.
+
+`
+    : ''
 
   const user = `Evaluate this 1688 product for the US promotional products (ASI) market.
 
@@ -156,12 +177,19 @@ PRODUCT DATA
 - 1688 category hint: ${source.category || '(unknown)'}
 - Notes: ${source.notes || '(none)'}
 
-COST MODEL (already calculated)
+${marketBlock}COST MODEL (already calculated)
 ${costSummaryForPrompt(source, settings)}
 
 OUTPUT JSON SCHEMA (all fields required):
 {
   "score": <integer 0-100>,
+  "scoreBreakdown": {
+    "differentiation": <0-100>,
+    "customization": <0-100>,
+    "shipping": <0-100>,
+    "competition": <0-100>,
+    "compliance": <0-100>
+  },
   "verdict": "GO" | "MAYBE" | "NO",
   "summary": "<2-3 sentence Chinese verdict for the salesperson>",
   "pros": ["<Chinese, 3-5 items>"],
@@ -182,7 +210,15 @@ OUTPUT JSON SCHEMA (all fields required):
   "listingHooks": ["<English selling hooks that can go straight into a listing, 3-5 items>"]
 }
 
-Scoring guide: 80-100 = strong promo item, list it; 60-79 = viable with caveats; 40-59 = only for niche buyers; 0-39 = skip.
+Scoring guide — you ONLY score the five dimensions; the system computes the final score as a weighted sum
+(differentiation 28% / customization 22% / shipping 18% / competition 17% / compliance 15%) and applies hard caps.
+ - differentiation 差异化 0-100: 同款是否烂大街、有没有记忆点/可讲的故事（同款泛滥 → 低于 30）
+ - customization 定制可行性 0-100: 工艺是否简单、能否小批量打样、logo 位置是否好上、是否要开模（做不了定制 → 低于 30）
+ - shipping 物流体积 0-100: 是否抛货、单件是否偏重、装箱率是否低（越轻越紧凑分越高；泡货/重货 → 低于 25）
+ - competition 市场竞争 0-100: ASI 目录里同类是否已饱和、是否只能打价格战
+ - compliance 合规与知识产权 0-100: 品牌/专利/认证/儿童安全风险（有硬伤 → 低于 40）
+Set "score" to your own rough overall estimate as well, but the system will override it with the weighted result.
+Judge the PRODUCT, not the price. Never raise or lower any dimension because of estimated pricing, and never invent a market price — "priceAdviceUsd" is a rough reference only and must not drive scores or verdict.
 Be brutally honest. The 'issues' list must be CONCRETE and actionable (e.g. '仅一种主色，缺海军蓝/灰色不易匹配客户 VI'), not generic. The 'suggestions' list must be the matching FIX for each issue, e.g. '与供应商沟通加做海军蓝、灰色，至少 5 种颜色可选'.`
 
   return { system, user }
@@ -363,6 +399,13 @@ ${conv || '(no messages yet)'}
 OUTPUT JSON SCHEMA (must match the original evaluation schema, all fields required):
 {
   "score": <integer 0-100, may shift up or down based on conversation>,
+  "scoreBreakdown": {
+    "differentiation": <0-100>,
+    "customization": <0-100>,
+    "shipping": <0-100>,
+    "competition": <0-100>,
+    "compliance": <0-100>
+  },
   "verdict": "GO" | "MAYBE" | "NO",
   "summary": "<2-3 sentence Chinese verdict reflecting the latest conversation>",
   "pros": ["<Chinese, 3-5 items>"],
@@ -385,6 +428,7 @@ OUTPUT JSON SCHEMA (must match the original evaluation schema, all fields requir
 
 Rules:
 - Only change scores/fields when the conversation gives concrete new info (e.g. "已经和供应商确认可以做 5 种颜色" → upgrade colors flexibility).
+- Always return all five scoreBreakdown dimensions. The system recomputes the final score from them (weighted + hard caps), so the five numbers are what actually matter.
 - Be brutally honest. Do not be a yes-man.
 - If the conversation adds no real signal, you may return the same evaluation.`
 

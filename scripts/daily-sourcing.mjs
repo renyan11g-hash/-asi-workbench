@@ -115,7 +115,8 @@ async function main() {
   const day = Math.floor(Date.now() / 86400000)
   const fromEnv = (process.env.KEYWORDS || '').split(/[,，;；]/).map((s) => s.trim()).filter(Boolean)
   const start = day % POOL.length
-  const keywords = fromEnv.length ? fromEnv.slice(0, 4) : [0, 1, 2, 3].map((i) => POOL[(start + i) % POOL.length])
+  let keywords = fromEnv.length ? fromEnv.slice(0, 4) : [0, 1, 2, 3].map((i) => POOL[(start + i) % POOL.length])
+
   log('搜索词:', keywords.join('、'))
 
   // ① 搜索
