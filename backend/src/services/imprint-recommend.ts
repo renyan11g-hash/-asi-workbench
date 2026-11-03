@@ -466,9 +466,14 @@ export interface ImprintRecommendationResult {
   materialDetected: boolean
 }
 
-/** 深色判断：深色底会限制热升华、影响丝印打底 */
-const DARK_RE = /黑|藏青|藏蓝|深蓝|墨绿|深灰|炭灰|咖啡|棕|酒红|深红|深紫|枪灰|深色/i
-const LIGHT_RE = /白|米白|象牙|浅|本白|自然色|透明|银白|浅色/i
+/**
+ * 深色判断：深色底会限制热升华、影响丝印打底。
+ * 中文（1688 颜色字段）和英文（listing 的 colors 字段）都要认，否则线上用英文颜色时规则会失效。
+ */
+const DARK_RE =
+  /黑|藏青|藏蓝|深蓝|墨绿|深灰|炭灰|咖啡|棕|酒红|深红|深紫|枪灰|深色|black|navy|dark|charcoal|brown|burgundy|maroon|forest green|deep|espresso|graphite/i
+const LIGHT_RE =
+  /白|米白|象牙|浅|本白|自然色|透明|银白|浅色|white|ivory|light|clear|transparent|silver|natural|cream/i
 
 function isDarkBody(source: { colorsCn?: string; sourceTitle?: string }): boolean {
   const text = [source.colorsCn, source.sourceTitle].filter(Boolean).join(' ')
