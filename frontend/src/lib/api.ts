@@ -848,6 +848,8 @@ export const api = {
     skipped: number
     errors: Array<{ row: number; error: string }>
     total: number
+    pendingImages?: number
+    imageTaskId?: string | null
   }> {
     const { data } = await apiClient.post<{
       created: number
@@ -855,6 +857,8 @@ export const api = {
       skipped: number
       errors: Array<{ row: number; error: string }>
       total: number
+      pendingImages?: number
+      imageTaskId?: string | null
     }>('/master-products/import', { filename, dataBase64 }, { timeout: 180_000 })
     return data
   },
@@ -862,6 +866,14 @@ export const api = {
   masterExportUrl(format: 'xlsx' | 'csv'): string {
     const baseURL = import.meta.env.VITE_API_URL || '/api'
     return `${baseURL}/master-products/export.${format}`
+  },
+
+  /** 通用异步任务查询（导入资料库后的图片解析任务等） */
+  async getTask(taskId: string): Promise<{ status: string; progress?: string; error?: string; result?: unknown }> {
+    const { data } = await apiClient.get<{ status: string; progress?: string; error?: string; result?: unknown }>(
+      `/products/tasks/${taskId}`
+    )
+    return data
   },
 
   exportCsvUrl(): string {

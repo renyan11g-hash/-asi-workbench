@@ -106,6 +106,8 @@ export default function MasterData() {
     skipped: number
     total: number
     errors: Array<{ row: number; error: string }>
+    pendingImages?: number
+    imageTaskId?: string | null
   } | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
 
@@ -135,6 +137,30 @@ export default function MasterData() {
       setImportResult(r)
       toast.success(`导入完成：新增 ${r.created} 条，更新 ${r.updated} 条`)
       await load(q)
+      // 表格里的「嵌入单元格图片」在后台慢慢解，这里轮询到完成再刷新一次
+      if (r.imageTaskId) {
+        setImporting(true)
+        setImportResult({ ...r, total: r.total, errors: r.errors })
+        for (let i = 0; i < 200; i++) {
+          await new Promise((res) => setTimeout(res, 3000))
+          try {
+            const t = await api.getTask(r.imageTaskId)
+            if (t.status === 'done') {
+              toast.success('表格里的图片已解析完成')
+              await load(q)
+              break
+            }
+            if (t.status === 'error') {
+              toast.error(`图片解析失败：${t.error ?? '未知原因'}（文字资料已导入）`)
+              break
+            }
+          } catch {
+            /* 服务重启会丢任务，直接停 */
+            break
+          }
+        }
+        setImporting(false)
+      }
     } catch (err) {
       const msg = getErrorMessage(err)
       setImportError(msg)
@@ -400,9 +426,10 @@ export default function MasterData() {
               </ul>
             )}
             <div className="mt-1 text-[11px] text-slate-400">
-              按 1688 链接去重：已存在就更新，不存在就新增。图片列多张用换行分隔。
-              如果 Excel 里的图是「嵌入单元格的图片」（单元格显示成照片，不是网址），导入读不到地址——
-              用右上角「批量抓图」按链接回 1688 抓一次即可。
+              按 1688 链接去重：已存在就更新，不存在就新增。
+              {importResult.pendingImages
+                ? ` · 表格里有 ${importResult.pendingImages} 行带「嵌入单元格的图片」，正在后台解析（${importing ? '进行中…' : '已完成'}）`
+                : ' · 图片列支持换行分隔的多张网址'}
             </div>
           </div>
         )}

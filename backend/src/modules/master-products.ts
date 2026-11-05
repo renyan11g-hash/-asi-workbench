@@ -15,6 +15,7 @@ import { z } from 'zod'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { dispImgIds, extractWpsCellImages } from '../services/cell-images'
+import { createTask, runTask, updateTask } from '../services/task-manager'
 
 export interface MasterProduct {
   id: string
@@ -641,14 +642,16 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
   let skipped = 0
   const errors: Array<{ row: number; error: string }> = []
 
-  // 先把表格里「嵌入单元格的图片」解出来（WPS 的 DISPIMG），后面按 ID 取
-  const cellImages = isXlsxName ? await extractWpsCellImages(buf) : new Map<string, string>()
+  // 记录哪些行有「嵌入单元格图片」，导入完成后交给后台任务慢慢解
+  const pendingImages: Array<{ id: string; imgIds: string[] }> = []
+  const imgCol = map.get('imagesText')?.[0]
 
   for (let i = headerRow + 1; i < grid.length; i++) {
     const row = grid[i] ?? []
     if (!row.some((c) => String(c ?? '').trim())) continue
     try {
-      const input = rowToInput(map, row, cellImages)
+      // 先不解析图片（解 38 张要几分钟，会把请求拖超时），先按文字入库
+      const input = rowToInput(map, row)
       if (!input) {
         skipped += 1
         continue
@@ -661,9 +664,47 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
         insertMaster(input)
         created += 1
       }
+      if (imgCol != null) {
+        const ids = dispImgIds(String(row[imgCol] ?? ''))
+        if (ids.length) {
+          const saved = input.sourceUrl ? findMasterByUrl(input.sourceUrl) : null
+          if (saved) pendingImages.push({ id: saved.id, imgIds: ids })
+        }
+      }
     } catch (err) {
       errors.push({ row: i + 1, error: err instanceof Error ? err.message : String(err) })
     }
+  }
+
+  // 图片解析放后台：解 xlsx 里的 media → 缩图 → 回填。前端轮询任务进度。
+  let imageTaskId: string | null = null
+  if (isXlsxName && pendingImages.length) {
+    const task = createTask('master-cell-images')
+    imageTaskId = task.id
+    runTask(
+      task,
+      async () => {
+        const cellImages = await extractWpsCellImages(buf)
+        let patched = 0
+        for (let i = 0; i < pendingImages.length; i++) {
+          const p = pendingImages[i]
+          const urls = p.imgIds
+            .map((id) => cellImages.get(id))
+            .filter((u): u is string => Boolean(u))
+          if (urls.length) {
+            db.prepare('UPDATE master_products SET images=?, updated_at=? WHERE id=?').run(
+              JSON.stringify(urls.slice(0, 8)),
+              new Date().toISOString(),
+              p.id
+            )
+            patched += 1
+          }
+          updateTask(task.id, { progress: `${i + 1}/${pendingImages.length}` })
+        }
+        return { patched, total: pendingImages.length }
+      },
+      0
+    )
   }
 
   res.json({
@@ -673,6 +714,8 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
     skipped,
     errors: errors.slice(0, 20),
     total: Math.max(0, grid.length - headerRow - 1),
-    embeddedImages: cellImages.size,
+    /** 有这么多行带「嵌入单元格图片」，图片在后台解析 */
+    pendingImages: pendingImages.length,
+    imageTaskId,
   })
 })
