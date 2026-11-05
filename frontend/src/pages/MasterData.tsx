@@ -99,6 +99,7 @@ export default function MasterData() {
   const [fetching, setFetching] = useState(false)
   const [imgUrl, setImgUrl] = useState('')
   const [importing, setImporting] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
   const [importResult, setImportResult] = useState<{
     created: number
     updated: number
@@ -117,6 +118,7 @@ export default function MasterData() {
     }
     setImporting(true)
     setImportResult(null)
+    setImportError(null)
     try {
       const buf = await file.arrayBuffer()
       let binary = ''
@@ -130,7 +132,9 @@ export default function MasterData() {
       toast.success(`导入完成：新增 ${r.created} 条，更新 ${r.updated} 条`)
       await load(q)
     } catch (err) {
-      toast.error(getErrorMessage(err))
+      const msg = getErrorMessage(err)
+      setImportError(msg)
+      toast.error(msg)
     } finally {
       setImporting(false)
       if (fileRef.current) fileRef.current.value = ''
@@ -319,6 +323,16 @@ export default function MasterData() {
           </div>
         }
       >
+        {importError && (
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-[12px] text-rose-700">
+            <div className="font-medium">导入失败</div>
+            <div className="mt-0.5 break-all">{importError}</div>
+            <div className="mt-1 text-[11px] text-rose-600">
+              排查顺序：① 文件是不是 .xlsx/.csv（老的 .xls 请另存为 xlsx）② 表头里有没有「1688链接」「商品名称」
+              ③ 行数很多时文件别超过 5MB
+            </div>
+          </div>
+        )}
         {importResult && (
           <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-[12px] text-slate-700">
             <div>

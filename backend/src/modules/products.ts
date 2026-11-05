@@ -1651,11 +1651,35 @@ productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
       billableKg: z.coerce.number().positive().nullable().optional(),
       markupAir: z.coerce.number().positive().nullable().optional(),
       markupSea: z.coerce.number().positive().nullable().optional(),
-      /** 逐档空运/海运（点徽标切换） */
-      shippingModes: z.array(z.enum(['air', 'sea'])).max(12).optional(),
+      /** 逐档空运/海运（null = 该档沿用自动分配） */
+      shippingModes: z.array(z.enum(['air', 'sea']).nullable()).max(12).optional(),
+      /** 只切换某一档：其它档一律不动，避免「点一个档整表价都变」 */
+      toggle: z
+        .object({
+          idx: z.coerce.number().int().min(0).max(11),
+          mode: z.enum(['air', 'sea']),
+        })
+        .optional(),
     })
     .parse(req.body ?? {})
-  const { rows } = buildPriceGrid(current.source, settings, body)
+
+  const overrides: Parameters<typeof buildPriceGrid>[2] = {
+    billableKg: body.billableKg,
+    markupAir: body.markupAir,
+    markupSea: body.markupSea,
+    shippingModes: body.shippingModes,
+  }
+  if (body.toggle) {
+    const currentRows = (current.listing?.priceGrid ?? []) as Array<{ markupRate?: number }>
+    const modes: Array<'air' | 'sea' | null> = currentRows.map(() => null)
+    // 只给被点的那一档下指令；其余档留 null = 仍按「前 N 档空运」自动分配
+    if (body.toggle.idx < modes.length) modes[body.toggle.idx] = body.toggle.mode
+    overrides.shippingModes = modes
+    const keepMarkup = Number(currentRows[body.toggle.idx]?.markupRate)
+    if (keepMarkup > 0) overrides.markupByIndex = { [body.toggle.idx]: keepMarkup }
+  }
+
+  const { rows } = buildPriceGrid(current.source, settings, overrides)
   const listing: Listing | null = current.listing
     ? { ...current.listing, priceGrid: rows }
     : null

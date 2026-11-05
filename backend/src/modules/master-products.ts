@@ -9,6 +9,7 @@
 
 import { randomUUID } from 'crypto'
 import ExcelJS from 'exceljs'
+import iconv from 'iconv-lite'
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../db'
@@ -282,13 +283,19 @@ function cellOf(m: MasterProduct, key: keyof MasterProduct | 'imagesText'): stri
 const HEADER_ALIASES: Record<string, keyof MasterProduct | 'imagesText'> = {
   '1688链接': 'sourceUrl',
   链接: 'sourceUrl',
+  商品链接: 'sourceUrl',
+  产品链接: 'sourceUrl',
+  采购链接: 'sourceUrl',
   url: 'sourceUrl',
   商品名称: 'title',
+  产品名称: 'title',
   名称: 'title',
   标题: 'title',
   品名: 'title',
   '采购价(元)': 'priceCny',
   采购价: 'priceCny',
+  成本价: 'priceCny',
+  进价: 'priceCny',
   价格: 'priceCny',
   '产品尺寸(cm)': 'sizeCn',
   产品尺寸: 'sizeCn',
@@ -298,19 +305,24 @@ const HEADER_ALIASES: Record<string, keyof MasterProduct | 'imagesText'> = {
   单件重: 'weightG',
   '箱规长(cm)': 'cartonLCm',
   箱规长: 'cartonLCm',
+  外箱长: 'cartonLCm',
   长: 'cartonLCm',
   '箱规宽(cm)': 'cartonWCm',
   箱规宽: 'cartonWCm',
+  外箱宽: 'cartonWCm',
   宽: 'cartonWCm',
   '箱规高(cm)': 'cartonHCm',
   箱规高: 'cartonHCm',
+  外箱高: 'cartonHCm',
   高: 'cartonHCm',
   一箱数量: 'pcsPerCarton',
   每箱数量: 'pcsPerCarton',
   装箱数: 'pcsPerCarton',
+  装箱数量: 'pcsPerCarton',
   '一箱毛重(kg)': 'cartonGwKg',
   一箱毛重: 'cartonGwKg',
   箱毛重: 'cartonGwKg',
+  整箱毛重: 'cartonGwKg',
   毛重: 'cartonGwKg',
   材质: 'materialCn',
   颜色: 'colorsCn',
@@ -480,14 +492,32 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
       grid.push(values)
     })
   } else {
-    grid = parseCsv(buf.toString('utf8').replace(/^\uFEFF/, ''))
+    // 中文版 Excel 另存 CSV 默认是 GBK/ANSI，直接按 UTF-8 读会全是乱码 → 表头认不出来。
+    // 先按 UTF-8 解，出现替换字符（U+FFFD）就退回 GBK 再解一次。
+    const utf8 = buf.toString('utf8').replace(/^\uFEFF/, '')
+    const text = utf8.includes('\uFFFD') ? iconv.decode(buf, 'gbk').replace(/^\uFEFF/, '') : utf8
+    grid = parseCsv(text)
   }
 
   if (grid.length < 2) throw new AppError(400, '文件里没有数据行（第一行要是表头）')
 
-  const map = headerMap(grid[0])
-  if (map.size === 0) {
-    throw new AppError(400, '没认出表头：请用「导出 Excel」的表头，或至少包含「1688链接 / 商品名称」')
+  // 表头不一定在第一行（很多人表格上面还有标题行）：在前 10 行里找认出 ≥2 列的那一行
+  let headerRow = -1
+  let map = new Map<number, keyof MasterProduct | 'imagesText'>()
+  for (let i = 0; i < Math.min(10, grid.length); i++) {
+    const m = headerMap(grid[i] ?? [])
+    if (m.size >= 2) {
+      headerRow = i
+      map = m
+      break
+    }
+  }
+  if (headerRow < 0) {
+    const seen = (grid[0] ?? []).map((c) => String(c ?? '').trim()).filter(Boolean).slice(0, 6).join(' / ')
+    throw new AppError(
+      400,
+      `没认出表头（前 10 行里没有至少 2 个能识别的列名）。读到的是：${seen || '（空表）'}。请点「导出 Excel」拿标准表头，至少要有「1688链接」和「商品名称」`
+    )
   }
 
   let created = 0
@@ -495,7 +525,7 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
   let skipped = 0
   const errors: Array<{ row: number; error: string }> = []
 
-  for (let i = 1; i < grid.length; i++) {
+  for (let i = headerRow + 1; i < grid.length; i++) {
     const row = grid[i] ?? []
     if (!row.some((c) => String(c ?? '').trim())) continue
     try {
@@ -517,5 +547,12 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
     }
   }
 
-  res.json({ ok: true, created, updated, skipped, errors: errors.slice(0, 20), total: grid.length - 1 })
+  res.json({
+    ok: true,
+    created,
+    updated,
+    skipped,
+    errors: errors.slice(0, 20),
+    total: Math.max(0, grid.length - headerRow - 1),
+  })
 })

@@ -586,7 +586,9 @@ export const api = {
       billableKg?: number | null
       markupAir?: number | null
       markupSea?: number | null
-      shippingModes?: Array<'air' | 'sea'>
+      shippingModes?: Array<'air' | 'sea' | null>
+      /** 只切换某一档运输方式（其它档价格保持不变） */
+      toggle?: { idx: number; mode: 'air' | 'sea' }
     }
   ): Promise<Product> {
     const { data } = await apiClient.post<{ product: Product }>(

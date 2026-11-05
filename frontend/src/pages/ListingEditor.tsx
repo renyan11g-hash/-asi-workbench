@@ -827,7 +827,7 @@ export default function ListingEditor() {
   const [ovMarkupAir, setOvMarkupAir] = useState<string | null>(null)
   const [ovMarkupSea, setOvMarkupSea] = useState<string | null>(null)
 
-  const reprice = async (extra?: { shippingModes?: Array<'air' | 'sea'> }) => {
+  const reprice = async () => {
     if (!product) return
     try {
       const num = (v: string | null) => {
@@ -838,21 +838,33 @@ export default function ListingEditor() {
         billableKg: num(ovBillable),
         markupAir: num(ovMarkupAir),
         markupSea: num(ovMarkupSea),
-        shippingModes: extra?.shippingModes,
       })
       setListing(p.listing ?? listing)
       qc.invalidateQueries({ queryKey: ['product', id] })
-      toast.success(extra?.shippingModes ? '已切换该档运输方式并重算' : '已按你填的计费重 / 倍率重算价格表')
+      toast.success('已按你填的计费重 / 倍率整表重算')
     } catch (err) {
       toast.error(getErrorMessage(err))
     }
   }
 
-  /** 点某一档的空运/海运徽标 → 切换并整表重算 */
+  /** 点某一档的空运/海运徽标 → 只切换这一档，其它档价格保持原样 */
   const toggleShipping = (idx: number) => {
     const rows = listing?.priceGrid ?? []
-    const modes = rows.map((r, i) => (i === idx ? (r.shipping === 'air' ? 'sea' : 'air') : r.shipping))
-    void reprice({ shippingModes: modes as Array<'air' | 'sea'> })
+    const cur = rows[idx]
+    if (!cur) return
+    void repriceToggle(idx, cur.shipping === 'air' ? 'sea' : 'air')
+  }
+
+  const repriceToggle = async (idx: number, mode: 'air' | 'sea') => {
+    if (!product) return
+    try {
+      const p = await api.reprice(product.id, { toggle: { idx, mode } })
+      setListing(p.listing ?? listing)
+      qc.invalidateQueries({ queryKey: ['product', id] })
+      toast.success(`第 ${idx + 1} 档已切到${mode === 'air' ? '空运' : '海运'}（其它档不变）`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
   }
 
   // ---------- 源信息一体化编辑（评估库 ↔ 产品库 ↔ 链接 三处同步） ----------
