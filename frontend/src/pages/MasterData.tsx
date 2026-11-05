@@ -113,7 +113,11 @@ export default function MasterData() {
   const onImportFile = async (file: File | null) => {
     if (!file) return
     if (!/\.(xlsx|csv)$/i.test(file.name)) {
-      toast.error('只支持 .xlsx / .csv（老 .xls 请在 Excel 里另存为 xlsx）')
+      toast.error('只支持 .xlsx / .csv（老 .xls 请在 Excel 里另存为 xlsx 或 csv）')
+      return
+    }
+    if (file.size > 30 * 1024 * 1024) {
+      toast.error(`文件 ${(file.size / 1024 / 1024).toFixed(1)}MB 太大了，请拆成几个文件分批导入`)
       return
     }
     setImporting(true)

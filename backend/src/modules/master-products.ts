@@ -468,35 +468,70 @@ function parseCsv(text: string): string[][] {
  */
 masterProductsRouter.post('/import', async (req: Request, res: Response) => {
   const body = z
-    .object({ filename: z.string().default('import.csv'), dataBase64: z.string().min(1) })
+    .object({ filename: z.string().default('import.csv'), dataBase64: z.string().default('') })
     .parse(req.body ?? {})
-  const buf = Buffer.from(body.dataBase64, 'base64')
+  if (!body.dataBase64) {
+    throw new AppError(400, '没有收到文件内容：请重新选文件（或文件是空的）')
+  }
+  let buf: Buffer
+  try {
+    buf = Buffer.from(body.dataBase64, 'base64')
+  } catch {
+    throw new AppError(400, '文件内容解码失败，请重新上传')
+  }
+  if (buf.length === 0) throw new AppError(400, '文件是空的')
+
+  const isXlsxName = /\.xlsx$/i.test(body.filename)
+  // xlsx 本质是 zip，头 4 字节是 PK\x03\x04。很多「xls 改名成 xlsx」在这里露馅，
+  // 与其抛个看不懂的 500，不如直接说清楚。
+  const isZip = buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b
 
   let grid: string[][] = []
-  if (/\.xlsx$/i.test(body.filename)) {
-    const wb = new ExcelJS.Workbook()
-    await wb.xlsx.load(buf as unknown as ArrayBuffer)
-    const ws = wb.worksheets[0]
-    if (!ws) throw new AppError(400, 'Excel 里没有工作表')
-    ws.eachRow((row) => {
-      const values: string[] = []
-      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        const v = cell.value
-        let s = ''
-        if (v == null) s = ''
-        else if (typeof v === 'object' && v !== null && 'text' in v) s = String((v as { text: unknown }).text ?? '')
-        else if (typeof v === 'object' && v !== null && 'result' in v) s = String((v as { result: unknown }).result ?? '')
-        else s = String(v)
-        values[colNumber - 1] = s
+  try {
+    if (isXlsxName) {
+      if (!isZip) {
+        throw new AppError(
+          400,
+          '这个文件不是真正的 .xlsx（可能是 .xls 改了扩展名，或 WPS/Numbers 导出的格式）。请用 Excel 打开后「另存为 → Excel 工作簿(*.xlsx)」，或另存为 .csv 再导入'
+        )
+      }
+      const wb = new ExcelJS.Workbook()
+      await wb.xlsx.load(buf as unknown as ArrayBuffer)
+      const ws = wb.worksheets[0]
+      if (!ws) throw new AppError(400, 'Excel 里没有工作表')
+      ws.eachRow((row) => {
+        const values: string[] = []
+        row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          const v = cell.value
+          let s = ''
+          if (v == null) s = ''
+          else if (typeof v === 'object' && v !== null && 'richText' in v) {
+            const rt = (v as { richText: Array<{ text?: string }> }).richText
+            s = Array.isArray(rt) ? rt.map((t) => t?.text ?? '').join('') : ''
+          } else if (typeof v === 'object' && v !== null && 'text' in v) {
+            s = String((v as { text: unknown }).text ?? '')
+          } else if (typeof v === 'object' && v !== null && 'result' in v) {
+            s = String((v as { result: unknown }).result ?? '')
+          } else if (typeof v === 'object' && v !== null && 'hyperlink' in v) {
+            s = String((v as { hyperlink: unknown }).hyperlink ?? '')
+          } else s = String(v)
+          values[colNumber - 1] = s
+        })
+        grid.push(values)
       })
-      grid.push(values)
-    })
-  } else {
-    // 中文版 Excel 另存 CSV 默认是 GBK/ANSI，直接按 UTF-8 读会全是乱码 → 表头认不出来。
-    // 先按 UTF-8 解，出现替换字符（U+FFFD）就退回 GBK 再解一次。
-    const utf8 = buf.toString('utf8').replace(/^\uFEFF/, '')
-    const text = utf8.includes('\uFFFD') ? iconv.decode(buf, 'gbk').replace(/^\uFEFF/, '') : utf8
-    grid = parseCsv(text)
+    } else {
+      // 中文版 Excel 另存 CSV 默认是 GBK/ANSI，直接按 UTF-8 读会全是乱码 → 表头认不出来。
+      // 先按 UTF-8 解，出现替换字符（U+FFFD）就退回 GBK 再解一次。
+      const utf8 = buf.toString('utf8').replace(/^\uFEFF/, '')
+      const text = utf8.includes('\uFFFD') ? iconv.decode(buf, 'gbk').replace(/^\uFEFF/, '') : utf8
+      grid = parseCsv(text)
+    }
+  } catch (err) {
+    if (err instanceof AppError) throw err
+    throw new AppError(
+      400,
+      `解析文件失败：${err instanceof Error ? err.message : String(err)}（建议用 Excel 另存为 .xlsx 或 .csv 再试）`
+    )
   }
 
   if (grid.length < 2) throw new AppError(400, '文件里没有数据行（第一行要是表头）')

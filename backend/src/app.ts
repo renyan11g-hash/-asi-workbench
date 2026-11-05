@@ -42,6 +42,8 @@ export const createApp = (): Application => {
   )
 
   // Body parsing and compression（以图找源上传 base64 图片，放宽到 8mb）
+  // 资料库导入：Excel 转 base64 会膨胀约 33%，这条路由单独放宽（其它接口仍按 8mb）
+  app.use(`${env.API_PREFIX}/master-products/import`, express.json({ limit: '48mb' }))
   app.use(express.json({ limit: '8mb' }))
   app.use(express.urlencoded({ extended: true }))
   app.use(compression())
