@@ -113,6 +113,13 @@ function fetchedFieldNames(g: GrabbedFetched): string[] {
   return out
 }
 
+/** 1688 失效/下架页面的标题特征（抓到这种页面不算抓取成功） */
+function isDeadOfferTitle(title: string): boolean {
+  const t = (title ?? '').trim()
+  if (!t) return false
+  return /无法查看|已下架|不存在|已被删除|该商品.{0,4}下架|访问的页面/.test(t)
+}
+
 /** 跑一条：抓取 → 评估 → 入库 → listing，任一步失败只标记这一条，不影响后面的 */
 async function processItem(job: BatchJob, item: BatchItem, settings: ReturnType<typeof loadSettings>) {
   const opts = job.options
@@ -123,6 +130,12 @@ async function processItem(job: BatchJob, item: BatchItem, settings: ReturnType<
     setStage(job, item, 'fetching', '抓取 1688 详情…')
     try {
       const grabbed = await fetch1688Page(item.url)
+      // 1688 对失效/下架链接不是报错，而是返回一个「商品无法查看或已下架」的页面。
+      // 不拦的话，这一条会拿着「阿里巴巴-1688商品无法查看或已下架」当标题入库，
+      // 批量跑 10 条死链就会往产品库塞 10 个垃圾产品。
+      if (isDeadOfferTitle(grabbed.fetched.sourceTitle)) {
+        throw new Error('1688 返回「商品无法查看或已下架」，链接可能失效')
+      }
       fetched = grabbed.fetched
       item.fetchedFields = fetchedFieldNames(grabbed.fetched)
     } catch (err) {
