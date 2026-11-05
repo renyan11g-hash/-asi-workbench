@@ -304,7 +304,7 @@ export default function Batch() {
           />
           <OptionRow
             checked={options.listing}
-            onChange={(v) => setOptions((o) => ({ ...o, listing: v || options.listing, save: v ? true : options.save }))}
+            onChange={(v) => setOptions((o) => ({ ...o, listing: v, save: v ? true : o.save }))}
             title="生成英文 listing"
             desc="较慢（每条多约 1 分钟）。勾选后会自动入库，跑完即可在链接生成页微调"
           />
