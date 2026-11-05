@@ -7,6 +7,7 @@ import { AppLayout } from "@/components/AppLayout";
 import Dashboard from "./pages/Dashboard";
 import OrderCenter from "./pages/OrderCenter";
 import Sourcing from "./pages/Sourcing";
+import Batch from "./pages/Batch";
 import SourcingSuggest from "./pages/SourcingSuggest";
 import Evaluations from "./pages/Evaluations";
 import Library from "./pages/Library";
@@ -63,6 +64,12 @@ function App() {
                 data-genie-key="Sourcing"
                 data-genie-title="产品信息预填"
                 element={<PageTransition transition="fade"><Sourcing /></PageTransition>}
+              />
+              <Route
+                path="batch"
+                data-genie-key="Batch"
+                data-genie-title="批量处理"
+                element={<PageTransition transition="fade"><Batch /></PageTransition>}
               />
               <Route
                 path="evaluations"

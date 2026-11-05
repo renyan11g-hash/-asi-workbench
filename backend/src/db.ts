@@ -154,6 +154,19 @@ CREATE TABLE IF NOT EXISTS image_blobs (
 
 CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
 
+-- 批量处理任务：一次粘贴多个 1688 链接，后台逐条跑「抓取 → 评估 → 入库 → 生成 listing」。
+-- 落库是为了刷新页面/服务重启后还能看到每条跑到哪一步，而不是任务凭空消失。
+CREATE TABLE IF NOT EXISTS batch_jobs (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'pending',
+  options TEXT NOT NULL DEFAULT '{}',
+  items TEXT NOT NULL DEFAULT '[]',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_batch_jobs_created ON batch_jobs(created_at);
+
 -- 订单运营中心表结构
 CREATE TABLE IF NOT EXISTS customers (
   id TEXT PRIMARY KEY,

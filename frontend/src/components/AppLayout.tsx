@@ -2,6 +2,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Compass,
   FolderOpen,
+  Layers,
   LayoutDashboard,
   Package,
   SearchCheck,
@@ -17,6 +18,7 @@ const NAV = [
   { to: '/', label: '概览', icon: LayoutDashboard, end: true },
   { to: '/sourcing-suggest', label: '选品预估', icon: Compass, end: false },
   { to: '/sourcing', label: '产品信息预填', icon: SearchCheck, end: false },
+  { to: '/batch', label: '批量处理', icon: Layers, end: false },
   { to: '/evaluations', label: '评估库', icon: FolderOpen, end: false },
   { to: '/library', label: '产品库', icon: Package, end: false },
   { to: '/order-center', label: '订单运营中心', icon: ShoppingBag, end: false },
@@ -27,6 +29,7 @@ const TITLES: Record<string, { title: string; sub: string }> = {
   '/': { title: '工作台概览', sub: '选品进度、链接产出与利润概览' },
   '/sourcing-suggest': { title: '选品预估', sub: 'AI 自动搜寻适合美国促销礼品市场的选品方向与 1688 搜索词' },
   '/sourcing': { title: '产品信息预填', sub: '粘贴 1688 链接带出商品资料，补全尺寸、材质、箱规后正式评估' },
+  '/batch': { title: '批量处理', sub: '一次粘贴多条产品，后台逐条跑「抓取 → 评估 → 入库 → 生成链接」' },
   '/evaluations': { title: '评估库', sub: '选品评估草稿集中存放，随时载入继续编辑' },
   '/library': { title: '产品库', sub: '所有已保存的选品与生成的英文链接' },
   '/order-center': { title: '订单运营中心', sub: '客户、询盘、订单、供应商沟通与邮件草稿一站式管理' },

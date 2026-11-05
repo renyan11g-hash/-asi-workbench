@@ -1,5 +1,9 @@
 import apiClient, { getErrorMessage } from './api-client'
 import {
+  BatchJob,
+  BatchJobSummary,
+  BatchOptions,
+  BatchParseResult,
   Customer,
   CustomerType,
   DashboardOverview,
@@ -687,6 +691,60 @@ export const api = {
   productImageUrl(productId: string, file: string): string {
     const baseURL = import.meta.env.VITE_API_URL || '/api'
     return `${baseURL}/product-images/${productId}/${file}`
+  },
+
+  // ---------- 批量处理（粘贴多条链接 → 后台逐条跑单品同款流程） ----------
+  /** 只解析不执行：先把粘贴的文本切成条目给用户核对 */
+  async parseBatch(text: string): Promise<BatchParseResult> {
+    const { data } = await apiClient.post<BatchParseResult>('/batch/parse', { text })
+    return data
+  },
+
+  /** 创建批量任务：立刻返回 job，后台开始跑，靠 getBatchJob 轮询进度 */
+  async createBatchJob(payload: {
+    text: string
+    options: BatchOptions
+  }): Promise<{ job: BatchJob; skipped: number; truncated: boolean }> {
+    const { data } = await apiClient.post<{
+      ok: boolean
+      job: BatchJob
+      skipped: number
+      truncated: boolean
+    }>('/batch/jobs', payload)
+    return { job: data.job, skipped: data.skipped ?? 0, truncated: Boolean(data.truncated) }
+  },
+
+  async getBatchJob(id: string): Promise<BatchJob> {
+    const { data } = await apiClient.get<{ job: BatchJob }>(`/batch/jobs/${id}`)
+    return data.job
+  },
+
+  async listBatchJobs(): Promise<{ jobs: BatchJobSummary[]; activeJobId: string | null }> {
+    const { data } = await apiClient.get<{ jobs: BatchJobSummary[]; activeJobId: string | null }>(
+      '/batch/jobs'
+    )
+    return data
+  },
+
+  async cancelBatchJob(id: string): Promise<BatchJob> {
+    const { data } = await apiClient.post<{ ok: boolean; job: BatchJob }>(
+      `/batch/jobs/${id}/cancel`,
+      {}
+    )
+    return data.job
+  },
+
+  /** 重试失败项：只重跑 error 的条目，成功的保持不动 */
+  async retryBatchJob(id: string): Promise<BatchJob> {
+    const { data } = await apiClient.post<{ ok: boolean; job: BatchJob; reset: number }>(
+      `/batch/jobs/${id}/retry`,
+      {}
+    )
+    return data.job
+  },
+
+  async deleteBatchJob(id: string): Promise<void> {
+    await apiClient.delete(`/batch/jobs/${id}`)
   },
 
   exportCsvUrl(): string {

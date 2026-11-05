@@ -20,7 +20,7 @@ import { createTask, getTask, runTask, TaskRecord } from '../services/task-manag
 
 export const productsRouter: Router = Router()
 
-const sourceSchema = z.object({
+export const sourceSchema = z.object({
   sourceTitle: z.string().default(''),
   sourceUrl: z.string().default(''),
   description: z.string().default(''),
@@ -63,7 +63,7 @@ const updateSchema = z.object({
 
 type SourceInput = z.infer<typeof sourceSchema>
 
-function toSourceInfo(s: SourceInput): SourceInfo {
+export function toSourceInfo(s: SourceInput): SourceInfo {
   return {
     sourceTitle: s.sourceTitle ?? '',
     sourceUrl: s.sourceUrl ?? '',
@@ -264,7 +264,7 @@ export function findProduct(id: string): Product {
   return rowToProduct(row)
 }
 
-async function runAi<T>(fn: () => Promise<T>): Promise<T> {
+export async function runAi<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
   } catch (err) {
@@ -710,7 +710,7 @@ productsRouter.post('/preview/find-similar', async (req: Request, res: Response)
 })
 
 /** 抓取提取出的商品资料（抓到多少算多少，缺失字段为空值） */
-interface GrabbedFetched {
+export interface GrabbedFetched {
   sourceTitle: string
   sourceKeywords: string[]
   description: string
@@ -890,7 +890,7 @@ async function grab1688Once(url: string): Promise<GrabbedFetched | null> {
  * 1688 反爬严格（海外服务器 IP 几乎必被拦），多通道兜底：
  * ① 并行直连（原链接 / 纯净桌面版 / 移动端）→ ② r.jina.ai 渲染抓取（海外渲染集群绕反爬）。
  */
-async function fetch1688Page(url: string): Promise<{ ok: boolean; found: number; message: string; fetched: GrabbedFetched }> {
+export async function fetch1688Page(url: string): Promise<{ ok: boolean; found: number; message: string; fetched: GrabbedFetched }> {
   if (!/^https?:\/\/[^/]*\.?1688\.com\//i.test(url)) {
     throw new AppError(400, '请输入 1688 商品链接（如 https://detail.1688.com/offer/xxx.html）')
   }
@@ -1131,6 +1131,36 @@ productsRouter.post('/', async (req: Request, res: Response) => {
     }
   }
 
+  const id = insertProduct({
+    source: s,
+    evaluation,
+    listing,
+    similar,
+    status: body.status,
+    draftId: body.draftId,
+    now,
+  })
+  res.status(201).json({ product: findProduct(id) })
+})
+
+/**
+ * 插入一条产品（单品「保存到产品库」与批量处理共用同一段 SQL，避免两边字段不一致）。
+ * 行为与原先内联的 INSERT 完全一致，只是抽成函数供批量任务复用。
+ */
+export function insertProduct(input: {
+  source: SourceInfo
+  evaluation: Evaluation | null
+  listing: Listing | null
+  similar?: SimilarResearch | null
+  status?: ProductStatus
+  draftId?: string | null
+  now?: string
+}): string {
+  const s = input.source
+  const evaluation = input.evaluation
+  const listing = input.listing
+  const similar = input.similar
+  const now = input.now ?? new Date().toISOString()
   const id = randomUUID()
   db.prepare(
     `INSERT INTO products (id, draft_id, source_title, source_url, description, source_keywords, amazon_title,
@@ -1140,7 +1170,7 @@ productsRouter.post('/', async (req: Request, res: Response) => {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
-    body.draftId ?? null,
+    input.draftId ?? null,
     s.sourceTitle,
     s.sourceUrl,
     s.description,
@@ -1168,12 +1198,12 @@ productsRouter.post('/', async (req: Request, res: Response) => {
     listing ? JSON.stringify(listing) : null,
     // 该列迁移时为 TEXT NOT NULL DEFAULT '{}'，写 null 会触发 NOT NULL constraint failed（500）
     similar ? JSON.stringify(similar) : '{}',
-    body.status ?? (listing ? 'listed' : 'sourced'),
+    input.status ?? (listing ? 'listed' : 'sourced'),
     now,
     now
   )
-  res.status(201).json({ product: findProduct(id) })
-})
+  return id
+}
 
 // ---------- 单条读取 ----------
 productsRouter.get('/:id', async (req: Request, res: Response) => {

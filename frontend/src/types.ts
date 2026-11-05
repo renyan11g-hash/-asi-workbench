@@ -507,3 +507,90 @@ export interface PriceComparison {
   contactMethod: string
   createdAt: string
 }
+// ---------------- 批量处理（一次粘贴多条链接，后台逐条跑单品同款流程） ----------------
+
+export type BatchItemStatus =
+  | 'pending'
+  | 'fetching'
+  | 'evaluating'
+  | 'saving'
+  | 'listing'
+  | 'done'
+  | 'error'
+  | 'skipped'
+
+export type BatchJobStatus = 'pending' | 'running' | 'done' | 'cancelled' | 'interrupted'
+
+export interface BatchOptions {
+  /** 抓取 1688 详情 */
+  fetch: boolean
+  /** AI 评估（评分 + 结论 + 海外同款 + 阶梯报价） */
+  evaluate: boolean
+  /** 保存到产品库 */
+  save: boolean
+  /** 生成英文 listing */
+  listing: boolean
+}
+
+export interface BatchItemInput {
+  title?: string
+  priceCny?: number | null
+  moq?: number | null
+  sizeCn?: string
+  materialCn?: string
+  colorsCn?: string
+  description?: string
+}
+
+export interface BatchItem {
+  idx: number
+  url: string
+  input: BatchItemInput
+  status: BatchItemStatus
+  stage: string
+  title?: string
+  warn?: string
+  error?: string
+  score?: number | null
+  verdict?: string | null
+  marketNote?: string | null
+  productId?: string | null
+  fetchedFields?: string[]
+  updatedAt?: string
+}
+
+export interface BatchJob {
+  id: string
+  status: BatchJobStatus
+  options: BatchOptions
+  items: BatchItem[]
+  note: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BatchParseRow {
+  url: string
+  input: BatchItemInput
+}
+
+export interface BatchParseResult {
+  ok: boolean
+  rows: BatchParseRow[]
+  issues: Array<{ line: number; text: string; error: string }>
+  duplicates: string[]
+  manualCount: number
+  maxItems: number
+  willProcess: number
+}
+
+export interface BatchJobSummary {
+  id: string
+  status: BatchJobStatus
+  note: string
+  total: number
+  done: number
+  failed: number
+  createdAt: string
+  updatedAt: string
+}
