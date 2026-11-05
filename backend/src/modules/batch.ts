@@ -472,7 +472,8 @@ batchRouter.get('/jobs', (_req: Request, res: Response) => {
   const jobs = listBatchJobs(10).map((j) => ({
     id: j.id,
     status: j.status,
-    phase: j.phase,
+    // 老批次的 phase 可能是空的：按条目现算，列表才不会显示错阶段
+    phase: computePhase(j),
     note: j.note,
     total: j.items.length,
     fetched: j.items.filter((i) => Boolean(i.source)).length,
@@ -491,6 +492,8 @@ batchRouter.get('/jobs', (_req: Request, res: Response) => {
 batchRouter.get('/jobs/:id', (req: Request, res: Response) => {
   const job = getBatchJob(String(req.params.id))
   if (!job) throw new AppError(404, '任务不存在或已删除')
+  // 老批次（拆分阶段之前建的）phase 是空的，读的时候按条目重算一次，避免显示错阶段
+  job.phase = computePhase(job)
   res.json({ job })
 })
 
