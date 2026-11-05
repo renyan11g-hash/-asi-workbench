@@ -40,6 +40,8 @@ export interface BatchItemInput {
   materialCn?: string
   colorsCn?: string
   description?: string
+  /** 产品图（可多张）：补全时手动加，或从 1688 一键抓取 */
+  images?: string[]
   /** 单件重（克） */
   weightG?: number | null
   /** 箱规长宽高（厘米） */

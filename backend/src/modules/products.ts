@@ -17,6 +17,7 @@ import { loadSettings } from './settings'
 import { env } from '../config/env'
 import { computeScoreV2 } from '../services/scoring'
 import { createTask, getTask, runTask, TaskRecord } from '../services/task-manager'
+import { findMasterByUrl, MasterProduct } from './master-products'
 
 export const productsRouter: Router = Router()
 
@@ -725,11 +726,58 @@ export interface GrabbedFetched {
   priceCny: number | null
   /** 首张产品图（尽力提取，可能为空） */
   image: string
+  /** 产品图列表（最多 8 张，出图时作为多角度参考图；抓不到就是空数组） */
+  images: string[]
+}
+
+/** 从页面 HTML 里捞产品大图（1688 的图基本都在 alicdn；排掉 logo/图标/二维码等噪声） */
+export function extractImages(html: string, first?: string): string[] {
+  const out: string[] = []
+  const keyOf = (u: string) =>
+    u
+      .replace(/\.(jpg|jpeg|png|webp)(\?.*)?$/i, '')
+      .replace(/_\d+x\d+[^/]*$/, '')
+      .toLowerCase()
+  const push = (raw: string) => {
+    const u = raw.replace(/\\/g, '').trim()
+    if (!/^https?:\/\//i.test(u)) return
+    if (/logo|icon|sprite|avatar|qrcode|qr-|loading|placeholder|\.gif($|\?)/i.test(u)) return
+    if (u.length > 400) return
+    if (out.some((o) => keyOf(o) === keyOf(u))) return
+    if (out.length < 8) out.push(u)
+  }
+  if (first) push(first)
+  for (const m of html.matchAll(/https?:\/\/[^"'\s\\)<>]+?\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s\\)<>]*)?/gi)) {
+    push(m[0])
+    if (out.length >= 8) break
+  }
+  return out
+}
+
+/** 产品资料库记录 → 抓取结果（命中资料库时直接返回，不再打 1688） */
+function masterToFetched(m: MasterProduct): GrabbedFetched {
+  const carton = [m.cartonLCm, m.cartonWCm, m.cartonHCm]
+  const hasCarton = carton.every((n) => typeof n === 'number' && n > 0)
+  return {
+    sourceTitle: m.title,
+    sourceKeywords: [],
+    description: m.notes,
+    materialCn: m.materialCn,
+    colorsCn: m.colorsCn,
+    sizeCn: m.sizeCn,
+    weightG: m.weightG,
+    cartonSpecCm: hasCarton ? `${carton[0]}x${carton[1]}x${carton[2]}` : '',
+    pcsPerCarton: m.pcsPerCarton,
+    cartonGwKg: m.cartonGwKg,
+    moq: null,
+    priceCny: m.priceCny,
+    image: m.images[0] ?? '',
+    images: m.images,
+  }
 }
 
 /** 统计抓到几项有效资料 */
-function countFound(g: GrabbedFetched): number {
-  return [
+function countFound(g: GrabbedFetched): number {  return [
     g.sourceTitle,
     g.sourceKeywords.join(''),
     g.description,
@@ -803,6 +851,10 @@ async function grabViaJina(url: string): Promise<GrabbedFetched | null> {
       moq: moq ? Math.round(num(moq)) : null,
       priceCny,
       image,
+      images: (() => {
+        const urls = Array.from(text.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g)).map((m) => m[1])
+        return Array.from(new Set([image, ...urls].filter(Boolean))).slice(0, 8)
+      })(),
     }
     return info.sourceTitle || info.description ? info : null
   } catch {
@@ -862,6 +914,8 @@ async function grab1688Once(url: string): Promise<GrabbedFetched | null> {
     const priceCny = priceNum != null && priceNum >= 0.1 && priceNum <= 10000 ? priceNum : null
     // 首张产品图（og:image，尽力提取）
     const image = pick(/og:image["']\s*content=["']([^"']+)["']/i)
+    // 多张产品图：1688 的图基本都在 alicdn，排除 logo/图标/二维码等噪声后去重
+    const images = extractImages(html, image)
 
     return {
       sourceTitle: title,
@@ -877,6 +931,7 @@ async function grab1688Once(url: string): Promise<GrabbedFetched | null> {
       moq: moq ? Math.round(num(moq)) : null,
       priceCny,
       image,
+      images,
     }
   } catch {
     return null
@@ -890,10 +945,25 @@ async function grab1688Once(url: string): Promise<GrabbedFetched | null> {
  * 1688 反爬严格（海外服务器 IP 几乎必被拦），多通道兜底：
  * ① 并行直连（原链接 / 纯净桌面版 / 移动端）→ ② r.jina.ai 渲染抓取（海外渲染集群绕反爬）。
  */
-export async function fetch1688Page(url: string): Promise<{ ok: boolean; found: number; message: string; fetched: GrabbedFetched }> {
+export async function fetch1688Page(url: string): Promise<{ ok: boolean; found: number; message: string; fetched: GrabbedFetched; fromMaster?: boolean }> {
   if (!/^https?:\/\/[^/]*\.?1688\.com\//i.test(url)) {
     throw new AppError(400, '请输入 1688 商品链接（如 https://detail.1688.com/offer/xxx.html）')
   }
+
+  // ⓪ 先查产品资料库：人工录入并核对过的资料，比反爬抓回来的可信，
+  //    命中就不用再打 1688（也顺便解决箱规抓不到的问题）
+  const master = findMasterByUrl(url)
+  if (master) {
+    const fetched = masterToFetched(master)
+    return {
+      ok: true,
+      found: countFound(fetched),
+      fetched,
+      fromMaster: true,
+      message: '资料来自「产品资料库」（你之前录过，直接复用，不再重复抓取）',
+    }
+  }
+
   const offerId = url.match(/offer\/(\d+)/)?.[1] ?? ''
   const clean = offerId ? `https://detail.1688.com/offer/${offerId}.html` : url
   const mobile = offerId ? `https://m.1688.com/offer/${offerId}.html` : url
@@ -945,8 +1015,45 @@ export async function fetch1688Page(url: string): Promise<{ ok: boolean; found: 
  */
 productsRouter.post('/preview/fetch-1688', async (req: Request, res: Response) => {
   const url = String((req.body as Record<string, unknown>)?.url ?? '').trim()
-  const { ok, fetched, message } = await fetch1688Page(url)
-  res.json({ ok, fetched, message })
+  const { ok, fetched, message, fromMaster } = await fetch1688Page(url)
+  res.json({ ok, fetched, message, fromMaster: Boolean(fromMaster) })
+})
+
+/**
+ * 只抓图：给「链接生成 → 生成产品图」用。产品资料库里有图就用库里的（人工挑过的更准），
+ * 没有才去 1688 页面捞多张图。
+ */
+productsRouter.post('/preview/fetch-1688-images', async (req: Request, res: Response) => {
+  const url = String((req.body as Record<string, unknown>)?.url ?? '').trim()
+  if (!/^https?:\/\/[^/]*\.?1688\.com\//i.test(url)) {
+    throw new AppError(400, '请输入 1688 商品链接')
+  }
+  const master = findMasterByUrl(url)
+  if (master?.images?.length) {
+    res.json({ ok: true, images: master.images, source: 'master' })
+    return
+  }
+  const offerId = url.match(/offer\/(\d+)/)?.[1] ?? ''
+  const clean = offerId ? `https://detail.1688.com/offer/${offerId}.html` : url
+  const merged: string[] = []
+  for (const u of [clean, `https://m.1688.com/offer/${offerId}.html`]) {
+    if (!offerId) break
+    try {
+      const g = await grab1688Once(u)
+      for (const img of g?.images ?? []) {
+        if (!merged.includes(img) && merged.length < 8) merged.push(img)
+      }
+    } catch {
+      /* 单通道失败继续下一个 */
+    }
+    if (merged.length >= 4) break
+  }
+  res.json({
+    ok: merged.length > 0,
+    images: merged,
+    source: 'scrape',
+    message: merged.length ? `抓到 ${merged.length} 张图` : '没抓到图（1688 反爬或页面无图），请手动粘贴图片地址',
+  })
 })
 
 /**
@@ -979,8 +1086,8 @@ productsRouter.post('/preview/quick-evaluate', async (req: Request, res: Respons
       cartonGwKg: f.cartonGwKg ?? undefined,
       moq: f.moq ?? undefined,
       priceCny: f.priceCny ?? undefined,
-      // 首页图一并带上：评估时可以看图直接认品类，英文搜索词质量比纯文本翻译高
-      images: f.image ? [f.image] : undefined,
+      // 产品图一并带上：评估时可以看图直接认品类，英文搜索词质量比纯文本翻译高
+      images: f.images?.length ? f.images.slice(0, 3) : f.image ? [f.image] : undefined,
     })
   )
   const settings = loadSettings()
@@ -1537,7 +1644,15 @@ productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
   const id = String(req.params.id)
   const current = findProduct(id)
   const settings = loadSettings()
-  const { rows } = buildPriceGrid(current.source, settings)
+  // 计费重 / 倍率允许人工指定：改了就用人工值重算整张阶梯表
+  const body = z
+    .object({
+      billableKg: z.coerce.number().positive().nullable().optional(),
+      markupAir: z.coerce.number().positive().nullable().optional(),
+      markupSea: z.coerce.number().positive().nullable().optional(),
+    })
+    .parse(req.body ?? {})
+  const { rows } = buildPriceGrid(current.source, settings, body)
   const listing: Listing | null = current.listing
     ? { ...current.listing, priceGrid: rows }
     : null
@@ -2172,6 +2287,7 @@ async function grab1688Mobile(offerId: string): Promise<GrabbedFetched | null> {
     moq,
     priceCny,
     image,
+    images: image ? [image] : [],
   }
 }
 

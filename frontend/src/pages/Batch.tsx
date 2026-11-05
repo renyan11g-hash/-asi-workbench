@@ -6,6 +6,7 @@ import {
   ClipboardPaste,
   Download,
   ExternalLink,
+  ImagePlus,
   Layers,
   Loader2,
   Pencil,
@@ -113,6 +114,8 @@ function draftFromItem(item: BatchItem): BatchItemInput {
     pcsPerCarton: s?.pcsPerCarton ?? null,
     cartonGwKg: s?.cartonGwKg ?? null,
     description: s?.description ?? '',
+    // 图片跟着一起带进表单，补全时可以增删
+    images: s?.images ?? [],
   }
 }
 
@@ -158,6 +161,10 @@ export default function Batch() {
   const [draft, setDraft] = useState<BatchItemInput>({})
   const [savingEdit, setSavingEdit] = useState(false)
   const [onlyMissing, setOnlyMissing] = useState(false)
+  /** 勾选的条目 idx（用于批量删除） */
+  const [selected, setSelected] = useState<number[]>([])
+  const [deleting, setDeleting] = useState(false)
+  const [grabbingImages, setGrabbingImages] = useState(false)
 
   const loadRecent = useCallback(async () => {
     try {
@@ -291,6 +298,54 @@ export default function Batch() {
   const openEdit = (item: BatchItem) => {
     setEditingIdx(item.idx)
     setDraft(draftFromItem(item))
+  }
+
+  /** 从 1688 链接抓多张产品图，塞进当前编辑的条目 */
+  const grabImages = async (url: string) => {
+    if (!url) {
+      toast.error('这条没有 1688 链接，直接粘贴图片地址吧')
+      return
+    }
+    setGrabbingImages(true)
+    try {
+      const r = await api.fetch1688Images(url)
+      if (!r.images?.length) {
+        toast.warning(r.message || '没抓到图，可以手动粘贴图片地址')
+        return
+      }
+      setDraft((d) => ({
+        ...d,
+        images: Array.from(new Set([...(d.images ?? []), ...r.images])).slice(0, 8),
+      }))
+      toast.success(r.source === 'master' ? '已用产品资料库里的图' : `抓到 ${r.images.length} 张图`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setGrabbingImages(false)
+    }
+  }
+
+  const toggleSelect = (idx: number) => {
+    setSelected((cur) => (cur.includes(idx) ? cur.filter((i) => i !== idx) : [...cur, idx]))
+  }
+
+  const deleteSelected = async () => {
+    if (!jobId || selected.length === 0) return
+    setDeleting(true)
+    try {
+      const r = await api.deleteBatchItems(jobId, selected)
+      setJob(r.job)
+      setSelected([])
+      if (r.skipped > 0) {
+        toast.warning(`已删 ${r.removed} 条；${r.skipped} 条已入库，没有删（产品库里还在）`)
+      } else {
+        toast.success(`已删除 ${r.removed} 条`)
+      }
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setDeleting(false)
+    }
   }
 
   const saveEdit = async (thenEvaluate: boolean) => {
@@ -566,10 +621,24 @@ export default function Batch() {
               共 {stats.total} 条 · 已抓取 {stats.fetched} · 已评估 {stats.evaluated} · 已入库 {stats.saved}
               {stats.failed > 0 && <span className="text-rose-600"> · 失败 {stats.failed}</span>}
             </div>
-            <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600">
-              <Checkbox checked={onlyMissing} onCheckedChange={(v) => setOnlyMissing(Boolean(v))} />
-              只看缺字段的
-            </label>
+            <div className="flex items-center gap-2">
+              {selected.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-rose-600"
+                  disabled={deleting || isRunning}
+                  onClick={() => void deleteSelected()}
+                >
+                  {deleting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Trash2 className="mr-1 h-3.5 w-3.5" />}
+                  删除选中（{selected.length}）
+                </Button>
+              )}
+              <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600">
+                <Checkbox checked={onlyMissing} onCheckedChange={(v) => setOnlyMissing(Boolean(v))} />
+                只看缺字段的
+              </label>
+            </div>
           </div>
           <Progress
             value={stats.total ? Math.round((stats.saved / stats.total) * 100) : 0}
@@ -581,6 +650,16 @@ export default function Batch() {
             <table className="min-w-full text-left text-[12px]">
               <thead className="text-[11px] text-slate-400">
                 <tr className="border-b border-slate-100">
+                  <th className="w-8 py-2 pr-2 font-medium">
+                    <Checkbox
+                      checked={visibleItems.length > 0 && visibleItems.every((i) => selected.includes(i.idx))}
+                      onCheckedChange={(v) => {
+                        if (v) setSelected(visibleItems.map((i) => i.idx))
+                        else setSelected([])
+                      }}
+                      title="全选"
+                    />
+                  </th>
                   <th className="py-2 pr-2 font-medium">#</th>
                   <th className="py-2 pr-2 font-medium">产品</th>
                   <th className="py-2 pr-2 font-medium">状态</th>
@@ -600,6 +679,10 @@ export default function Batch() {
                     draft={draft}
                     setDraft={setDraft}
                     savingEdit={savingEdit}
+                    selected={selected.includes(it.idx)}
+                    grabbingImages={grabbingImages}
+                    onToggleSelect={() => toggleSelect(it.idx)}
+                    onGrabImages={() => void grabImages(it.url)}
                     onEdit={() => openEdit(it)}
                     onCancel={() => setEditingIdx(null)}
                     onSave={() => void saveEdit(false)}
@@ -672,6 +755,10 @@ function ItemRow({
   draft,
   setDraft,
   savingEdit,
+  selected,
+  grabbingImages,
+  onToggleSelect,
+  onGrabImages,
   onEdit,
   onCancel,
   onSave,
@@ -687,6 +774,10 @@ function ItemRow({
   draft: BatchItemInput
   setDraft: (v: BatchItemInput) => void
   savingEdit: boolean
+  selected: boolean
+  grabbingImages: boolean
+  onToggleSelect: () => void
+  onGrabImages: () => void
   onEdit: () => void
   onCancel: () => void
   onSave: () => void
@@ -704,6 +795,9 @@ function ItemRow({
   return (
     <>
       <tr className="border-b border-slate-50 align-top">
+        <td className="py-2 pr-2">
+          <Checkbox checked={selected} onCheckedChange={onToggleSelect} />
+        </td>
         <td className="py-2 pr-2 text-slate-400">{item.idx}</td>
         <td className="max-w-[240px] py-2 pr-2">
           <div className="truncate font-medium text-slate-800" title={item.title ?? item.url}>
@@ -793,7 +887,7 @@ function ItemRow({
       {editing && (
         <tr className="border-b border-slate-100 bg-slate-50/60">
           <td />
-          <td colSpan={6} className="py-3 pr-2">
+          <td colSpan={7} className="py-3 pr-2">
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               <Field label="商品标题" full>
                 <input
@@ -900,6 +994,54 @@ function ItemRow({
                   value={draft.description ?? ''}
                   onChange={(e) => setDraft({ ...draft, description: e.target.value })}
                 />
+              </Field>
+              {/* 产品图：出图时作为参考图，评估时也能帮 AI 认品类 */}
+              <Field label={`产品图片（${(draft.images ?? []).length}/8）`} full>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={onGrabImages} disabled={grabbingImages}>
+                    {grabbingImages ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ImagePlus className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    从 1688 抓图
+                  </Button>
+                  <input
+                    className="h-7 w-64 rounded border border-slate-200 px-2 text-[11px]"
+                    placeholder="粘贴图片地址后回车添加"
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return
+                      const v = (e.target as HTMLInputElement).value.trim()
+                      if (!/^https?:\/\//i.test(v)) return
+                      setDraft({
+                        ...draft,
+                        images: Array.from(new Set([...(draft.images ?? []), v])).slice(0, 8),
+                      })
+                      ;(e.target as HTMLInputElement).value = ''
+                    }}
+                  />
+                  {(draft.images ?? []).length === 0 && (
+                    <span className="text-[11px] text-amber-600">没有图，出图只能凭空画，容易走形</span>
+                  )}
+                </div>
+                {(draft.images ?? []).length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {(draft.images ?? []).map((u, i) => (
+                      <div key={`${u}-${i}`} className="group relative h-14 w-14 overflow-hidden rounded border border-slate-200">
+                        <img src={u} alt="" className="h-full w-full object-cover" />
+                        <button
+                          type="button"
+                          className="absolute right-0 top-0 hidden rounded-bl bg-black/60 px-1 text-[10px] text-white group-hover:block"
+                          onClick={() =>
+                            setDraft({ ...draft, images: (draft.images ?? []).filter((_, idx) => idx !== i) })
+                          }
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </Field>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2">

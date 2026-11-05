@@ -8,6 +8,7 @@ import Dashboard from "./pages/Dashboard";
 import OrderCenter from "./pages/OrderCenter";
 import Sourcing from "./pages/Sourcing";
 import Batch from "./pages/Batch";
+import MasterData from "./pages/MasterData";
 import SourcingSuggest from "./pages/SourcingSuggest";
 import Evaluations from "./pages/Evaluations";
 import Library from "./pages/Library";
@@ -64,6 +65,12 @@ function App() {
                 data-genie-key="Sourcing"
                 data-genie-title="产品信息预填"
                 element={<PageTransition transition="fade"><Sourcing /></PageTransition>}
+              />
+              <Route
+                path="master-data"
+                data-genie-key="MasterData"
+                data-genie-title="产品资料库"
+                element={<PageTransition transition="fade"><MasterData /></PageTransition>}
               />
               <Route
                 path="batch"

@@ -13,6 +13,7 @@
 
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
+import { randomUUID } from 'crypto'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { buildPriceGrid } from '../services/pricing'
@@ -108,8 +109,8 @@ function baseFromGrabbed(g: GrabbedFetched, url: string): SourceInfo {
     cartonHCm: carton ? Number(carton[3]) : null,
     pcsPerCarton: g.pcsPerCarton,
     cartonGwKg: g.cartonGwKg,
-    // 抓到的首图带上：评估时看图认品类，英文搜索词比纯文本翻译准
-    images: g.image ? [g.image] : [],
+    // 抓到的产品图带上（多张）：评估认品类、后面出图当参考图都用它
+    images: g.images?.length ? g.images : g.image ? [g.image] : [],
     category: '',
     notes: '',
   }
@@ -165,6 +166,8 @@ function mergeSource(item: BatchItem, grabbed: GrabbedFetched | null): SourceInf
     cartonHCm: has('cartonHCm') ? (i.cartonHCm ?? null) : seed.cartonHCm,
     pcsPerCarton: has('pcsPerCarton') ? (i.pcsPerCarton ?? null) : seed.pcsPerCarton,
     cartonGwKg: has('cartonGwKg') ? (i.cartonGwKg ?? null) : seed.cartonGwKg,
+    // 手填/抓取的图片：填了就用手填的（补全时加图），否则沿用抓到的
+    images: has('images') ? (i.images ?? []) : seed.images,
   }
   // 走一遍单品用的 schema，保证类型/默认值与单品完全一致
   return toSourceInfo(sourceSchema.parse(merged))
@@ -292,14 +295,35 @@ async function saveItem(job: BatchJob, item: BatchItem, settings: ReturnType<typ
     return
   }
 
-  setStage(job, item, 'saving', '写入产品库…')
+  setStage(job, item, 'saving', '写入产品库 + 评估库…')
+  // 评估库（云端草稿）也留一份：单品流程是「评估 → 存评估库 → 保存到产品库」，
+  // 批量同样两条都写，否则评估库是空的、想回头看评分明细就没有入口。
+  const priceGrid = buildPriceGrid(source, settings).rows
+  const draftId = randomUUID()
+  const draftNow = new Date().toISOString()
+  db.prepare('INSERT INTO drafts (id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
+    draftId,
+    (source.sourceTitle || `批量产品 ${item.idx}`).slice(0, 60),
+    JSON.stringify({
+      kind: 'sourcing-evaluation',
+      source,
+      evaluation,
+      priceGrid,
+      keywordsText: (source.sourceKeywords ?? []).join('\n'),
+      imageText: (source.images ?? []).filter((u) => u.startsWith('http')).join('\n'),
+      similar: null,
+    }),
+    draftNow,
+    draftNow
+  )
+
   const productId = insertProduct({
     source,
     evaluation,
     listing: null,
     similar: null,
     status: 'sourced',
-    draftId: null,
+    draftId,
   })
   item.productId = productId
   saveBatchJob(job)
@@ -566,6 +590,7 @@ batchRouter.patch('/jobs/:id/items/:idx', (req: Request, res: Response) => {
         materialCn: z.string().max(200).optional(),
         colorsCn: z.string().max(200).optional(),
         description: z.string().max(5000).optional(),
+        images: z.array(z.string().max(4000)).max(12).optional(),
         weightG: z.number().nullable().optional(),
         cartonLCm: z.number().nullable().optional(),
         cartonWCm: z.number().nullable().optional(),
@@ -601,8 +626,33 @@ batchRouter.patch('/jobs/:id/items/:idx', (req: Request, res: Response) => {
   res.json({ ok: true, job })
 })
 
-/** 停止：当前这条跑完就停，剩下一律不跑（已入库的不回滚） */
-batchRouter.post('/jobs/:id/cancel', (req: Request, res: Response) => {
+/** 删除条目（勾选后批量删）：已入库的不动，避免产品库里出现「孤儿」 */
+batchRouter.post('/jobs/:id/items/delete', (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  if (running.has(id)) throw new AppError(409, '这一批还在跑，等它跑完再删')
+  const job = getBatchJob(id)
+  if (!job) throw new AppError(404, '任务不存在')
+  const body = z.object({ idxs: z.array(z.number().int().positive()).min(1).max(MAX_BATCH_ITEMS) }).parse(req.body ?? {})
+  const wanted = new Set(body.idxs)
+
+  let removed = 0
+  let skipped = 0
+  job.items = job.items.filter((it) => {
+    if (!wanted.has(it.idx)) return true
+    if (it.productId) {
+      skipped += 1
+      return true
+    }
+    removed += 1
+    return false
+  })
+  if (removed === 0 && skipped === 0) throw new AppError(400, '没有匹配的条目')
+  job.phase = computePhase(job)
+  saveBatchJob(job)
+  res.json({ ok: true, job, removed, skipped })
+})
+
+/** 停止：当前这条跑完就停，剩下一律不跑（已入库的不回滚） */batchRouter.post('/jobs/:id/cancel', (req: Request, res: Response) => {
   const id = String(req.params.id)
   const job = getBatchJob(id)
   if (!job) throw new AppError(404, '任务不存在')

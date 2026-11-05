@@ -99,14 +99,18 @@ export function buildPriceGrid(
     SourceInfo,
     'priceCny' | 'weightG' | 'cartonLCm' | 'cartonWCm' | 'cartonHCm' | 'pcsPerCarton' | 'cartonGwKg'
   >,
-  settings: Settings
+  settings: Settings,
+  /** 人工覆盖：计费重 / 空运倍率 / 海运倍率（前端「计费和倍率可改」用） */
+  overrides?: { billableKg?: number | null; markupAir?: number | null; markupSea?: number | null }
 ): { rows: PriceRow[]; breakdowns: CostBreakdown[] } {
   const fx = Number(settings.fxRate) || 6.7
   const airRate = Number(settings.airRateCnyPerKg) || 50
   const seaRate = Number(settings.seaRateCnyPerKg) || 20
   const divisor = Number(settings.volumetricDivisor) || 5000
-  const markupAir = Number(settings.markupAir) || 1.4
-  const markupSea = Number(settings.markupSea) || 1.25
+  const oAir = Number(overrides?.markupAir)
+  const oSea = Number(overrides?.markupSea)
+  const markupAir = oAir > 0 ? oAir : Number(settings.markupAir) || 1.4
+  const markupSea = oSea > 0 ? oSea : Number(settings.markupSea) || 1.25
   const strategy = settings.midStrategy ?? 'linear'
 
   const unitPriceCny = Number(source.priceCny) || 0
@@ -119,8 +123,11 @@ export function buildPriceGrid(
   const boxGw = Number(source.cartonGwKg) || 0
   const actualKg = boxGw > 0 ? boxGw : singleKg * pcs
   const rawBillableKg = Math.max(volumetricKg, actualKg)
-  // 运费计费重按 0.5kg 为单位四舍五入（如 11.8 → 12，11.3 → 11.5），与货代计费规则一致
-  const billableKg = rawBillableKg > 0 ? Math.round(rawBillableKg * 2) / 2 : 0
+  // 运费计费重一律向上取到 0.5kg（10.2 → 10.5，10.6 → 11），与货代「不足 0.5 按 0.5 计」的规则一致
+  const autoBillableKg = rawBillableKg > 0 ? Math.ceil(rawBillableKg * 2) / 2 : 0
+  const oBill = Number(overrides?.billableKg)
+  // 人工指定计费重时直接用（同样按 0.5 向上取整，避免手填 10.2 这种半截数）
+  const billableKg = oBill > 0 ? Math.ceil(oBill * 2) / 2 : autoBillableKg
 
   // 每档成本：到岸成本 = 商品 + 运费（运费单独列示，不并入杂费）
   const airUnitCost = billableKg > 0 ? (billableKg * airRate) / pcs + unitPriceCny : unitPriceCny

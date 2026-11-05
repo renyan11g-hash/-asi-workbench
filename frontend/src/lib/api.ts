@@ -14,6 +14,7 @@ import {
   Inquiry,
   InquiryStatus,
   Listing,
+  MasterProduct,
   Order,
   OrderItem,
   OrderStatus,
@@ -278,6 +279,7 @@ export const api = {
   async fetch1688(url: string): Promise<{
     ok: boolean
     message: string
+    fromMaster?: boolean
     fetched: Partial<{
       sourceTitle: string
       sourceKeywords: string[]
@@ -290,6 +292,9 @@ export const api = {
       pcsPerCarton: number | null
       cartonGwKg: number | null
       moq: number | null
+      priceCny: number | null
+      image: string
+      images: string[]
     }>
   }> {
     const { data } = await apiClient.post('/products/preview/fetch-1688', { url }, LONG_TIMEOUT)
@@ -574,10 +579,14 @@ export const api = {
     return data
   },
 
-  async reprice(id: string): Promise<Product> {
+  /** 重算阶梯报价：可传入人工指定的计费重 / 倍率 */
+  async reprice(
+    id: string,
+    overrides?: { billableKg?: number | null; markupAir?: number | null; markupSea?: number | null }
+  ): Promise<Product> {
     const { data } = await apiClient.post<{ product: Product }>(
       `/products/${id}/reprice`,
-      {},
+      overrides ?? {},
       LONG_TIMEOUT
     )
     return data.product
@@ -772,6 +781,57 @@ export const api = {
 
   async deleteBatchJob(id: string): Promise<void> {
     await apiClient.delete(`/batch/jobs/${id}`)
+  },
+
+  // ---------- 产品资料库（自建主数据） ----------
+  async listMasterProducts(q?: string): Promise<MasterProduct[]> {
+    const { data } = await apiClient.get<{ products: MasterProduct[] }>('/master-products', {
+      params: q ? { q } : undefined,
+    })
+    return data.products
+  },
+
+  async lookupMaster(url: string): Promise<MasterProduct | null> {
+    const { data } = await apiClient.get<{ found: MasterProduct | null }>('/master-products/lookup', {
+      params: { url },
+    })
+    return data.found
+  },
+
+  async saveMasterProduct(payload: Partial<MasterProduct>): Promise<{ product: MasterProduct; updated: boolean }> {
+    const { data } = await apiClient.post<{ product: MasterProduct; updated: boolean }>(
+      '/master-products',
+      payload
+    )
+    return data
+  },
+
+  async updateMasterProduct(id: string, patch: Partial<MasterProduct>): Promise<MasterProduct> {
+    const { data } = await apiClient.patch<{ product: MasterProduct }>(`/master-products/${id}`, patch)
+    return data.product
+  },
+
+  async deleteMasterProduct(id: string): Promise<void> {
+    await apiClient.delete(`/master-products/${id}`)
+  },
+
+  /** 从 1688 链接抓多张产品图（资料库里有图优先用资料库的） */
+  async fetch1688Images(url: string): Promise<{ ok: boolean; images: string[]; source: string; message?: string }> {
+    const { data } = await apiClient.post<{ ok: boolean; images: string[]; source: string; message?: string }>(
+      '/products/preview/fetch-1688-images',
+      { url },
+      { timeout: 120_000 }
+    )
+    return data
+  },
+
+  /** 批量删除条目（勾选后删） */
+  async deleteBatchItems(id: string, idxs: number[]): Promise<{ job: BatchJob; removed: number; skipped: number }> {
+    const { data } = await apiClient.post<{ job: BatchJob; removed: number; skipped: number }>(
+      `/batch/jobs/${id}/items/delete`,
+      { idxs }
+    )
+    return data
   },
 
   exportCsvUrl(): string {

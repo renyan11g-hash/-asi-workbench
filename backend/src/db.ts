@@ -169,6 +169,32 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_batch_jobs_created ON batch_jobs(created_at);
 
+-- 产品资料库（自建主数据）：同一条 1688 链接只要录一次，之后抓取时直接命中这里，
+-- 不用再重复补箱规/图片。images 存多张图（JSON 数组），出图时作为参考图。
+CREATE TABLE IF NOT EXISTS master_products (
+  id TEXT PRIMARY KEY,
+  offer_id TEXT,
+  source_url TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  price_cny REAL,
+  size_cn TEXT NOT NULL DEFAULT '',
+  weight_g REAL,
+  carton_l_cm REAL,
+  carton_w_cm REAL,
+  carton_h_cm REAL,
+  pcs_per_carton INTEGER,
+  carton_gw_kg REAL,
+  images TEXT NOT NULL DEFAULT '[]',
+  notes TEXT NOT NULL DEFAULT '',
+  supplier TEXT NOT NULL DEFAULT '',
+  material_cn TEXT NOT NULL DEFAULT '',
+  colors_cn TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_master_offer ON master_products(offer_id);
+CREATE INDEX IF NOT EXISTS idx_master_url ON master_products(source_url);
+
 -- 每条产品的评估结果单独放：评估对象里带海外同款明细（约 6KB），
 -- 塞进 items JSON 会让每次「进度更新」都重写几百 KB，单独存一张表就只写一次。
 CREATE TABLE IF NOT EXISTS batch_item_evals (

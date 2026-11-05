@@ -11,6 +11,7 @@ import {
   HelpCircle,
   History,
   ImageOff,
+  ImagePlus,
   Loader2,
   MessageSquare,
   Pencil,
@@ -820,13 +821,27 @@ export default function ListingEditor() {
     }
   }
 
+  // 计费重 / 倍率人工覆盖（留空 = 按箱规自动算）
+  const [grabbingRefs, setGrabbingRefs] = useState(false)
+  const [ovBillable, setOvBillable] = useState<string | null>(null)
+  const [ovMarkupAir, setOvMarkupAir] = useState<string | null>(null)
+  const [ovMarkupSea, setOvMarkupSea] = useState<string | null>(null)
+
   const reprice = async () => {
     if (!product) return
     try {
-      const p = await api.reprice(product.id)
+      const num = (v: string | null) => {
+        const n = Number(v)
+        return Number.isFinite(n) && n > 0 ? n : null
+      }
+      const p = await api.reprice(product.id, {
+        billableKg: num(ovBillable),
+        markupAir: num(ovMarkupAir),
+        markupSea: num(ovMarkupSea),
+      })
       setListing(p.listing ?? listing)
       qc.invalidateQueries({ queryKey: ['product', id] })
-      toast.success('已按当前成本参数重算价格表')
+      toast.success('已按你填的计费重 / 倍率重算价格表')
     } catch (err) {
       toast.error(getErrorMessage(err))
     }
@@ -1299,6 +1314,45 @@ export default function ListingEditor() {
         hint="输出统一 1200×1200 纯白底方图，不改动产品任何细节与比例；主图＝主色大图 + 其他颜色小图（产品下方或右侧），尺寸图的 inch 标注画在留白区、不会压在产品上。约需 1-5 分钟；介绍图（第 3-5 张）改为下方文字拍摄建议，不消耗生图费用。每张图可单独与 AI 对话修改。"
         right={
           <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              disabled={grabbingRefs}
+              onClick={async () => {
+                const url = product?.source.sourceUrl ?? ''
+                if (!/^https?:\/\/[^/]*\.?1688\.com\//i.test(url)) {
+                  toast.error('这个产品没有 1688 链接，无法补抓图片')
+                  return
+                }
+                setGrabbingRefs(true)
+                try {
+                  const r = await api.fetch1688Images(url)
+                  if (!r.images?.length) {
+                    toast.warning(r.message || '没抓到图')
+                    return
+                  }
+                  const merged = Array.from(
+                    new Set([...(product?.source.images ?? []), ...r.images])
+                  ).slice(0, 8)
+                  const res = await api.updateProductSource(id!, { images: merged })
+                  setListing(res.product.listing ?? listing)
+                  qc.invalidateQueries({ queryKey: ['product', id] })
+                  toast.success(
+                    r.source === 'master'
+                      ? `已用产品资料库里的 ${r.images.length} 张图`
+                      : `抓到 ${r.images.length} 张参考图，出图会更像`
+                  )
+                } catch (err) {
+                  toast.error(getErrorMessage(err))
+                } finally {
+                  setGrabbingRefs(false)
+                }
+              }}
+            >
+              {grabbingRefs ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <ImagePlus className="mr-1 h-3 w-3" />}
+              补抓 1688 图
+            </Button>
             <Button
               size="sm"
               className="h-7 text-xs"
@@ -1994,13 +2048,50 @@ export default function ListingEditor() {
           <div className="space-y-4 lg:col-span-4">
             <SectionCard
               title="阶梯报价 (8C · 前 4 空运 / 后 4 海运)"
-              hint="数量、售价均可直接改，毛利自动重算。空运 1.4×→1.32×（自动抬升以保证海运第一档 < 空运最后一档），海运 1.4×→1.25×"
+              hint="数量、售价均可直接改，毛利自动重算。计费重 = max(体积重, 箱毛重) 后向上取到 0.5kg；计费重和倍率都能手改后重算"
               right={
                 <Button variant="ghost" size="sm" onClick={reprice}>
                   <RefreshCw className="mr-1 h-3 w-3" /> 重算
                 </Button>
               }
             >
+              <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 p-2">
+                <label className="text-[11px] text-slate-600">
+                  计费重 kg
+                  <Input
+                    className="mt-0.5 h-7 w-20 text-xs"
+                    type="number"
+                    step="0.5"
+                    min="0.5"
+                    value={ovBillable ?? String(listing.priceGrid?.[0]?.billableKg ?? '')}
+                    onChange={(e) => setOvBillable(e.target.value)}
+                  />
+                </label>
+                <label className="text-[11px] text-slate-600">
+                  空运倍率
+                  <Input
+                    className="mt-0.5 h-7 w-20 text-xs"
+                    type="number"
+                    step="0.01"
+                    value={ovMarkupAir ?? String(settings?.markupAir ?? 1.4)}
+                    onChange={(e) => setOvMarkupAir(e.target.value)}
+                  />
+                </label>
+                <label className="text-[11px] text-slate-600">
+                  海运倍率
+                  <Input
+                    className="mt-0.5 h-7 w-20 text-xs"
+                    type="number"
+                    step="0.01"
+                    value={ovMarkupSea ?? String(settings?.markupSea ?? 1.25)}
+                    onChange={(e) => setOvMarkupSea(e.target.value)}
+                  />
+                </label>
+                <Button size="sm" variant="outline" onClick={reprice}>
+                  按此重算
+                </Button>
+                <span className="text-[10px] text-slate-400">计费重填 10.2 会按 10.5 算</span>
+              </div>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-left text-slate-500">

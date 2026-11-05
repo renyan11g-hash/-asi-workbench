@@ -1,0 +1,554 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Database, ExternalLink, ImagePlus, Loader2, Pencil, Plus, Search, Trash2, Wand2, X } from 'lucide-react'
+import { toast } from 'sonner'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { SectionCard } from '@/components/ui/primitives'
+import { api, getErrorMessage } from '@/lib/api'
+import { MasterProduct } from '@/types'
+
+type FormState = {
+  id?: string
+  sourceUrl: string
+  title: string
+  priceCny: string
+  sizeCn: string
+  weightG: string
+  cartonL: string
+  cartonW: string
+  cartonH: string
+  pcsPerCarton: string
+  cartonGwKg: string
+  materialCn: string
+  colorsCn: string
+  supplier: string
+  notes: string
+  images: string[]
+}
+
+const EMPTY: FormState = {
+  sourceUrl: '',
+  title: '',
+  priceCny: '',
+  sizeCn: '',
+  weightG: '',
+  cartonL: '',
+  cartonW: '',
+  cartonH: '',
+  pcsPerCarton: '',
+  cartonGwKg: '',
+  materialCn: '',
+  colorsCn: '',
+  supplier: '',
+  notes: '',
+  images: [],
+}
+
+function toForm(p: MasterProduct): FormState {
+  return {
+    id: p.id,
+    sourceUrl: p.sourceUrl,
+    title: p.title,
+    priceCny: p.priceCny != null ? String(p.priceCny) : '',
+    sizeCn: p.sizeCn,
+    weightG: p.weightG != null ? String(p.weightG) : '',
+    cartonL: p.cartonLCm != null ? String(p.cartonLCm) : '',
+    cartonW: p.cartonWCm != null ? String(p.cartonWCm) : '',
+    cartonH: p.cartonHCm != null ? String(p.cartonHCm) : '',
+    pcsPerCarton: p.pcsPerCarton != null ? String(p.pcsPerCarton) : '',
+    cartonGwKg: p.cartonGwKg != null ? String(p.cartonGwKg) : '',
+    materialCn: p.materialCn,
+    colorsCn: p.colorsCn,
+    supplier: p.supplier,
+    notes: p.notes,
+    images: p.images ?? [],
+  }
+}
+
+const numOrNull = (v: string): number | null => {
+  const t = v.trim()
+  if (!t) return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * 产品资料库：自己录一次的产品主数据。
+ * 关键作用：批量处理 / 单品预填去抓 1688 时，先查这里——命中就直接用，
+ * 不用再重复补箱规、每箱数、箱毛重，图片也能一次录多张供出图参考。
+ */
+export default function MasterData() {
+  const [list, setList] = useState<MasterProduct[]>([])
+  const [loading, setLoading] = useState(true)
+  const [q, setQ] = useState('')
+  const [form, setForm] = useState<FormState | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [fetching, setFetching] = useState(false)
+  const [imgUrl, setImgUrl] = useState('')
+
+  const load = useCallback(async (keyword?: string) => {
+    setLoading(true)
+    try {
+      const rows = await api.listMasterProducts(keyword?.trim() || undefined)
+      setList(rows)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
+    setForm((f) => (f ? { ...f, [k]: v } : f))
+
+  const save = async () => {
+    if (!form) return
+    if (!form.title.trim() && !form.sourceUrl.trim()) {
+      toast.error('至少填商品名称或 1688 链接')
+      return
+    }
+    setSaving(true)
+    try {
+      const payload = {
+        sourceUrl: form.sourceUrl.trim(),
+        title: form.title.trim(),
+        priceCny: numOrNull(form.priceCny),
+        sizeCn: form.sizeCn.trim(),
+        weightG: numOrNull(form.weightG),
+        cartonLCm: numOrNull(form.cartonL),
+        cartonWCm: numOrNull(form.cartonW),
+        cartonHCm: numOrNull(form.cartonH),
+        pcsPerCarton: numOrNull(form.pcsPerCarton),
+        cartonGwKg: numOrNull(form.cartonGwKg),
+        materialCn: form.materialCn.trim(),
+        colorsCn: form.colorsCn.trim(),
+        supplier: form.supplier.trim(),
+        notes: form.notes.trim(),
+        images: form.images.filter(Boolean),
+      }
+      if (form.id) {
+        await api.updateMasterProduct(form.id, payload)
+        toast.success('资料已更新')
+      } else {
+        const r = await api.saveMasterProduct(payload)
+        toast.success(r.updated ? '这条链接已有资料，已覆盖更新' : '已加入产品资料库')
+      }
+      setForm(null)
+      await load(q)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const remove = async (p: MasterProduct) => {
+    try {
+      await api.deleteMasterProduct(p.id)
+      toast.success('已删除')
+      await load(q)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  /** 从 1688 链接抓标题/价格等（有资料库记录就直接带出来） */
+  const grabFromLink = async () => {
+    if (!form?.sourceUrl.trim()) {
+      toast.error('先填 1688 链接')
+      return
+    }
+    setFetching(true)
+    try {
+      const r = await api.fetch1688(form.sourceUrl.trim())
+      const f = r.fetched ?? ({} as typeof r.fetched)
+      setForm((cur) =>
+        cur
+          ? {
+              ...cur,
+              title: cur.title || f.sourceTitle || '',
+              priceCny: cur.priceCny || (f.priceCny != null ? String(f.priceCny) : ''),
+              sizeCn: cur.sizeCn || f.sizeCn || '',
+              materialCn: cur.materialCn || f.materialCn || '',
+              colorsCn: cur.colorsCn || f.colorsCn || '',
+              weightG: cur.weightG || (f.weightG != null ? String(f.weightG) : ''),
+              pcsPerCarton: cur.pcsPerCarton || (f.pcsPerCarton != null ? String(f.pcsPerCarton) : ''),
+              cartonGwKg: cur.cartonGwKg || (f.cartonGwKg != null ? String(f.cartonGwKg) : ''),
+            }
+          : cur
+      )
+      if (f.images?.length || f.image) {
+        const got = (f.images?.length ? f.images : [f.image]).filter((x): x is string => Boolean(x))
+        setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, ...got])).slice(0, 8) } : cur))
+      }
+      toast.success(r.message || '已抓取')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  const grabImages = async () => {
+    if (!form?.sourceUrl.trim()) {
+      toast.error('先填 1688 链接')
+      return
+    }
+    setFetching(true)
+    try {
+      const r = await api.fetch1688Images(form.sourceUrl.trim())
+      if (r.images?.length) {
+        setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, ...r.images])).slice(0, 8) } : cur))
+        toast.success(r.message || `抓到 ${r.images.length} 张图`)
+      } else {
+        toast.warning(r.message || '没抓到图，可以手动粘贴图片地址')
+      }
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  const addImageUrl = () => {
+    const u = imgUrl.trim()
+    if (!u) return
+    if (!/^https?:\/\//i.test(u)) {
+      toast.error('图片地址要以 http 开头')
+      return
+    }
+    setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, u])).slice(0, 8) } : cur))
+    setImgUrl('')
+  }
+
+  const coverage = useMemo(() => list.filter((p) => p.cartonLCm && p.pcsPerCarton && p.cartonGwKg).length, [list])
+
+  return (
+    <div className="space-y-4">
+      <SectionCard
+        title="产品资料库"
+        hint="录一次就够了：批量处理 / 产品信息预填去抓 1688 时，会先查这里，命中就直接用你录的箱规和图片，不用再补"
+        right={
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
+              资料齐全 {coverage}/{list.length}
+            </Badge>
+            <Button size="sm" onClick={() => setForm({ ...EMPTY })}>
+              <Plus className="mr-1 h-3.5 w-3.5" /> 新增商品
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+            <input
+              className="h-8 w-64 rounded border border-slate-200 pl-7 pr-2 text-[12px]"
+              placeholder="搜标题 / 链接 / 材质 / 备注"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void load(q)
+              }}
+            />
+          </div>
+          <Button size="sm" variant="outline" onClick={() => void load(q)}>
+            搜索
+          </Button>
+          <span className="text-[11px] text-slate-400">
+            批量处理时，粘贴同一链接会自动用这里的资料（含图片），不再重复抓取
+          </span>
+        </div>
+      </SectionCard>
+
+      {form && (
+        <SectionCard
+          title={form.id ? '编辑商品资料' : '新增商品资料'}
+          hint="箱规、每箱数、箱毛重是运费测算的关键；图片存 1~8 张，出图时作为参考图"
+          right={
+            <Button size="sm" variant="ghost" onClick={() => setForm(null)}>
+              <X className="mr-1 h-3.5 w-3.5" /> 关闭
+            </Button>
+          }
+        >
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <Field label="1688 链接" full>
+              <div className="flex gap-1">
+                <input
+                  className="h-8 flex-1 rounded border border-slate-200 px-2 text-[12px]"
+                  placeholder="https://detail.1688.com/offer/xxx.html"
+                  value={form.sourceUrl}
+                  onChange={(e) => set('sourceUrl', e.target.value)}
+                />
+                <Button size="sm" variant="outline" onClick={() => void grabFromLink()} disabled={fetching}>
+                  {fetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+                </Button>
+              </div>
+            </Field>
+            <Field label="商品名称" full>
+              <input
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.title}
+                onChange={(e) => set('title', e.target.value)}
+              />
+            </Field>
+            <Field label="采购价（元）">
+              <input
+                type="number"
+                step="0.01"
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.priceCny}
+                onChange={(e) => set('priceCny', e.target.value)}
+              />
+            </Field>
+            <Field label="产品尺寸（cm）">
+              <input
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                placeholder="20x15x8"
+                value={form.sizeCn}
+                onChange={(e) => set('sizeCn', e.target.value)}
+              />
+            </Field>
+            <Field label="单个重量（g）">
+              <input
+                type="number"
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.weightG}
+                onChange={(e) => set('weightG', e.target.value)}
+              />
+            </Field>
+            <Field label="箱规 长（cm）">
+              <input
+                type="number"
+                step="0.1"
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.cartonL}
+                onChange={(e) => set('cartonL', e.target.value)}
+              />
+            </Field>
+            <Field label="箱规 宽（cm）">
+              <input
+                type="number"
+                step="0.1"
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.cartonW}
+                onChange={(e) => set('cartonW', e.target.value)}
+              />
+            </Field>
+            <Field label="箱规 高（cm）">
+              <input
+                type="number"
+                step="0.1"
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.cartonH}
+                onChange={(e) => set('cartonH', e.target.value)}
+              />
+            </Field>
+            <Field label="一箱数量">
+              <input
+                type="number"
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.pcsPerCarton}
+                onChange={(e) => set('pcsPerCarton', e.target.value)}
+              />
+            </Field>
+            <Field label="一箱毛重（kg）">
+              <input
+                type="number"
+                step="0.01"
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.cartonGwKg}
+                onChange={(e) => set('cartonGwKg', e.target.value)}
+              />
+            </Field>
+            <Field label="材质">
+              <input
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.materialCn}
+                onChange={(e) => set('materialCn', e.target.value)}
+              />
+            </Field>
+            <Field label="颜色">
+              <input
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.colorsCn}
+                onChange={(e) => set('colorsCn', e.target.value)}
+              />
+            </Field>
+            <Field label="供应商">
+              <input
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+                value={form.supplier}
+                onChange={(e) => set('supplier', e.target.value)}
+              />
+            </Field>
+            <Field label="备注" full>
+              <textarea
+                rows={2}
+                className="w-full rounded border border-slate-200 px-2 py-1 text-[12px]"
+                value={form.notes}
+                onChange={(e) => set('notes', e.target.value)}
+              />
+            </Field>
+          </div>
+
+          {/* 图片 */}
+          <div className="mt-3 rounded-lg border border-slate-200 p-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[12px] font-medium text-slate-700">商品图片（{form.images.length}/8）</span>
+              <Button size="sm" variant="outline" onClick={() => void grabImages()} disabled={fetching}>
+                {fetching ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="mr-1 h-3.5 w-3.5" />}
+                从 1688 抓图
+              </Button>
+              <input
+                className="h-7 w-72 rounded border border-slate-200 px-2 text-[11px]"
+                placeholder="粘贴图片地址后回车添加"
+                value={imgUrl}
+                onChange={(e) => setImgUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') addImageUrl()
+                }}
+              />
+              <Button size="sm" variant="ghost" onClick={addImageUrl}>
+                添加
+              </Button>
+            </div>
+            {form.images.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {form.images.map((u, i) => (
+                  <div key={`${u}-${i}`} className="group relative h-16 w-16 overflow-hidden rounded border border-slate-200">
+                    <img src={u} alt="" className="h-full w-full object-cover" />
+                    <button
+                      type="button"
+                      className="absolute right-0 top-0 hidden rounded-bl bg-black/60 px-1 text-[10px] text-white group-hover:block"
+                      onClick={() => set('images', form.images.filter((_, idx) => idx !== i))}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 flex items-center gap-2">
+            <Button size="sm" onClick={() => void save()} disabled={saving}>
+              {saving ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+              保存到资料库
+            </Button>
+            <span className="text-[11px] text-slate-400">同一链接再存一次会覆盖更新，不会重复</span>
+          </div>
+        </SectionCard>
+      )}
+
+      <SectionCard title="已录入商品" hint="点击「编辑」补全或改数；资料齐全的商品，批量处理时可以一路跑到入库">
+        {loading ? (
+          <div className="flex items-center justify-center py-10 text-sm text-slate-500">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载中…
+          </div>
+        ) : list.length === 0 ? (
+          <div className="py-10 text-center">
+            <Database className="mx-auto h-9 w-9 text-slate-300" />
+            <p className="mt-3 text-sm font-medium text-slate-600">资料库还是空的</p>
+            <p className="mt-1 text-xs text-slate-400">点右上角「新增商品」，把链接、箱规、图片录进来</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-[12px]">
+              <thead className="text-[11px] text-slate-400">
+                <tr className="border-b border-slate-100">
+                  <th className="py-2 pr-2 font-medium">商品</th>
+                  <th className="py-2 pr-2 font-medium">采购价</th>
+                  <th className="py-2 pr-2 font-medium">尺寸</th>
+                  <th className="py-2 pr-2 font-medium">箱规</th>
+                  <th className="py-2 pr-2 font-medium">每箱</th>
+                  <th className="py-2 pr-2 font-medium">毛重</th>
+                  <th className="py-2 pr-2 font-medium">图片</th>
+                  <th className="py-2 font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {list.map((p) => {
+                  const full = Boolean(p.cartonLCm && p.pcsPerCarton && p.cartonGwKg && p.priceCny)
+                  return (
+                    <tr key={p.id} className="border-b border-slate-50 align-top">
+                      <td className="max-w-[280px] py-2 pr-2">
+                        <div className="truncate font-medium text-slate-800" title={p.title}>
+                          {p.title || '（未命名）'}
+                        </div>
+                        {p.sourceUrl && (
+                          <a
+                            href={p.sourceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline"
+                          >
+                            <ExternalLink className="h-3 w-3" /> 1688 链接
+                          </a>
+                        )}
+                      </td>
+                      <td className="py-2 pr-2">{p.priceCny != null ? `¥${p.priceCny}` : <span className="text-amber-600">缺</span>}</td>
+                      <td className="py-2 pr-2 text-slate-600">{p.sizeCn || <span className="text-amber-600">缺</span>}</td>
+                      <td className="py-2 pr-2 text-slate-600">
+                        {p.cartonLCm && p.cartonWCm && p.cartonHCm
+                          ? `${p.cartonLCm}x${p.cartonWCm}x${p.cartonHCm}`
+                          : <span className="text-amber-600">缺</span>}
+                      </td>
+                      <td className="py-2 pr-2 text-slate-600">{p.pcsPerCarton ?? <span className="text-amber-600">缺</span>}</td>
+                      <td className="py-2 pr-2 text-slate-600">{p.cartonGwKg ?? <span className="text-amber-600">缺</span>}</td>
+                      <td className="py-2 pr-2">
+                        <div className="flex items-center gap-1">
+                          {p.images.slice(0, 3).map((u, i) => (
+                            <img key={`${p.id}-${i}`} src={u} alt="" className="h-8 w-8 rounded object-cover" />
+                          ))}
+                          <span className="text-[11px] text-slate-400">{p.images.length}</span>
+                        </div>
+                      </td>
+                      <td className="py-2">
+                        <div className="flex items-center gap-1">
+                          {full ? (
+                            <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
+                              齐全
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
+                              待补
+                            </Badge>
+                          )}
+                          <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => setForm(toForm(p))}>
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-[11px] text-rose-600"
+                            onClick={() => void remove(p)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SectionCard>
+    </div>
+  )
+}
+
+function Field({ label, full, children }: { label: string; full?: boolean; children: React.ReactNode }) {
+  return (
+    <label className={full ? 'sm:col-span-2 lg:col-span-3' : ''}>
+      <span className="mb-0.5 block text-[11px] text-slate-500">{label}</span>
+      {children}
+    </label>
+  )
+}

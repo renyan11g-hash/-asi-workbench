@@ -545,6 +545,8 @@ export interface BatchItemInput {
   materialCn?: string
   colorsCn?: string
   description?: string
+  /** 产品图（可多张）：补全时手动加，或从 1688 一键抓取 */
+  images?: string[]
   /** 单件重（克） */
   weightG?: number | null
   /** 箱规长宽高（厘米） */
@@ -620,6 +622,31 @@ export interface BatchJobSummary {
   failed: number
   /** 还缺关键字段的条数 */
   missing: number
+  createdAt: string
+  updatedAt: string
+}
+
+// ---------------- 产品资料库（自建主数据：录一次，抓取时自动命中） ----------------
+
+export interface MasterProduct {
+  id: string
+  offerId: string | null
+  sourceUrl: string
+  title: string
+  priceCny: number | null
+  sizeCn: string
+  weightG: number | null
+  cartonLCm: number | null
+  cartonWCm: number | null
+  cartonHCm: number | null
+  pcsPerCarton: number | null
+  cartonGwKg: number | null
+  /** 多张产品图（出图时作为参考图） */
+  images: string[]
+  notes: string
+  supplier: string
+  materialCn: string
+  colorsCn: string
   createdAt: string
   updatedAt: string
 }
