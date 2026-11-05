@@ -99,7 +99,7 @@ ${notesBlock}
 ${logoDirective}
 The reference images (if any) show the real product.${withLogo ? ' The LAST reference image (if provided) is the user\'s brand logo to blend onto the product front in the "main" prompt only.' : ' No logo reference image is provided — do not include any logo in any prompt.'}`
 
-  const images = (source.images ?? []).filter((u) => /^https?:\/\//.test(u)).slice(0, 4)
+  const images = (source.images ?? []).filter((u) => /^https?:\/\//.test(u)).slice(0, 6)
   const raw = await callChatJson<RawPromptSet>(
     settings,
     SYSTEM,

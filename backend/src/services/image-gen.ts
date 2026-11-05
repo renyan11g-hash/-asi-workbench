@@ -114,7 +114,8 @@ async function arkGenerate(
     model,
     prompt,
     response_format: 'url',
-    size: settings.imageSize || '2K',
+    // 默认 1K：出图后统一缩放成 1200×1200，用 2K 只是多花钱（方舟按输出像素计价）
+    size: settings.imageSize || '1K',
     watermark: false,
   }
   if (imageParam.length) body.image = imageParam

@@ -827,7 +827,7 @@ export default function ListingEditor() {
   const [ovMarkupAir, setOvMarkupAir] = useState<string | null>(null)
   const [ovMarkupSea, setOvMarkupSea] = useState<string | null>(null)
 
-  const reprice = async () => {
+  const reprice = async (extra?: { shippingModes?: Array<'air' | 'sea'> }) => {
     if (!product) return
     try {
       const num = (v: string | null) => {
@@ -838,13 +838,21 @@ export default function ListingEditor() {
         billableKg: num(ovBillable),
         markupAir: num(ovMarkupAir),
         markupSea: num(ovMarkupSea),
+        shippingModes: extra?.shippingModes,
       })
       setListing(p.listing ?? listing)
       qc.invalidateQueries({ queryKey: ['product', id] })
-      toast.success('已按你填的计费重 / 倍率重算价格表')
+      toast.success(extra?.shippingModes ? '已切换该档运输方式并重算' : '已按你填的计费重 / 倍率重算价格表')
     } catch (err) {
       toast.error(getErrorMessage(err))
     }
+  }
+
+  /** 点某一档的空运/海运徽标 → 切换并整表重算 */
+  const toggleShipping = (idx: number) => {
+    const rows = listing?.priceGrid ?? []
+    const modes = rows.map((r, i) => (i === idx ? (r.shipping === 'air' ? 'sea' : 'air') : r.shipping))
+    void reprice({ shippingModes: modes as Array<'air' | 'sea'> })
   }
 
   // ---------- 源信息一体化编辑（评估库 ↔ 产品库 ↔ 链接 三处同步） ----------
@@ -2048,9 +2056,9 @@ export default function ListingEditor() {
           <div className="space-y-4 lg:col-span-4">
             <SectionCard
               title="阶梯报价 (8C · 前 4 空运 / 后 4 海运)"
-              hint="数量、售价均可直接改，毛利自动重算。计费重 = max(体积重, 箱毛重) 后向上取到 0.5kg；计费重和倍率都能手改后重算"
+              hint="数量、售价均可直接改，毛利自动重算。计费重 = max(体积重, 箱毛重) 后向上取到 0.5kg；计费重、倍率可手填重算；点「空运/海运」徽标即可切换该档运输方式"
               right={
-                <Button variant="ghost" size="sm" onClick={reprice}>
+                <Button variant="ghost" size="sm" onClick={() => void reprice()}>
                   <RefreshCw className="mr-1 h-3 w-3" /> 重算
                 </Button>
               }
@@ -2087,7 +2095,7 @@ export default function ListingEditor() {
                     onChange={(e) => setOvMarkupSea(e.target.value)}
                   />
                 </label>
-                <Button size="sm" variant="outline" onClick={reprice}>
+                <Button size="sm" variant="outline" onClick={() => void reprice()}>
                   按此重算
                 </Button>
                 <span className="text-[10px] text-slate-400">计费重填 10.2 会按 10.5 算</span>
@@ -2125,15 +2133,18 @@ export default function ListingEditor() {
                         />
                       </td>
                       <td className="py-1.5">
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] ${
+                        <button
+                          type="button"
+                          onClick={() => toggleShipping(idx)}
+                          title="点一下切换空运 / 海运，整表按新方式重算"
+                          className={`rounded px-1.5 py-0.5 text-[10px] transition-colors ${
                             r.shipping === 'air'
-                              ? 'bg-blue-50 text-blue-700'
-                              : 'bg-emerald-50 text-emerald-700'
+                              ? 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                              : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                           }`}
                         >
                           {r.shipping === 'air' ? '空运' : '海运'}
-                        </span>
+                        </button>
                       </td>
                       <td className="py-1.5 text-slate-500">{r.billableKg}kg</td>
                       <td className="py-1.5 text-slate-500">×{r.markupRate}</td>

@@ -299,7 +299,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   // - 尺寸图/介绍图：1 张产品图即可（不需要 Logo，纯浪费计费）
   const productUrls = (source.images ?? []).filter((u) => /^https?:\/\//.test(u))
   const mainRefs: ImageRef[] = productUrls
-    .slice(0, 3)
+    .slice(0, 4)
     .map((u) => ({ url: u }) as ImageRef)
   if (logo && withLogo) mainRefs.push({ buffer: logo })
   const plainRefs: ImageRef[] = productUrls.slice(0, 1).map((u) => ({ url: u }) as ImageRef)

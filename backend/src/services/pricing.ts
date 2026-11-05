@@ -101,7 +101,13 @@ export function buildPriceGrid(
   >,
   settings: Settings,
   /** 人工覆盖：计费重 / 空运倍率 / 海运倍率（前端「计费和倍率可改」用） */
-  overrides?: { billableKg?: number | null; markupAir?: number | null; markupSea?: number | null }
+  overrides?: {
+    billableKg?: number | null
+    markupAir?: number | null
+    markupSea?: number | null
+    /** 逐档指定空运/海运（前端点徽标切换） */
+    shippingModes?: Array<'air' | 'sea'>
+  }
 ): { rows: PriceRow[]; breakdowns: CostBreakdown[] } {
   const fx = Number(settings.fxRate) || 6.7
   const airRate = Number(settings.airRateCnyPerKg) || 50
@@ -173,11 +179,15 @@ export function buildPriceGrid(
   }
 
   const breakdowns: CostBreakdown[] = []
+  const modeOverride = overrides?.shippingModes
   const rows: PriceRow[] = levels.map((qty, idx) => {
-    const shipping: 'air' | 'sea' = idx < airQty ? 'air' : 'sea'
+    // 每一档的空运/海运可以人工点着切换（前端点徽标就会传整张 modes 回来）
+    const forced = modeOverride?.[idx]
+    const shipping: 'air' | 'sea' = forced === 'air' || forced === 'sea' ? forced : idx < airQty ? 'air' : 'sea'
     const unitCostCny = shipping === 'air' ? airUnitCost : seaUnitCost
-    let markup = markups[idx]
-    if (strategy === 'random' && idx > 0 && idx < levels.length - 1) {
+    // 人工指定运输方式时，倍率用该方式的基准倍率（不再插值），避免出现「空运却用海运倍率」
+    let markup = forced ? (shipping === 'air' ? markupAir : markupSea) : markups[idx]
+    if (!forced && strategy === 'random' && idx > 0 && idx < levels.length - 1) {
       markup = markup * (1 + (Math.random() - 0.5) * 0.2)
     }
 

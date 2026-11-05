@@ -582,7 +582,12 @@ export const api = {
   /** 重算阶梯报价：可传入人工指定的计费重 / 倍率 */
   async reprice(
     id: string,
-    overrides?: { billableKg?: number | null; markupAir?: number | null; markupSea?: number | null }
+    overrides?: {
+      billableKg?: number | null
+      markupAir?: number | null
+      markupSea?: number | null
+      shippingModes?: Array<'air' | 'sea'>
+    }
   ): Promise<Product> {
     const { data } = await apiClient.post<{ product: Product }>(
       `/products/${id}/reprice`,
@@ -832,6 +837,29 @@ export const api = {
       { idxs }
     )
     return data
+  },
+
+  /** 导入产品资料库（xlsx / csv，前端把文件转 base64 提交） */
+  async importMasterProducts(filename: string, dataBase64: string): Promise<{
+    created: number
+    updated: number
+    skipped: number
+    errors: Array<{ row: number; error: string }>
+    total: number
+  }> {
+    const { data } = await apiClient.post<{
+      created: number
+      updated: number
+      skipped: number
+      errors: Array<{ row: number; error: string }>
+      total: number
+    }>('/master-products/import', { filename, dataBase64 }, { timeout: 180_000 })
+    return data
+  },
+
+  masterExportUrl(format: 'xlsx' | 'csv'): string {
+    const baseURL = import.meta.env.VITE_API_URL || '/api'
+    return `${baseURL}/master-products/export.${format}`
   },
 
   exportCsvUrl(): string {

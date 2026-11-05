@@ -1,5 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Database, ExternalLink, ImagePlus, Loader2, Pencil, Plus, Search, Trash2, Wand2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Database,
+  Download,
+  ExternalLink,
+  ImagePlus,
+  Loader2,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  Upload,
+  Wand2,
+  X,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -85,6 +98,44 @@ export default function MasterData() {
   const [saving, setSaving] = useState(false)
   const [fetching, setFetching] = useState(false)
   const [imgUrl, setImgUrl] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<{
+    created: number
+    updated: number
+    skipped: number
+    total: number
+    errors: Array<{ row: number; error: string }>
+  } | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+
+  /** 读文件 → base64 → 后端解析 */
+  const onImportFile = async (file: File | null) => {
+    if (!file) return
+    if (!/\.(xlsx|csv)$/i.test(file.name)) {
+      toast.error('只支持 .xlsx / .csv（老 .xls 请在 Excel 里另存为 xlsx）')
+      return
+    }
+    setImporting(true)
+    setImportResult(null)
+    try {
+      const buf = await file.arrayBuffer()
+      let binary = ''
+      const bytes = new Uint8Array(buf)
+      const chunk = 0x8000
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+      }
+      const r = await api.importMasterProducts(file.name, btoa(binary))
+      setImportResult(r)
+      toast.success(`导入完成：新增 ${r.created} 条，更新 ${r.updated} 条`)
+      await load(q)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setImporting(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
 
   const load = useCallback(async (keyword?: string) => {
     setLoading(true)
@@ -233,16 +284,62 @@ export default function MasterData() {
         title="产品资料库"
         hint="录一次就够了：批量处理 / 产品信息预填去抓 1688 时，会先查这里，命中就直接用你录的箱规和图片，不用再补"
         right={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
               资料齐全 {coverage}/{list.length}
             </Badge>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => window.open(api.masterExportUrl('xlsx'), '_blank')}
+            >
+              <Download className="mr-1 h-3.5 w-3.5" /> 导出 Excel
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => window.open(api.masterExportUrl('csv'), '_blank')}
+            >
+              <Download className="mr-1 h-3.5 w-3.5" /> 导出 CSV
+            </Button>
+            <Button size="sm" variant="outline" disabled={importing} onClick={() => fileRef.current?.click()}>
+              {importing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1 h-3.5 w-3.5" />}
+              导入表格
+            </Button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".xlsx,.csv"
+              className="hidden"
+              onChange={(e) => void onImportFile(e.target.files?.[0] ?? null)}
+            />
             <Button size="sm" onClick={() => setForm({ ...EMPTY })}>
               <Plus className="mr-1 h-3.5 w-3.5" /> 新增商品
             </Button>
           </div>
         }
       >
+        {importResult && (
+          <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-[12px] text-slate-700">
+            <div>
+              导入结果：共 {importResult.total} 行 · 新增 <b className="text-emerald-600">{importResult.created}</b> ·
+              更新 <b className="text-blue-600">{importResult.updated}</b> · 跳过 {importResult.skipped}
+              {importResult.errors.length > 0 && (
+                <span className="text-rose-600"> · 出错 {importResult.errors.length}</span>
+              )}
+            </div>
+            {importResult.errors.length > 0 && (
+              <ul className="mt-1 max-h-24 overflow-y-auto text-[11px] text-rose-600">
+                {importResult.errors.map((e) => (
+                  <li key={e.row}>第 {e.row} 行：{e.error}</li>
+                ))}
+              </ul>
+            )}
+            <div className="mt-1 text-[11px] text-slate-400">
+              按 1688 链接去重：已存在就更新，不存在就新增。图片列多张用换行分隔。
+            </div>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />

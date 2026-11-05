@@ -744,12 +744,13 @@ export function extractImages(html: string, first?: string): string[] {
     if (/logo|icon|sprite|avatar|qrcode|qr-|loading|placeholder|\.gif($|\?)/i.test(u)) return
     if (u.length > 400) return
     if (out.some((o) => keyOf(o) === keyOf(u))) return
-    if (out.length < 8) out.push(u)
+    // 最多 12 张：1688 一个链接常按颜色/角度有十几张，全留下才能覆盖「所有颜色」
+    if (out.length < 12) out.push(u)
   }
   if (first) push(first)
   for (const m of html.matchAll(/https?:\/\/[^"'\s\\)<>]+?\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s\\)<>]*)?/gi)) {
     push(m[0])
-    if (out.length >= 8) break
+    if (out.length >= 12) break
   }
   return out
 }
@@ -1650,6 +1651,8 @@ productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
       billableKg: z.coerce.number().positive().nullable().optional(),
       markupAir: z.coerce.number().positive().nullable().optional(),
       markupSea: z.coerce.number().positive().nullable().optional(),
+      /** 逐档空运/海运（点徽标切换） */
+      shippingModes: z.array(z.enum(['air', 'sea'])).max(12).optional(),
     })
     .parse(req.body ?? {})
   const { rows } = buildPriceGrid(current.source, settings, body)

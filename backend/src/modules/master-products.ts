@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from 'crypto'
+import ExcelJS from 'exceljs'
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../db'
@@ -246,4 +247,273 @@ masterProductsRouter.patch('/:id', async (req: Request, res: Response) => {
 masterProductsRouter.delete('/:id', async (req: Request, res: Response) => {
   db.prepare('DELETE FROM master_products WHERE id = ?').run(String(req.params.id))
   res.json({ ok: true })
+})
+
+// ---------------------------------------------------------------- 导入 / 导出
+
+/** 导出/导入共用的列定义（顺序即表格列序） */
+const COLUMNS: Array<{ key: keyof MasterProduct | 'imagesText'; label: string }> = [
+  { key: 'sourceUrl', label: '1688链接' },
+  { key: 'title', label: '商品名称' },
+  { key: 'priceCny', label: '采购价(元)' },
+  { key: 'sizeCn', label: '产品尺寸(cm)' },
+  { key: 'weightG', label: '单个重量(g)' },
+  { key: 'cartonLCm', label: '箱规长(cm)' },
+  { key: 'cartonWCm', label: '箱规宽(cm)' },
+  { key: 'cartonHCm', label: '箱规高(cm)' },
+  { key: 'pcsPerCarton', label: '一箱数量' },
+  { key: 'cartonGwKg', label: '一箱毛重(kg)' },
+  { key: 'materialCn', label: '材质' },
+  { key: 'colorsCn', label: '颜色' },
+  { key: 'supplier', label: '供应商' },
+  { key: 'notes', label: '备注' },
+  { key: 'imagesText', label: '图片(多张换行)' },
+]
+
+function cellOf(m: MasterProduct, key: keyof MasterProduct | 'imagesText'): string | number {
+  if (key === 'imagesText') return (m.images ?? []).join('\n')
+  const v = m[key]
+  if (v == null) return ''
+  if (typeof v === 'number' || typeof v === 'string') return v
+  return String(v)
+}
+
+/** 表头别名（导入时按名字找人话表头，中英文都认） */
+const HEADER_ALIASES: Record<string, keyof MasterProduct | 'imagesText'> = {
+  '1688链接': 'sourceUrl',
+  链接: 'sourceUrl',
+  url: 'sourceUrl',
+  商品名称: 'title',
+  名称: 'title',
+  标题: 'title',
+  品名: 'title',
+  '采购价(元)': 'priceCny',
+  采购价: 'priceCny',
+  价格: 'priceCny',
+  '产品尺寸(cm)': 'sizeCn',
+  产品尺寸: 'sizeCn',
+  尺寸: 'sizeCn',
+  '单个重量(g)': 'weightG',
+  单个重量: 'weightG',
+  单件重: 'weightG',
+  '箱规长(cm)': 'cartonLCm',
+  箱规长: 'cartonLCm',
+  长: 'cartonLCm',
+  '箱规宽(cm)': 'cartonWCm',
+  箱规宽: 'cartonWCm',
+  宽: 'cartonWCm',
+  '箱规高(cm)': 'cartonHCm',
+  箱规高: 'cartonHCm',
+  高: 'cartonHCm',
+  一箱数量: 'pcsPerCarton',
+  每箱数量: 'pcsPerCarton',
+  装箱数: 'pcsPerCarton',
+  '一箱毛重(kg)': 'cartonGwKg',
+  一箱毛重: 'cartonGwKg',
+  箱毛重: 'cartonGwKg',
+  毛重: 'cartonGwKg',
+  材质: 'materialCn',
+  颜色: 'colorsCn',
+  供应商: 'supplier',
+  备注: 'notes',
+  '图片(多张换行)': 'imagesText',
+  图片: 'imagesText',
+  产品图: 'imagesText',
+}
+
+function normHeader(h: string): string {
+  return h.replace(/\s+/g, '').replace(/[（]/g, '(').replace(/[）]/g, ')').trim()
+}
+
+function headerMap(header: string[]): Map<number, keyof MasterProduct | 'imagesText'> {
+  const map = new Map<number, keyof MasterProduct | 'imagesText'>()
+  header.forEach((h, i) => {
+    const key = HEADER_ALIASES[normHeader(String(h ?? ''))]
+    if (key) map.set(i, key)
+  })
+  return map
+}
+
+/** 把一行表格数据变成资料库输入；没有名称和链接就返回 null */
+function rowToInput(
+  map: Map<number, keyof MasterProduct | 'imagesText'>,
+  row: unknown[]
+): MasterInput | null {
+  const get = (k: keyof MasterProduct | 'imagesText'): string => {
+    for (const [idx, key] of map) {
+      if (key === k) {
+        const v = row[idx]
+        return v == null ? '' : String(v).trim()
+      }
+    }
+    return ''
+  }
+  const numOf = (k: keyof MasterProduct | 'imagesText'): number | null => {
+    const t = get(k)
+    if (!t) return null
+    const n = Number(t.replace(/[^\d.-]/g, ''))
+    return Number.isFinite(n) ? n : null
+  }
+  const title = get('title')
+  const sourceUrl = get('sourceUrl')
+  if (!title && !sourceUrl) return null
+  return {
+    sourceUrl,
+    title,
+    priceCny: numOf('priceCny'),
+    sizeCn: get('sizeCn'),
+    weightG: numOf('weightG'),
+    cartonLCm: numOf('cartonLCm'),
+    cartonWCm: numOf('cartonWCm'),
+    cartonHCm: numOf('cartonHCm'),
+    pcsPerCarton: numOf('pcsPerCarton'),
+    cartonGwKg: numOf('cartonGwKg'),
+    images: get('imagesText')
+      .split(/[\n\r|,，;；]+/)
+      .map((s) => s.trim())
+      .filter((s) => /^https?:\/\//i.test(s))
+      .slice(0, 8),
+    notes: get('notes'),
+    supplier: get('supplier'),
+    materialCn: get('materialCn'),
+    colorsCn: get('colorsCn'),
+  } as MasterInput
+}
+
+/** 导出 Excel */
+masterProductsRouter.get('/export.xlsx', async (_req: Request, res: Response) => {
+  const rows = db.prepare('SELECT * FROM master_products ORDER BY updated_at DESC').all() as unknown as Row[]
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('产品资料库')
+  ws.addRow(COLUMNS.map((c) => c.label))
+  ws.getRow(1).font = { bold: true }
+  for (const r of rows) {
+    const m = rowToMaster(r)
+    ws.addRow(COLUMNS.map((c) => cellOf(m, c.key)))
+  }
+  ws.columns.forEach((col, i) => {
+    col.width = i === COLUMNS.length - 1 ? 40 : Math.max(10, COLUMNS[i].label.length * 2 + 4)
+  })
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', 'attachment; filename="master-products.xlsx"')
+  const buf = await wb.xlsx.writeBuffer()
+  res.send(Buffer.from(buf))
+})
+
+/** 导出 CSV（Excel 直接能打开） */
+masterProductsRouter.get('/export.csv', async (_req: Request, res: Response) => {
+  const rows = db.prepare('SELECT * FROM master_products ORDER BY updated_at DESC').all() as unknown as Row[]
+  const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const lines = [COLUMNS.map((c) => esc(c.label)).join(',')]
+  for (const r of rows) {
+    const m = rowToMaster(r)
+    lines.push(COLUMNS.map((c) => esc(cellOf(m, c.key))).join(','))
+  }
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+  res.setHeader('Content-Disposition', 'attachment; filename="master-products.csv"')
+  res.send('\uFEFF' + lines.join('\n'))
+})
+
+/** 极简 CSV 解析（支持双引号包裹与 "" 转义） */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ''
+  let inQuotes = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"'
+          i++
+        } else inQuotes = false
+      } else cell += ch
+    } else if (ch === '"') inQuotes = true
+    else if (ch === ',') {
+      row.push(cell)
+      cell = ''
+    } else if (ch === '\n') {
+      row.push(cell)
+      rows.push(row)
+      row = []
+      cell = ''
+    } else if (ch !== '\r') cell += ch
+  }
+  if (cell || row.length) {
+    row.push(cell)
+    rows.push(row)
+  }
+  return rows
+}
+
+/**
+ * 导入：支持 .xlsx / .xls(另存为 xlsx) / .csv。
+ * 前端把文件转成 base64 一起提交（不用 multer，避免多一个依赖）。
+ * 按 1688 链接去重：已存在就更新，不存在就新增。
+ */
+masterProductsRouter.post('/import', async (req: Request, res: Response) => {
+  const body = z
+    .object({ filename: z.string().default('import.csv'), dataBase64: z.string().min(1) })
+    .parse(req.body ?? {})
+  const buf = Buffer.from(body.dataBase64, 'base64')
+
+  let grid: string[][] = []
+  if (/\.xlsx$/i.test(body.filename)) {
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(buf as unknown as ArrayBuffer)
+    const ws = wb.worksheets[0]
+    if (!ws) throw new AppError(400, 'Excel 里没有工作表')
+    ws.eachRow((row) => {
+      const values: string[] = []
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        const v = cell.value
+        let s = ''
+        if (v == null) s = ''
+        else if (typeof v === 'object' && v !== null && 'text' in v) s = String((v as { text: unknown }).text ?? '')
+        else if (typeof v === 'object' && v !== null && 'result' in v) s = String((v as { result: unknown }).result ?? '')
+        else s = String(v)
+        values[colNumber - 1] = s
+      })
+      grid.push(values)
+    })
+  } else {
+    grid = parseCsv(buf.toString('utf8').replace(/^\uFEFF/, ''))
+  }
+
+  if (grid.length < 2) throw new AppError(400, '文件里没有数据行（第一行要是表头）')
+
+  const map = headerMap(grid[0])
+  if (map.size === 0) {
+    throw new AppError(400, '没认出表头：请用「导出 Excel」的表头，或至少包含「1688链接 / 商品名称」')
+  }
+
+  let created = 0
+  let updated = 0
+  let skipped = 0
+  const errors: Array<{ row: number; error: string }> = []
+
+  for (let i = 1; i < grid.length; i++) {
+    const row = grid[i] ?? []
+    if (!row.some((c) => String(c ?? '').trim())) continue
+    try {
+      const input = rowToInput(map, row)
+      if (!input) {
+        skipped += 1
+        continue
+      }
+      const existing = input.sourceUrl ? findMasterByUrl(input.sourceUrl) : null
+      if (existing) {
+        updateMaster(existing.id, input)
+        updated += 1
+      } else {
+        insertMaster(input)
+        created += 1
+      }
+    } catch (err) {
+      errors.push({ row: i + 1, error: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  res.json({ ok: true, created, updated, skipped, errors: errors.slice(0, 20), total: grid.length - 1 })
 })
