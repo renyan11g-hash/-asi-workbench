@@ -355,7 +355,9 @@ function rowToInput(
     return Number.isFinite(n) ? n : null
   }
   const title = get('title')
-  const sourceUrl = get('sourceUrl')
+  let sourceUrl = get('sourceUrl')
+  // 链接列里塞的不是 1688 链接（常见：图片地址换行串行）就丢掉，避免导入一条空壳记录
+  if (sourceUrl && !/1688\.com\//i.test(sourceUrl)) sourceUrl = ''
   if (!title && !sourceUrl) return null
   return {
     sourceUrl,
