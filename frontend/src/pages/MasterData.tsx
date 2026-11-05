@@ -285,6 +285,40 @@ export default function MasterData() {
   }
 
   const coverage = useMemo(() => list.filter((p) => p.cartonLCm && p.pcsPerCarton && p.cartonGwKg).length, [list])
+  const noImageRows = useMemo(() => list.filter((p) => (p.images?.length ?? 0) === 0 && p.sourceUrl), [list])
+  const [grabbingAll, setGrabbingAll] = useState(false)
+  const [grabProgress, setGrabProgress] = useState({ done: 0, total: 0, got: 0 })
+
+  /**
+   * 批量抓图：导入的 Excel 里如果图片是「嵌入单元格的图片」（WPS 的 DISPIMG），
+   * 表格里拿不到图片地址，只能按 1688 链接回去抓。一条一条抓，抓完自动存。
+   */
+  const grabAllImages = async () => {
+    const targets = noImageRows
+    if (!targets.length) {
+      toast.success('没有缺图的行')
+      return
+    }
+    setGrabbingAll(true)
+    setGrabProgress({ done: 0, total: targets.length, got: 0 })
+    let got = 0
+    for (let i = 0; i < targets.length; i++) {
+      const p = targets[i]
+      try {
+        const r = await api.fetch1688Images(p.sourceUrl)
+        if (r.images?.length) {
+          await api.updateMasterProduct(p.id, { images: r.images.slice(0, 8) })
+          got += 1
+        }
+      } catch {
+        /* 单条失败继续下一条 */
+      }
+      setGrabProgress({ done: i + 1, total: targets.length, got })
+    }
+    setGrabbingAll(false)
+    toast.success(`抓图完成：${got}/${targets.length} 条拿到图`)
+    await load(q)
+  }
 
   return (
     <div className="space-y-4">
@@ -314,6 +348,18 @@ export default function MasterData() {
               {importing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1 h-3.5 w-3.5" />}
               导入表格
             </Button>
+            {noImageRows.length > 0 && (
+              <Button size="sm" variant="outline" disabled={grabbingAll} onClick={() => void grabAllImages()}>
+                {grabbingAll ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ImagePlus className="mr-1 h-3.5 w-3.5" />
+                )}
+                {grabbingAll
+                  ? `抓图中 ${grabProgress.done}/${grabProgress.total}`
+                  : `批量抓图（缺 ${noImageRows.length} 条）`}
+              </Button>
+            )}
             <input
               ref={fileRef}
               type="file"
@@ -355,6 +401,8 @@ export default function MasterData() {
             )}
             <div className="mt-1 text-[11px] text-slate-400">
               按 1688 链接去重：已存在就更新，不存在就新增。图片列多张用换行分隔。
+              如果 Excel 里的图是「嵌入单元格的图片」（单元格显示成照片，不是网址），导入读不到地址——
+              用右上角「批量抓图」按链接回 1688 抓一次即可。
             </div>
           </div>
         )}

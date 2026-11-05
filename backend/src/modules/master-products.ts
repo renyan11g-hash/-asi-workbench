@@ -280,7 +280,9 @@ function cellOf(m: MasterProduct, key: keyof MasterProduct | 'imagesText'): stri
 }
 
 /** 表头别名（导入时按名字找人话表头，中英文都认） */
-const HEADER_ALIASES: Record<string, keyof MasterProduct | 'imagesText'> = {
+type ColKey = keyof MasterProduct | 'imagesText' | 'cartonText'
+
+const HEADER_ALIASES: Record<string, ColKey> = {
   '1688链接': 'sourceUrl',
   链接: 'sourceUrl',
   商品链接: 'sourceUrl',
@@ -331,36 +333,90 @@ const HEADER_ALIASES: Record<string, keyof MasterProduct | 'imagesText'> = {
   '图片(多张换行)': 'imagesText',
   图片: 'imagesText',
   产品图: 'imagesText',
+  商品主图: 'imagesText',
+  主图: 'imagesText',
+  // 下面这些是用户实际表格里常见的列名（带单位后缀会被 normHeader 去掉）
+  商品尺寸: 'sizeCn',
+  规格: 'sizeCn',
+  单个产品重量: 'weightG',
+  产品重量: 'weightG',
+  净重: 'weightG',
+  商品价格: 'priceCny',
+  商品单价: 'priceCny',
+  单价: 'priceCny',
+  // 「箱规」一整列写成一串文字（如「50×40×40，一箱100个，毛重13kg」）
+  箱规: 'cartonText',
+  箱规尺寸: 'cartonText',
+  外箱尺寸: 'cartonText',
+  包装尺寸: 'cartonText',
+  装箱规格: 'cartonText',
 }
 
+/** 表头归一：去空格、全角括号转半角、去掉 /cm、(cm)、/g 这类单位后缀 */
 function normHeader(h: string): string {
-  return h.replace(/\s+/g, '').replace(/[（]/g, '(').replace(/[）]/g, ')').trim()
+  return String(h ?? '')
+    .replace(/\s+/g, '')
+    .replace(/[（]/g, '(')
+    .replace(/[）]/g, ')')
+    .replace(/[\/／]\s*(cm|mm|g|kg|元|个|pcs|inch|")$/i, '')
+    .replace(/\((cm|mm|g|kg|元|个|pcs|inch|")\)$/i, '')
+    .trim()
 }
 
-function headerMap(header: string[]): Map<number, keyof MasterProduct | 'imagesText'> {
-  const map = new Map<number, keyof MasterProduct | 'imagesText'>()
+/** ok=是不是真实数据（排除 √ / ✓ / 是 这类勾选标记） */
+function isMarker(v: string): boolean {
+  return /^[√✓✔是Yy\-—]+$/.test(v.trim())
+}
+
+/** 表头 → 该字段可以取值的所有列下标（同一字段可能有多列，取第一个有真实数据的） */
+function headerMap(header: string[]): Map<ColKey, number[]> {
+  const map = new Map<ColKey, number[]>()
   header.forEach((h, i) => {
-    const key = HEADER_ALIASES[normHeader(String(h ?? ''))]
-    if (key) map.set(i, key)
+    const key = HEADER_ALIASES[normHeader(h)] as ColKey | undefined
+    if (!key) return
+    const list = map.get(key) ?? []
+    list.push(i)
+    map.set(key, list)
   })
   return map
 }
 
+/** 从「箱规」那串文字里拆出 长宽高 + 每箱数 + 毛重 */
+export function parseCartonText(text: string): {
+  L: number | null
+  W: number | null
+  H: number | null
+  pcs: number | null
+  gw: number | null
+} {
+  const t = String(text ?? '')
+  const dims = t.match(/(\d+(?:\.\d+)?)\s*[x×*X*]\s*(\d+(?:\.\d+)?)\s*[x×*X*]\s*(\d+(?:\.\d+)?)/)
+  // 「一箱100个」「每箱 80 个」「100pcs」
+  const pcsM = t.match(/(?:一箱|每箱|装箱|箱装)?\s*(\d{1,6})\s*(?:个|只|pcs)/i)
+  // 「毛重13kg」「21kg」「13 千克」
+  const gwM = t.match(/(\d+(?:\.\d+)?)\s*(?:kg|千克|公斤)/i)
+  return {
+    L: dims ? Number(dims[1]) : null,
+    W: dims ? Number(dims[2]) : null,
+    H: dims ? Number(dims[3]) : null,
+    pcs: pcsM ? Number(pcsM[1]) : null,
+    gw: gwM ? Number(gwM[1]) : null,
+  }
+}
+
 /** 把一行表格数据变成资料库输入；没有名称和链接就返回 null */
-function rowToInput(
-  map: Map<number, keyof MasterProduct | 'imagesText'>,
-  row: unknown[]
-): MasterInput | null {
-  const get = (k: keyof MasterProduct | 'imagesText'): string => {
-    for (const [idx, key] of map) {
-      if (key === k) {
-        const v = row[idx]
-        return v == null ? '' : String(v).trim()
-      }
+function rowToInput(map: Map<ColKey, number[]>, row: unknown[]): MasterInput | null {
+  /** 取该字段第一个「有真实数据」的单元格（跳过 √ 这类标记和空值） */
+  const get = (k: ColKey): string => {
+    for (const idx of map.get(k) ?? []) {
+      const raw = row[idx]
+      const v = raw == null ? '' : String(raw).trim()
+      if (!v || isMarker(v)) continue
+      return v
     }
     return ''
   }
-  const numOf = (k: keyof MasterProduct | 'imagesText'): number | null => {
+  const numOf = (k: ColKey): number | null => {
     const t = get(k)
     if (!t) return null
     const n = Number(t.replace(/[^\d.-]/g, ''))
@@ -371,17 +427,34 @@ function rowToInput(
   // 链接列里塞的不是 1688 链接（常见：图片地址换行串行）就丢掉，避免导入一条空壳记录
   if (sourceUrl && !/1688\.com\//i.test(sourceUrl)) sourceUrl = ''
   if (!title && !sourceUrl) return null
+
+  // 箱规：优先用「箱规长/宽/高」三列，没有就解析「箱规」那一串文字
+  let cartonL = numOf('cartonLCm')
+  let cartonW = numOf('cartonWCm')
+  let cartonH = numOf('cartonHCm')
+  let pcs = numOf('pcsPerCarton')
+  let gw = numOf('cartonGwKg')
+  const cartonTextCell = get('cartonText')
+  if (cartonTextCell && (!cartonL || !pcs || !gw)) {
+    const parsed = parseCartonText(cartonTextCell)
+    cartonL = cartonL ?? parsed.L
+    cartonW = cartonW ?? parsed.W
+    cartonH = cartonH ?? parsed.H
+    pcs = pcs ?? parsed.pcs
+    gw = gw ?? parsed.gw
+  }
+
   return {
     sourceUrl,
     title,
     priceCny: numOf('priceCny'),
     sizeCn: get('sizeCn'),
     weightG: numOf('weightG'),
-    cartonLCm: numOf('cartonLCm'),
-    cartonWCm: numOf('cartonWCm'),
-    cartonHCm: numOf('cartonHCm'),
-    pcsPerCarton: numOf('pcsPerCarton'),
-    cartonGwKg: numOf('cartonGwKg'),
+    cartonLCm: cartonL,
+    cartonWCm: cartonW,
+    cartonHCm: cartonH,
+    pcsPerCarton: pcs,
+    cartonGwKg: gw,
     images: get('imagesText')
       .split(/[\n\r|,，;；]+/)
       .map((s) => s.trim())
@@ -538,11 +611,10 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
 
   // 表头不一定在第一行（很多人表格上面还有标题行）：在前 10 行里找认出 ≥2 列的那一行
   let headerRow = -1
-  let map = new Map<number, keyof MasterProduct | 'imagesText'>()
+  let map = new Map<ColKey, number[]>()
   for (let i = 0; i < Math.min(10, grid.length); i++) {
     const m = headerMap(grid[i] ?? [])
-    if (m.size >= 2) {
-      headerRow = i
+    if (m.size >= 2) {      headerRow = i
       map = m
       break
     }
