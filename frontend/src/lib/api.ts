@@ -1,5 +1,6 @@
 import apiClient, { getErrorMessage } from './api-client'
 import {
+  BatchItemInput,
   BatchJob,
   BatchJobSummary,
   BatchOptions,
@@ -693,14 +694,14 @@ export const api = {
     return `${baseURL}/product-images/${productId}/${file}`
   },
 
-  // ---------- 批量处理（粘贴多条链接 → 后台逐条跑单品同款流程） ----------
+  // ---------- 批量处理（粘贴多条链接 → 抓取 → 补全 → 评估 → 入库） ----------
   /** 只解析不执行：先把粘贴的文本切成条目给用户核对 */
   async parseBatch(text: string): Promise<BatchParseResult> {
     const { data } = await apiClient.post<BatchParseResult>('/batch/parse', { text })
     return data
   },
 
-  /** 创建批量任务：立刻返回 job，后台开始跑，靠 getBatchJob 轮询进度 */
+  /** 创建批量任务：只建草稿，不自动跑（先抓取，人工补全后再评估） */
   async createBatchJob(payload: {
     text: string
     options: BatchOptions
@@ -712,6 +713,32 @@ export const api = {
       truncated: boolean
     }>('/batch/jobs', payload)
     return { job: data.job, skipped: data.skipped ?? 0, truncated: Boolean(data.truncated) }
+  },
+
+  /** 跑阶段：fetch 只抓取 / evaluate 批量评估 / save 入库 / all 一口气 */
+  async runBatchStage(
+    id: string,
+    stage: 'fetch' | 'evaluate' | 'save' | 'all',
+    idxs?: number[]
+  ): Promise<BatchJob> {
+    const { data } = await apiClient.post<{ ok: boolean; job: BatchJob }>(
+      `/batch/jobs/${id}/run`,
+      { stage, idxs }
+    )
+    return data.job
+  },
+
+  /** 改一条的资料（补全箱规等抓不到的字段）；改动会让已有评估作废 */
+  async patchBatchItem(
+    id: string,
+    idx: number,
+    input: BatchItemInput
+  ): Promise<BatchJob> {
+    const { data } = await apiClient.patch<{ ok: boolean; job: BatchJob }>(
+      `/batch/jobs/${id}/items/${idx}`,
+      { input }
+    )
+    return data.job
   },
 
   async getBatchJob(id: string): Promise<BatchJob> {

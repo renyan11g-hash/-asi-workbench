@@ -154,11 +154,13 @@ CREATE TABLE IF NOT EXISTS image_blobs (
 
 CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
 
--- 批量处理任务：一次粘贴多个 1688 链接，后台逐条跑「抓取 → 评估 → 入库 → 生成 listing」。
+-- 批量处理任务：一次粘贴多个 1688 链接，后台跑「抓取 → 人工补全 → 评估 → 入库」。
 -- 落库是为了刷新页面/服务重启后还能看到每条跑到哪一步，而不是任务凭空消失。
+-- phase 记录数据走到哪一站（draft/fetched/evaluated/saved），status 记录当前有没有在跑。
 CREATE TABLE IF NOT EXISTS batch_jobs (
   id TEXT PRIMARY KEY,
-  status TEXT NOT NULL DEFAULT 'pending',
+  status TEXT NOT NULL DEFAULT 'draft',
+  phase TEXT NOT NULL DEFAULT 'draft',
   options TEXT NOT NULL DEFAULT '{}',
   items TEXT NOT NULL DEFAULT '[]',
   note TEXT NOT NULL DEFAULT '',
@@ -166,6 +168,16 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_batch_jobs_created ON batch_jobs(created_at);
+
+-- 每条产品的评估结果单独放：评估对象里带海外同款明细（约 6KB），
+-- 塞进 items JSON 会让每次「进度更新」都重写几百 KB，单独存一张表就只写一次。
+CREATE TABLE IF NOT EXISTS batch_item_evals (
+  job_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  evaluation TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (job_id, idx)
+);
 
 -- 订单运营中心表结构
 CREATE TABLE IF NOT EXISTS customers (
@@ -372,6 +384,9 @@ function ensureTableColumn(tableName: string, name: string, ddl: string) {
 // 确保订单表有所有必需的列
 ensureTableColumn('orders', 'deposit_amount', 'deposit_amount REAL')
 ensureTableColumn('orders', 'balance_amount', 'balance_amount REAL')
+
+// 批量任务：老库补 phase 列（表是后建的，线上可能已存在旧结构）
+ensureTableColumn('batch_jobs', 'phase', "phase TEXT NOT NULL DEFAULT 'draft'")
 
 // 产品图片表：老库补 with_logo 列（主图是否融合 Logo，0/1）
 ensureTableColumn('product_images', 'with_logo', 'with_logo INTEGER NOT NULL DEFAULT 1')

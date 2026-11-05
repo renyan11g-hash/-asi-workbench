@@ -1,30 +1,35 @@
 /**
  * 批量处理任务：数据模型 + 粘贴文本解析 + 落库读写。
  *
- * 设计原则：这里只管「一坨文本怎么变成 N 条待处理产品」和「任务状态怎么存」，
- * 具体怎么跑（抓取/评估/入库/listing）全部复用单品流程的同一批函数，见 modules/batch.ts。
+ * 这里只管两件事：① 一坨文本怎么变成 N 条待处理产品；② 任务状态怎么存。
+ * 具体怎么跑（抓取/评估/入库）全部复用单品流程的同一批函数，见 modules/batch.ts。
  * 单品规则的任何参数都不在这里改。
+ *
+ * 阶段（phase）对应单品页的操作顺序，一步都不能省：
+ *   draft     刚粘进来
+ *   fetched   资料已抓取 → **人工补全箱规等 1688 抓不到的字段** → 才能评估
+ *   evaluated 已评估（未落库）
+ *   saved     已入库（产品库里能看到了）
  */
 
 import { db } from '../db'
+import type { SourceInfo } from '../types'
 
 /** 单条产品的处理阶段（前端按这个显示 badge） */
 export type BatchItemStatus =
   | 'pending'
   | 'fetching'
+  | 'fetched'
   | 'evaluating'
+  | 'evaluated'
   | 'saving'
   | 'listing'
   | 'done'
   | 'error'
   | 'skipped'
 
-export type BatchJobStatus =
-  | 'pending'
-  | 'running'
-  | 'done'
-  | 'cancelled'
-  | 'interrupted'
+export type BatchJobStatus = 'draft' | 'running' | 'done' | 'cancelled' | 'interrupted'
+export type BatchPhase = 'draft' | 'fetched' | 'evaluated' | 'saved'
 
 /** 手填资料：全部可选，填了就覆盖 1688 抓取到的同名字段 */
 export interface BatchItemInput {
@@ -35,6 +40,16 @@ export interface BatchItemInput {
   materialCn?: string
   colorsCn?: string
   description?: string
+  /** 单件重（克） */
+  weightG?: number | null
+  /** 箱规长宽高（厘米） */
+  cartonLCm?: number | null
+  cartonWCm?: number | null
+  cartonHCm?: number | null
+  /** 每箱装多少个 */
+  pcsPerCarton?: number | null
+  /** 整箱毛重（公斤） */
+  cartonGwKg?: number | null
 }
 
 export interface BatchItem {
@@ -47,6 +62,12 @@ export interface BatchItem {
   stage: string
   /** 标题（抓取或手填后回填，便于前端展示） */
   title?: string
+  /** 抓取 + 手填合并后的完整源信息（评估与入库都用它，也是补全表单的初值） */
+  source?: SourceInfo | null
+  /** 还缺哪些字段（箱规这类 1688 抓不到的），前端标黄提醒 */
+  missing?: string[]
+  /** 是否已评估过（评估结果单独存表） */
+  evaluated?: boolean
   /** 抓取失败的提示（仍可能继续评估） */
   warn?: string
   error?: string
@@ -73,6 +94,7 @@ export interface BatchOptions {
 export interface BatchJob {
   id: string
   status: BatchJobStatus
+  phase: BatchPhase
   options: BatchOptions
   items: BatchItem[]
   note: string
@@ -90,21 +112,72 @@ export const DEFAULT_BATCH_OPTIONS: BatchOptions = {
 /** 单批上限：再多就不是「批量」而是压测了（每条约 30~90 秒） */
 export const MAX_BATCH_ITEMS = 50
 
-// ---------------------------------------------------------------- 解析
+/**
+ * 评估前必须有的字段。这些 1688 页面基本抓不到（箱规/每箱数/箱毛重尤甚），
+ * 缺了就只能按默认值估算运费，分数会骗人 —— 所以要在界面上逼着补。
+ */
+const REQUIRED_BEFORE_EVAL: Array<{ label: string; has: (s: SourceInfo) => boolean }> = [
+  { label: '采购价', has: (s) => Number(s.priceCny) > 0 },
+  { label: '产品尺寸', has: (s) => Boolean((s.sizeCn ?? '').trim()) },
+  { label: '材质', has: (s) => Boolean((s.materialCn ?? '').trim()) },
+  {
+    label: '箱规',
+    has: (s) => Boolean(s.cartonLCm && s.cartonWCm && s.cartonHCm),
+  },
+  { label: '每箱数量', has: (s) => Boolean(s.pcsPerCarton) },
+  { label: '箱毛重', has: (s) => Boolean(s.cartonGwKg) },
+]
 
-/** 表头别名：中英文都认，按顺序匹配 */
-const COLUMN_ALIASES: Record<keyof BatchItemInput | 'url', RegExp[]> = {
-  url: [/^url$/i, /链接/, /^link$/i, /地址/],
-  title: [/标题/, /品名/, /^title$/i, /名称/, /product/i],
-  priceCny: [/采购价/, /单价/, /价格/, /^price$/i, /进货价/],
-  moq: [/^moq$/i, /起订/, /起批/],
-  sizeCn: [/尺寸/, /^size$/i, /规格/],
-  materialCn: [/材质/, /^material$/i],
-  colorsCn: [/颜色/, /^colou?r/i],
-  description: [/描述/, /卖点/, /^description$/i, /详情/, /备注/, /^remark/i],
+/** 算出还缺哪些关键字段（中文名，直接给用户看） */
+export function missingFields(source: SourceInfo | null | undefined): string[] {
+  if (!source) return REQUIRED_BEFORE_EVAL.map((f) => f.label)
+  return REQUIRED_BEFORE_EVAL.filter((f) => !f.has(source)).map((f) => f.label)
 }
 
+/** 这条能不能评估：至少要有个标题 */
+export function canEvaluate(item: BatchItem): boolean {
+  const title = (item.source?.sourceTitle ?? item.input.title ?? '').trim()
+  return Boolean(title)
+}
+
+// ---------------------------------------------------------------- 解析
+
+type ColKey = keyof BatchItemInput | 'url' | 'carton'
+
+/** 表头别名：中英文都认。检测顺序就是这里的书写顺序，「装箱尺寸」要先于「尺寸」 */
+const COLUMN_ALIASES: Array<[ColKey, RegExp[]]> = [
+  ['url', [/^url$/i, /链接/, /^link$/i, /地址/]],
+  ['carton', [/箱规/, /外箱/, /装箱尺寸/, /包装尺寸/, /^carton/i]],
+  ['pcsPerCarton', [/每箱/, /装箱数/, /^pcs/i, /^qty.*carton/i]],
+  ['cartonGwKg', [/毛重/, /^gw$/i, /^gross/i]],
+  ['weightG', [/单件重/, /净重/, /^weight/i, /克重/, /^重量/]],
+  ['title', [/标题/, /品名/, /^title$/i, /名称/, /product/i]],
+  ['priceCny', [/采购价/, /单价/, /价格/, /^price$/i, /进货价/]],
+  ['moq', [/^moq$/i, /起订/, /起批/]],
+  ['sizeCn', [/尺寸/, /^size$/i, /规格/]],
+  ['materialCn', [/材质/, /^material/i]],
+  ['colorsCn', [/颜色/, /^colou?r/i]],
+  ['description', [/描述/, /卖点/, /^description$/i, /详情/, /备注/, /^remark/i]],
+]
+
+/** 固定列序（无表头时按这个位置取），与界面提示保持一致 */
+const POSITIONAL: ColKey[] = [
+  'url',
+  'title',
+  'priceCny',
+  'moq',
+  'sizeCn',
+  'materialCn',
+  'colorsCn',
+  'carton',
+  'pcsPerCarton',
+  'cartonGwKg',
+  'weightG',
+  'description',
+]
+
 const URL_RE = /https?:\/\/[^\s|,，、]+/i
+const CARTON_RE = /(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)/
 
 function splitCells(line: string): string[] {
   // Tab 优先（从 Excel 直接粘贴就是 Tab），其次竖线；逗号不切：标题里常带逗号
@@ -113,34 +186,20 @@ function splitCells(line: string): string[] {
   return [line]
 }
 
-function detectHeader(cells: string[]): (keyof BatchItemInput | 'url')[] | null {
+function detectHeader(cells: string[]): ColKey[] | null {
   if (cells.length < 2) return null
   const keys = cells.map((c) => {
     const t = c.trim()
     if (!t) return null
-    for (const [key, res] of Object.entries(COLUMN_ALIASES) as Array<
-      [keyof BatchItemInput | 'url', RegExp[]]
-    >) {
+    for (const [key, res] of COLUMN_ALIASES) {
       if (res.some((re) => re.test(t))) return key
     }
     return null
   })
   const hit = keys.filter(Boolean).length
   if (hit < 2) return null
-  return keys as (keyof BatchItemInput | 'url')[]
+  return keys as ColKey[]
 }
-
-/** 固定列序（无表头时按这个位置取） */
-const POSITIONAL: Array<keyof BatchItemInput | 'url'> = [
-  'url',
-  'title',
-  'priceCny',
-  'moq',
-  'sizeCn',
-  'materialCn',
-  'colorsCn',
-  'description',
-]
 
 function num(v: string | undefined): number | null {
   if (!v) return null
@@ -178,16 +237,16 @@ export interface ParseResult {
  *
  * 支持的写法（一行一个产品）：
  *   https://detail.1688.com/offer/123.html
- *   https://detail.1688.com/offer/123.html	收纳盒	3.5	100	20x15x8cm	PU皮
+ *   https://detail.1688.com/offer/123.html	收纳盒	3.5	100	20x15x8cm	PU皮	黑/灰	40x30x25	60	12	180
  *   收纳盒	3.5	100            ← 没有链接也行，纯手动录入
- * 第一行如果是表头（含「链接/标题/价格」等），按表头映射列，否则按固定列序。
+ * 第一行如果是表头（含「链接/标题/价格/箱规」等），按表头映射列，否则按固定列序。
  */
 export function parseBatchInput(raw: string): ParseResult {
   const rows: ParsedRow[] = []
   const issues: ParseIssue[] = []
   const duplicates: string[] = []
   const seen = new Set<string>()
-  let mapping: (keyof BatchItemInput | 'url')[] | null = null
+  let mapping: ColKey[] | null = null
   let manualCount = 0
   let headerChecked = false
 
@@ -220,7 +279,7 @@ export function parseBatchInput(raw: string): ParseResult {
       order = order.filter((k) => k !== 'url')
     }
 
-    const keyed: Partial<Record<keyof BatchItemInput | 'url', string>> = {}
+    const keyed: Partial<Record<ColKey, string>> = {}
     rowCells.forEach((cell, ci) => {
       const key = order[ci]
       if (key && cell) keyed[key] = cell
@@ -263,18 +322,31 @@ export function parseBatchInput(raw: string): ParseResult {
     seen.add(dedupeKey)
     if (!url) manualCount += 1
 
-    rows.push({
-      url,
-      input: {
-        title: title || undefined,
-        priceCny: num(keyed.priceCny),
-        moq: num(keyed.moq),
-        sizeCn: text(keyed.sizeCn) || undefined,
-        materialCn: text(keyed.materialCn) || undefined,
-        colorsCn: text(keyed.colorsCn) || undefined,
-        description: text(keyed.description) || undefined,
-      },
-    })
+    // 箱规一格写 "40x30x20" 时拆成 L/W/H
+    const cartonCell = text(keyed.carton)
+    const carton = cartonCell.match(CARTON_RE)
+
+    // 只放「真的填了」的字段：留空就不要写进 input，否则会把抓取到的值覆盖成空
+    const input: BatchItemInput = {}
+    const put = <K extends keyof BatchItemInput>(k: K, v: BatchItemInput[K]) => {
+      if (v === undefined || v === null || v === '') return
+      input[k] = v
+    }
+    put('title', title || undefined)
+    put('priceCny', num(keyed.priceCny))
+    put('moq', num(keyed.moq))
+    put('sizeCn', text(keyed.sizeCn) || undefined)
+    put('materialCn', text(keyed.materialCn) || undefined)
+    put('colorsCn', text(keyed.colorsCn) || undefined)
+    put('cartonLCm', carton ? Number(carton[1]) : null)
+    put('cartonWCm', carton ? Number(carton[2]) : null)
+    put('cartonHCm', carton ? Number(carton[3]) : null)
+    put('pcsPerCarton', num(keyed.pcsPerCarton))
+    put('cartonGwKg', num(keyed.cartonGwKg))
+    put('weightG', num(keyed.weightG))
+    put('description', text(keyed.description) || undefined)
+
+    rows.push({ url, input })
   })
 
   return { rows, issues, duplicates, manualCount }
@@ -285,6 +357,7 @@ export function parseBatchInput(raw: string): ParseResult {
 interface Row {
   id: string
   status: string
+  phase: string | null
   options: string
   items: string
   note: string
@@ -304,6 +377,7 @@ function rowToJob(r: Row): BatchJob {
   return {
     id: r.id,
     status: r.status as BatchJobStatus,
+    phase: (r.phase as BatchPhase) ?? 'draft',
     options: { ...DEFAULT_BATCH_OPTIONS, ...safeJson<Partial<BatchOptions>>(r.options, {}) },
     items: safeJson<BatchItem[]>(r.items, []),
     note: r.note ?? '',
@@ -316,11 +390,12 @@ export function createBatchJob(options: BatchOptions, items: BatchItem[], note =
   const id = `batch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO batch_jobs (id, status, options, items, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(id, 'pending', JSON.stringify(options), JSON.stringify(items), note, now, now)
+    'INSERT INTO batch_jobs (id, status, phase, options, items, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(id, 'draft', 'draft', JSON.stringify(options), JSON.stringify(items), note, now, now)
   return {
     id,
-    status: 'pending',
+    status: 'draft',
+    phase: 'draft',
     options,
     items,
     note,
@@ -332,8 +407,11 @@ export function createBatchJob(options: BatchOptions, items: BatchItem[], note =
 export function saveBatchJob(job: BatchJob): void {
   const now = new Date().toISOString()
   job.updatedAt = now
-  db.prepare('UPDATE batch_jobs SET status=?, options=?, items=?, note=?, updated_at=? WHERE id=?').run(
+  db.prepare(
+    'UPDATE batch_jobs SET status=?, phase=?, options=?, items=?, note=?, updated_at=? WHERE id=?'
+  ).run(
     job.status,
+    job.phase,
     JSON.stringify(job.options),
     JSON.stringify(job.items),
     job.note,
@@ -356,17 +434,33 @@ export function listBatchJobs(limit = 10): BatchJob[] {
 
 export function deleteBatchJob(id: string): void {
   db.prepare('DELETE FROM batch_jobs WHERE id = ?').run(id)
+  db.prepare('DELETE FROM batch_item_evals WHERE job_id = ?').run(id)
+}
+
+/** 评估结果单独存：评估对象带海外同款明细，塞进 items JSON 会把每次进度更新撑大几十倍 */
+export function saveItemEvaluation(jobId: string, idx: number, evaluation: unknown): void {
+  db.prepare(
+    'INSERT INTO batch_item_evals (job_id, idx, evaluation, updated_at) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(job_id, idx) DO UPDATE SET evaluation=excluded.evaluation, updated_at=excluded.updated_at'
+  ).run(jobId, idx, JSON.stringify(evaluation ?? null), new Date().toISOString())
+}
+
+export function getItemEvaluation(jobId: string, idx: number): unknown | null {
+  const row = db
+    .prepare('SELECT evaluation FROM batch_item_evals WHERE job_id = ? AND idx = ?')
+    .get(jobId, idx) as unknown as { evaluation: string } | undefined
+  return row ? safeJson<unknown>(row.evaluation, null) : null
 }
 
 /**
- * 服务重启时，把还挂在 running/pending 的任务标成 interrupted、
+ * 服务重启时，把还挂在 running 的任务标成 interrupted、
  * 把卡在中间步骤的条目标成 error —— 否则前端会一直转圈等一个已经死掉的进程。
  */
 export function recoverInterruptedJobs(): number {
   let count = 0
   try {
     const rows = db
-      .prepare("SELECT * FROM batch_jobs WHERE status IN ('pending','running')")
+      .prepare("SELECT * FROM batch_jobs WHERE status = 'running'")
       .all() as unknown as Row[]
     for (const row of rows) {
       const job = rowToJob(row)
@@ -378,7 +472,7 @@ export function recoverInterruptedJobs(): number {
               ...it,
               status: 'error',
               stage: '服务重启，这一条被中断',
-              error: '任务因服务重启中断，可点「重试失败项」继续',
+              error: '任务因服务重启中断，可以点「重试失败项」继续',
             }
       )
       saveBatchJob(job)
@@ -397,7 +491,7 @@ export function makeBatchItems(rows: ParsedRow[]): BatchItem[] {
     url: r.url,
     input: r.input,
     status: 'pending' as BatchItemStatus,
-    stage: '等待处理',
+    stage: '等待抓取',
     title: r.input.title,
   }))
 }

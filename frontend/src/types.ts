@@ -507,19 +507,24 @@ export interface PriceComparison {
   contactMethod: string
   createdAt: string
 }
-// ---------------- 批量处理（一次粘贴多条链接，后台逐条跑单品同款流程） ----------------
+// ---------------- 批量处理（粘贴多条链接 → 抓取 → 人工补全 → 评估 → 入库） ----------------
 
 export type BatchItemStatus =
   | 'pending'
   | 'fetching'
+  | 'fetched'
   | 'evaluating'
+  | 'evaluated'
   | 'saving'
   | 'listing'
   | 'done'
   | 'error'
   | 'skipped'
 
-export type BatchJobStatus = 'pending' | 'running' | 'done' | 'cancelled' | 'interrupted'
+export type BatchJobStatus = 'draft' | 'running' | 'done' | 'cancelled' | 'interrupted'
+
+/** 整批数据走到哪一站：草稿 → 已抓取待补全 → 已评估待入库 → 已入库 */
+export type BatchPhase = 'draft' | 'fetched' | 'evaluated' | 'saved'
 
 export interface BatchOptions {
   /** 抓取 1688 详情 */
@@ -540,6 +545,16 @@ export interface BatchItemInput {
   materialCn?: string
   colorsCn?: string
   description?: string
+  /** 单件重（克） */
+  weightG?: number | null
+  /** 箱规长宽高（厘米） */
+  cartonLCm?: number | null
+  cartonWCm?: number | null
+  cartonHCm?: number | null
+  /** 每箱装多少个 */
+  pcsPerCarton?: number | null
+  /** 整箱毛重（公斤） */
+  cartonGwKg?: number | null
 }
 
 export interface BatchItem {
@@ -549,6 +564,11 @@ export interface BatchItem {
   status: BatchItemStatus
   stage: string
   title?: string
+  /** 抓取 + 手填合并后的完整资料（补全表单的初值） */
+  source?: SourceInfo | null
+  /** 还缺哪些字段（箱规这类 1688 抓不到的） */
+  missing?: string[]
+  evaluated?: boolean
   warn?: string
   error?: string
   score?: number | null
@@ -562,6 +582,7 @@ export interface BatchItem {
 export interface BatchJob {
   id: string
   status: BatchJobStatus
+  phase: BatchPhase
   options: BatchOptions
   items: BatchItem[]
   note: string
@@ -587,10 +608,18 @@ export interface BatchParseResult {
 export interface BatchJobSummary {
   id: string
   status: BatchJobStatus
+  phase: BatchPhase
   note: string
   total: number
+  /** 已抓取资料的条数 */
+  fetched: number
+  /** 已评估的条数 */
+  evaluated: number
+  /** 已入库的条数 */
   done: number
   failed: number
+  /** 还缺关键字段的条数 */
+  missing: number
   createdAt: string
   updatedAt: string
 }
