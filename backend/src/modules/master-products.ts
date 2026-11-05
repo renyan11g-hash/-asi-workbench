@@ -14,6 +14,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
+import { dispImgIds, extractWpsCellImages } from '../services/cell-images'
 
 export interface MasterProduct {
   id: string
@@ -405,7 +406,7 @@ export function parseCartonText(text: string): {
 }
 
 /** 把一行表格数据变成资料库输入；没有名称和链接就返回 null */
-function rowToInput(map: Map<ColKey, number[]>, row: unknown[]): MasterInput | null {
+function rowToInput(map: Map<ColKey, number[]>, row: unknown[], cellImages?: Map<string, string>): MasterInput | null {
   /** 取该字段第一个「有真实数据」的单元格（跳过 √ 这类标记和空值） */
   const get = (k: ColKey): string => {
     for (const idx of map.get(k) ?? []) {
@@ -455,11 +456,19 @@ function rowToInput(map: Map<ColKey, number[]>, row: unknown[]): MasterInput | n
     cartonHCm: cartonH,
     pcsPerCarton: pcs,
     cartonGwKg: gw,
-    images: get('imagesText')
-      .split(/[\n\r|,，;；]+/)
-      .map((s) => s.trim())
-      .filter((s) => /^https?:\/\//i.test(s))
-      .slice(0, 8),
+    images: (() => {
+      const raw = get('imagesText')
+      // WPS 嵌入单元格图片：=DISPIMG("ID_xxx",1) → 从 xlsx 里解出来的 dataURL
+      const fromCell = dispImgIds(raw)
+        .map((id) => cellImages?.get(id))
+        .filter((u): u is string => Boolean(u))
+      if (fromCell.length) return fromCell.slice(0, 8)
+      return raw
+        .split(/[\n\r|,，;；]+/)
+        .map((s) => s.trim())
+        .filter((s) => /^https?:\/\//i.test(s))
+        .slice(0, 8)
+    })(),
     notes: get('notes'),
     supplier: get('supplier'),
     materialCn: get('materialCn'),
@@ -632,11 +641,14 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
   let skipped = 0
   const errors: Array<{ row: number; error: string }> = []
 
+  // 先把表格里「嵌入单元格的图片」解出来（WPS 的 DISPIMG），后面按 ID 取
+  const cellImages = isXlsxName ? await extractWpsCellImages(buf) : new Map<string, string>()
+
   for (let i = headerRow + 1; i < grid.length; i++) {
     const row = grid[i] ?? []
     if (!row.some((c) => String(c ?? '').trim())) continue
     try {
-      const input = rowToInput(map, row)
+      const input = rowToInput(map, row, cellImages)
       if (!input) {
         skipped += 1
         continue
@@ -661,5 +673,6 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
     skipped,
     errors: errors.slice(0, 20),
     total: Math.max(0, grid.length - headerRow - 1),
+    embeddedImages: cellImages.size,
   })
 })
