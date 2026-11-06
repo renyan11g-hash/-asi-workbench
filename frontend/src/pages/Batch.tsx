@@ -777,7 +777,8 @@ export default function Batch() {
             )}
             {(job.status === 'paused' || job.status === 'interrupted') && (
               <Button size="sm" onClick={() => void resume()}>
-                <Play className="mr-1 h-3.5 w-3.5" /> 继续（{STAGE_LABEL[job.lastStage || 'evaluate']}）
+                <Play className="mr-1 h-3.5 w-3.5" />{' '}
+                {job.lastStage ? `继续（${STAGE_LABEL[job.lastStage]}）` : '继续上次进度'}
               </Button>
             )}
             {(isRunning || job.status === 'paused' || job.status === 'interrupted') && (

@@ -733,10 +733,12 @@ batchRouter.post('/jobs/:id/pause', (req: Request, res: Response) => {
 function inferStage(job: BatchJob): BatchStage {
   if (job.lastStage) return job.lastStage
   const live = job.items.filter((i) => i.status !== 'error' && i.status !== 'skipped')
-  if (live.some((i) => i.reviewId)) return 'save'
-  if (live.some((i) => i.evaluated)) return 'listing'
-  if (live.some((i) => i.source)) return 'evaluate'
-  return 'fetch'
+  // 还有没评估的 → 先评估；全都评估过了才往生成链接/入库走，避免白花钱生成
+  if (live.some((i) => i.source && !i.evaluated)) return 'evaluate'
+  if (live.some((i) => i.evaluated && !i.reviewId)) return 'listing'
+  if (live.some((i) => i.reviewId && !i.productId)) return 'save'
+  if (live.some((i) => !i.source)) return 'fetch'
+  return 'evaluate'
 }
 
 /** 继续：按上次跑的阶段接着跑（已完成的条目会自动跳过） */
