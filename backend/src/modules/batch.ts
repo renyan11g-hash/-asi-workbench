@@ -923,23 +923,44 @@ batchRouter.patch('/jobs/:id/items/:idx', async (req: Request, res: Response) =>
  */
 batchRouter.post('/maintenance/inline-images', async (_req: Request, res: Response) => {
   const jobs = listBatchJobs(50)
+  const settings = loadSettings()
   let items = 0
   let images = 0
   let dropped = 0
+  let drafts = 0
   for (const summary of jobs) {
     const job = getBatchJob(summary.id)
     if (!job) continue
     let changed = false
     for (const item of job.items) {
       const imgs = item.source?.images ?? []
-      if (!imgs.some((u) => /^https?:/i.test(u))) continue
-      const r = await inlineImages(imgs)
-      item.source = item.source ? { ...item.source, images: r.images } : item.source
-      item.input = { ...item.input, images: r.images }
-      images += r.images.length
-      dropped += r.dropped
-      items += 1
-      changed = true
+      if (imgs.some((u) => /^https?:/i.test(u))) {
+        const r = await inlineImages(imgs)
+        item.source = item.source ? { ...item.source, images: r.images } : item.source
+        item.input = { ...item.input, images: r.images }
+        images += r.images.length
+        dropped += r.dropped
+        items += 1
+        changed = true
+      }
+      // 已经评估过但评估库里没有草稿的（拆阶段之前的批次）：补一条，评估库才看得到
+      if (item.evaluated && !item.draftId && item.source) {
+        const ev = getItemEvaluation(job.id, item.idx) as Evaluation | null
+        if (ev) {
+          try {
+            item.draftId = upsertEvaluationDraft(
+              item,
+              item.source,
+              ev,
+              buildPriceGrid(item.source, settings).rows
+            )
+            drafts += 1
+            changed = true
+          } catch {
+            /* 单条失败不影响其它条 */
+          }
+        }
+      }
     }
     if (changed) saveBatchJob(job)
   }
@@ -966,7 +987,7 @@ batchRouter.post('/maintenance/inline-images', async (_req: Request, res: Respon
     /* 资料库修不了不影响主流程 */
   }
 
-  res.json({ ok: true, batchItems: items, masterProducts: master, images, dropped })
+  res.json({ ok: true, batchItems: items, masterProducts: master, images, dropped, drafts })
 })
 
 /** 删除条目（勾选后批量删）：已入库的不动，避免产品库里出现「孤儿」 */
