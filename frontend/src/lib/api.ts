@@ -248,11 +248,12 @@ export const api = {
   async previewListing(
     source: SourceInfo,
     answers?: Array<{ id: string; question: string; answer: string }>,
-    similar?: SimilarResearch | Record<string, unknown> | null
+    similar?: SimilarResearch | Record<string, unknown> | null,
+    evaluation?: Evaluation | Record<string, unknown> | null
   ): Promise<Listing> {
     const { data } = await apiClient.post<{ listing: Listing }>(
       '/products/preview/listing',
-      { source, answers, similar },
+      { source, answers, similar, evaluation },
       LONG_TIMEOUT
     )
     return data.listing

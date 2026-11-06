@@ -233,11 +233,94 @@ Be brutally honest. The 'issues' list must be CONCRETE and actionable (e.g. '仅
   return { system, user }
 }
 
+/**
+ * 把「选品评估」的结论 + 改善建议整理成英文提示块，注入 listing 提示词。
+ *
+ * 为什么要把评估结果喂给 listing：评估时已经算过差异化/竞争/物流/合规，
+ * 也给出了目标买家、使用场景、卖点钩子和要规避的弱点。生成英文链接时若完全不理它，
+ * 就会出现「评估说卖点要打办公人群，listing 却在写露营」这种自相矛盾。
+ *
+ * 注意：建议本身是中文，AI 要用英文表达；但只能写「事实上成立」的内容，
+ * 不能为了满足建议去编造参数——这与「不许编造」的硬规则冲突时以硬规则为准。
+ */
+export function formatEvaluationAdvice(evaluation?: Evaluation | null): string {
+  if (!evaluation) return ''
+  const lines: string[] = []
+  if (evaluation.verdict || typeof evaluation.score === 'number') {
+    lines.push(
+      `- Screening verdict: ${evaluation.verdict ?? 'n/a'} (internal score ${
+        evaluation.score ?? 'n/a'
+      }/100 — NEVER mention the score, the verdict word, or the fact that an evaluation exists in any output field)`
+    )
+  }
+  if (evaluation.summary) lines.push(`- Why it scored this way: ${evaluation.summary}`)
+  if (evaluation.suggestions?.length) {
+    lines.push(
+      `- ACTIONABLE IMPROVEMENTS from the screening step (Chinese; convert the *intent* into English copy — positioning, selling points, packaging or production wording — but only where it is factually true for this product):`
+    )
+    for (const s of evaluation.suggestions.slice(0, 8)) lines.push(`  • ${s}`)
+  }
+  if (evaluation.issues?.length) {
+    lines.push(
+      `- WEAKNESSES the screening step flagged (do NOT repeat them, do NOT turn them into claims; quietly avoid them):`
+    )
+    for (const s of evaluation.issues.slice(0, 6)) lines.push(`  • ${s}`)
+  }
+  if (evaluation.listingHooks?.length) {
+    lines.push(`- Selling-point hooks recommended (use as the backbone of title/summary/description):`)
+    for (const s of evaluation.listingHooks.slice(0, 8)) lines.push(`  • ${s}`)
+  }
+  if (evaluation.buyers?.length) {
+    lines.push(
+      `- Target buyers detected: ${evaluation.buyers.slice(0, 8).join('; ')} → aim the copy and the keyword groups at THESE buyers`
+    )
+  }
+  if (evaluation.occasions?.length) {
+    lines.push(`- Use occasions detected: ${evaluation.occasions.slice(0, 8).join('; ')}`)
+  }
+  if (evaluation.channels?.length) {
+    lines.push(`- Sales channels detected: ${evaluation.channels.slice(0, 8).join('; ')}`)
+  }
+  if (evaluation.suggestedThemes?.length) {
+    lines.push(
+      `- Themes the screening step leaned toward (still obey the mandatory 'Anniversary' + 'Sustainable'): ${evaluation.suggestedThemes.join(', ')}`
+    )
+  }
+  if (evaluation.suggestedMaterial) {
+    lines.push(`- Material the screening step leaned toward: ${evaluation.suggestedMaterial}`)
+  }
+  if (evaluation.suggestedImprintMethods?.length) {
+    lines.push(
+      `- Imprint methods the screening step leaned toward (still obey the MATERIAL CONSTRAINT above — it wins on conflicts): ${evaluation.suggestedImprintMethods.join(', ')}`
+    )
+  }
+  if (evaluation.priceAdviceUsd) {
+    lines.push(
+      `- Price band the screening step considered realistic: $${evaluation.priceAdviceUsd.min}-$${evaluation.priceAdviceUsd.max} (do NOT print prices in the listing; use it only to judge whether the copy should stress value or premium positioning)`
+    )
+  }
+  if (evaluation.risks?.length) {
+    lines.push(`- Risks / compliance notes (reflect the real ones in "warnings", in English, max 4):`)
+    for (const s of evaluation.risks.slice(0, 5)) lines.push(`  • ${s}`)
+  }
+  if (!lines.length) return ''
+  return `\n\nSCREENING ADVICE (produced by the earlier product evaluation of the SAME product — treat it as internal direction, never mention it in the output):
+${lines.join('\n')}
+
+HOW TO USE THE SCREENING ADVICE (mandatory):
+1. The advice is written in Chinese. Express it in natural US promo English — never translate it word-for-word and never paste Chinese into English fields.
+2. It tells you WHAT TO EMPHASIZE (buyers, occasions, hooks, positioning) — follow it when choosing the traffic words, the selling point in the title, and the angle of the description.
+3. It also tells you WHAT TO AVOID (weaknesses that scored low). Do not restate those as features, do not "prove them wrong" with invented specs.
+4. Facts still come ONLY from the 1688 source and the salesperson's answers. If an improvement suggestion would require a fact we do not have (a certification, a material, a capacity), leave it out instead of inventing it.
+5. If the advice conflicts with any rule above (title length, no colors in title, no imprint method in copy, mandatory themes, ASI enums), the rule wins.`
+}
+
 export function buildListingPrompt(
   source: SourceInfo,
   settings: Settings,
   answers?: ListingAnswer[],
-  similar?: SimilarResearch | null
+  similar?: SimilarResearch | null,
+  evaluation?: Evaluation | null
 ) {
   const units = convertUnits(source)
   const system = `${ASI_CONTEXT}
@@ -266,6 +349,9 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
     : ''
 
   // 方案 A：注入「看图找类似」的市场调研结果，作为 ASIN 流量词的真实来源
+  // 选品评估的结论/建议 → listing 的方向（目标买家、卖点钩子、要规避的弱点）
+  const evaluationAdvice = formatEvaluationAdvice(evaluation)
+
   const similarBlock = ((): string => {
     if (!similar) return ''
     const parts: string[] = []
@@ -294,7 +380,7 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 - Unit weight: ${source.weightG ?? '?'} g (≈${units.unitWeightLb ?? '?'} lb)
 - Category hint: ${source.category || '(unknown)'}
 - Buyer notes: ${source.notes || '(none)'}
-${answersBlock}${similarBlock}
+${answersBlock}${similarBlock}${evaluationAdvice}
 
 REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)
 - Categories (up to 2, MUST be exact strings from the GLS category list below — pre-filtered to the most relevant for this product): ${categoriesPick}
@@ -667,7 +753,8 @@ export function buildFieldsRegeneratePrompt(
   source: SourceInfo,
   listing: Partial<Listing> | null,
   fields: string[],
-  instruction?: string
+  instruction?: string,
+  evaluation?: Evaluation | null
 ) {
   // 枚举值域注入：分块重生成时 AI 必须从合法字符串中选择（此前只给规则不给列表 → 编造值被后处理丢弃）
   const needsCategories = fields.includes('categories') || fields.includes('category')
@@ -711,7 +798,7 @@ CURRENT LISTING (context only — keep the same product facts and style; do NOT 
 ${JSON.stringify(listing ?? {}, null, 2)}
 
 REGENERATE ONLY THESE KEYS: ${fields.join(', ')}
-${instruction ? `Salesperson instruction (MUST be respected): ${instruction}` : '(no special instruction — improve quality while keeping the same product facts)'}
+${instruction ? `Salesperson instruction (MUST be respected): ${instruction}` : '(no special instruction — improve quality while keeping the same product facts)'}${formatEvaluationAdvice(evaluation)}
 
 Rules:
 - Output ONLY the requested keys. Never output other fields.

@@ -669,12 +669,20 @@ productsRouter.post('/preview/listing', async (req: Request, res: Response) => {
         )
         .optional(),
       similar: z.any().nullable().optional(),
+      /** 选品评估结果：把结论与改善建议喂给 listing，保证文案方向和评估一致 */
+      evaluation: z.any().nullable().optional(),
     })
     .parse(req.body ?? {})
   const source = toSourceInfo(body.source)
   const settings = loadSettings()
   const listing = await runAi(() =>
-    generateListing(source, settings, body.answers as ListingAnswer[] | undefined, (body.similar ?? null) as SimilarResearch | null)
+    generateListing(
+      source,
+      settings,
+      body.answers as ListingAnswer[] | undefined,
+      (body.similar ?? null) as SimilarResearch | null,
+      (body.evaluation ?? null) as Evaluation | null
+    )
   )
   res.json({ listing })
 })
@@ -1555,7 +1563,7 @@ productsRouter.post('/:id/listing', async (req: Request, res: Response) => {
   const task = createTask('generate-listing')
   runTask(task, async () => {
     const listing = await runAi(() =>
-      generateListing(current.source, settings, body.answers as ListingAnswer[] | undefined, current.similar)
+      generateListing(current.source, settings, body.answers as ListingAnswer[] | undefined, current.similar, current.evaluation ?? null)
     )
     db.prepare('UPDATE products SET listing=?, status=?, updated_at=? WHERE id=?').run(
       JSON.stringify(listing),
@@ -1619,7 +1627,8 @@ productsRouter.post('/:id/regenerate-fields', async (req: Request, res: Response
       current.listing as Partial<Listing> | null,
       body.fields,
       body.instruction,
-      settings
+      settings,
+      current.evaluation ?? null
     )
   )
   // 与现有 listing 合并并重跑 QC（强制必填印刷方式/主题等），但不落库

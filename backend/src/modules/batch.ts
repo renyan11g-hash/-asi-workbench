@@ -405,7 +405,7 @@ async function makeListing(job: BatchJob, item: BatchItem, settings: ReturnType<
     if (old?.status === 'rejected') dropPendingReview(item.reviewId)
     item.reviewId = null
   }
-  const listing = await runAi(() => generateListing(source, settings, undefined, null))
+  const listing = await runAi(() => generateListing(source, settings, undefined, null, evaluation))
   const priceGrid = buildPriceGrid(source, settings).rows
   const review = createListingReview({
     batchJobId: job.id,

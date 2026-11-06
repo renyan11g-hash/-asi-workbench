@@ -1007,11 +1007,12 @@ export async function generateListing(
   source: SourceInfo,
   settings: Settings,
   answers?: ListingAnswer[],
-  similar?: SimilarResearch | null
+  similar?: SimilarResearch | null,
+  evaluation?: Evaluation | null
 ): Promise<Listing> {
   const { rows } = buildPriceGrid(source, settings)
   if (!settings.aiApiKey?.trim()) return templateListing(source, settings)
-  const { system, user } = buildListingPrompt(source, settings, answers, similar)
+  const { system, user } = buildListingPrompt(source, settings, answers, similar, evaluation)
   // 只注入前 2 张图：图片是视觉 token 大头，4 张会显著拖慢响应；2 张足够判断产品形态与印刷面
   const images = (source.images ?? []).slice(0, 2)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.5, images)
@@ -1197,9 +1198,10 @@ export async function regenerateListingFields(
   listing: Partial<Listing> | null,
   fields: string[],
   instruction: string | undefined,
-  settings: Settings
+  settings: Settings,
+  evaluation?: Evaluation | null
 ): Promise<Record<string, unknown>> {
-  const { system, user } = buildFieldsRegeneratePrompt(source, listing, fields, instruction)
+  const { system, user } = buildFieldsRegeneratePrompt(source, listing, fields, instruction, evaluation)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.6)
   // 兼容平铺与 {"value": {...}} 包裹两种返回
   const src = (
