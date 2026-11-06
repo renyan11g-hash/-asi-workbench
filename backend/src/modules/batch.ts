@@ -1,6 +1,7 @@
 /**
  * 批量处理：一次粘贴多条 1688 链接，按单品页的顺序分阶段跑
- *   ① 抓取 1688 资料 → ② **人工补全箱规等抓不到的字段** → ③ AI 评估 → ④ 入库（可选生成 listing）
+ *   ① 信息预填（抓取 1688 / 命中资料库） → ② **人工补全箱规等抓不到的字段**
+ *   → ③ 选品预估（缺字段也能先粗评一版） → ④ AI 评估 → ⑤ 生成英文链接（进待审核库）→ ⑥ 审核通过后入产品库
  *
  * 「②补全」不是可选步骤：1688 页面基本拿不到箱规/每箱数/箱毛重，缺了这些
  * 运费和报价只能按默认值估算，分数会骗人。所以批量必须像单品页一样停下来让人填，
@@ -20,12 +21,14 @@ import { buildPriceGrid } from '../services/pricing'
 import { evaluateSource, generateListing } from '../services/workbench'
 import { saveSourcingHistory } from './sourcing-history'
 import { loadSettings } from './settings'
+import { createListingReview, dropPendingReview, getListingReview } from './listing-reviews'
 import {
   BatchItem,
   BatchItemInput,
   BatchJob,
   BatchOptions,
   BatchPhase,
+  BatchStage,
   DEFAULT_BATCH_OPTIONS,
   MAX_BATCH_ITEMS,
   canEvaluate,
@@ -55,12 +58,19 @@ export const batchRouter: Router = Router()
 
 /** 正在跑的任务（内存态；DB 里存的是持久状态） */
 const running = new Set<string>()
-/** 用户点了「停止」的任务 */
-const cancelled = new Set<string>()
+/**
+ * 用户点了「暂停 / 停止」：正在跑的这一条跑完就停。
+ * 暂停 = 保留进度、可以接着跑；停止 = 这一轮结束（条目不会丢，随时能再点阶段按钮）。
+ */
+const stopRequests = new Map<string, 'pause' | 'stop'>()
+
+const STOP = {
+  pause: '已暂停（点「继续」接着跑）',
+  stop: '已停止',
+} as const
+
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-type Stage = 'fetch' | 'evaluate' | 'save' | 'all'
 
 // 服务重启后：把上次没跑完的任务标成中断，别让前端一直等
 recoverInterruptedJobs()
@@ -237,8 +247,18 @@ async function fetchItem(job: BatchJob, item: BatchItem) {
   saveBatchJob(job)
 }
 
-/** ③ 评估一条（不落库，结果单独存表，等第 ④ 步入库） */
-async function evaluateItem(job: BatchJob, item: BatchItem, settings: ReturnType<typeof loadSettings>) {
+/**
+ * ③ 评估一条（不落库，结果单独存表，等第 ④ 步入库）
+ *
+ * mode = 'quick' 是「选品预估」：字段不全也能先粗评一版（缺箱规按默认值估运费），
+ * 结果不标记为已评估，所以正式评估会重新跑一遍并覆盖。
+ */
+async function evaluateItem(
+  job: BatchJob,
+  item: BatchItem,
+  settings: ReturnType<typeof loadSettings>,
+  mode: 'quick' | 'full' = 'full'
+) {
   const source = mergeSource(item, null)
   item.source = source
   item.missing = missingFields(source)
@@ -250,18 +270,31 @@ async function evaluateItem(job: BatchJob, item: BatchItem, settings: ReturnType
     return
   }
 
-  setStage(job, item, 'evaluating', 'AI 评估中（海外同款 + 评分 + 报价）…')
+  setStage(
+    job,
+    item,
+    'evaluating',
+    mode === 'quick' ? '选品预估中（缺字段按默认值估算）…' : 'AI 评估中（海外同款 + 评分 + 报价）…'
+  )
   const evaluation = await runAi(() => evaluateSource(source, settings, {}))
   const priceGrid = buildPriceGrid(source, settings).rows
 
   item.score = evaluation.score
   item.verdict = evaluation.verdict ?? null
   item.marketNote = (evaluation as { marketNote?: string }).marketNote ?? null
-  item.evaluated = true
-  item.status = 'evaluated'
-  item.stage = item.missing.length
-    ? `已评估（注意：缺 ${item.missing.join('/')}，费率按默认值算）`
-    : '已评估，待入库'
+  if (mode === 'quick') {
+    // 预估不等于正式评估：不置 evaluated，入库前必须再跑一次完整评估
+    item.quickEvaluated = true
+    item.status = 'evaluated'
+    item.stage = `预估 ${evaluation.score} 分${item.missing.length ? `（缺 ${item.missing.join('/')}，按默认值算）` : ''}`
+  } else {
+    item.evaluated = true
+    item.quickEvaluated = false
+    item.status = 'evaluated'
+    item.stage = item.missing.length
+      ? `已评估（注意：缺 ${item.missing.join('/')}，费率按默认值算）`
+      : '已评估，待生成链接 / 入库'
+  }
   item.updatedAt = new Date().toISOString()
   saveItemEvaluation(job.id, item.idx, evaluation)
   if (item.url) {
@@ -283,8 +316,75 @@ async function evaluateItem(job: BatchJob, item: BatchItem, settings: ReturnType
   saveBatchJob(job)
 }
 
-/** ④ 入库一条（用第 ③ 步存下的评估结果；可选再生成 listing） */
+/**
+ * ④ 生成英文链接：**不直接进产品库**，先进待审核库（listing_reviews）。
+ * 审核通过后才写 products —— 这样没审的链接不会污染产品库。
+ */
+async function makeListing(job: BatchJob, item: BatchItem, settings: ReturnType<typeof loadSettings>) {
+  const source = item.source ?? mergeSource(item, null)
+  const evaluation = getItemEvaluation(job.id, item.idx) as Evaluation | null
+  if (!evaluation) {
+    item.status = 'error'
+    item.stage = '缺少评估结果'
+    item.error = '这条没有评估结果，先做一次 AI 评估再生成链接'
+    saveBatchJob(job)
+    return
+  }
+
+  setStage(job, item, 'listing', '生成英文 listing（标题/卖点/描述/关键词）…')
+  const listing = await runAi(() => generateListing(source, settings, undefined, null))
+  const priceGrid = buildPriceGrid(source, settings).rows
+  const review = createListingReview({
+    batchJobId: job.id,
+    batchIdx: item.idx,
+    source,
+    evaluation,
+    listing,
+    priceGrid,
+  })
+  item.reviewId = review.id
+  item.status = 'review'
+  item.stage = '英文链接已生成，待在「英文链接待审核」里审核'
+  item.updatedAt = new Date().toISOString()
+  saveBatchJob(job)
+}
+
+/**
+ * ⑤ 入库一条
+ *   - 生成过英文链接的：只有审核通过才算入库（产品在审核通过时就建好了，这里接回 id）
+ *   - 没生成链接的：直接按评估结果入库（老路径，保持兼容）
+ */
 async function saveItem(job: BatchJob, item: BatchItem, settings: ReturnType<typeof loadSettings>) {
+  if (item.reviewId) {
+    const review = getListingReview(item.reviewId)
+    if (!review) {
+      item.status = 'error'
+      item.stage = '审核记录已删除'
+      item.error = '这条的英文链接在待审核库里被删掉了，请重新生成'
+      saveBatchJob(job)
+      return
+    }
+    if (review.status === 'rejected') {
+      item.status = 'error'
+      item.stage = '英文链接被驳回'
+      item.error = `审核驳回${review.reviewNote ? `：${review.reviewNote}` : ''}（改完资料可重新生成）`
+      saveBatchJob(job)
+      return
+    }
+    if (review.status !== 'approved' || !review.productId) {
+      item.status = 'review'
+      item.stage = '还在待审核，审核通过后自动进产品库'
+      saveBatchJob(job)
+      return
+    }
+    item.productId = review.productId
+    item.status = 'done'
+    item.stage = '完成（审核通过，已进产品库）'
+    item.updatedAt = new Date().toISOString()
+    saveBatchJob(job)
+    return
+  }
+
   const source = item.source ?? mergeSource(item, null)
   const evaluation = getItemEvaluation(job.id, item.idx) as Evaluation | null
   if (!evaluation) {
@@ -326,21 +426,8 @@ async function saveItem(job: BatchJob, item: BatchItem, settings: ReturnType<typ
     draftId,
   })
   item.productId = productId
-  saveBatchJob(job)
-
-  if (job.options.listing) {
-    setStage(job, item, 'listing', '生成英文 listing…')
-    const listing = await runAi(() => generateListing(source, settings, undefined, null))
-    db.prepare('UPDATE products SET listing=?, status=?, updated_at=? WHERE id=?').run(
-      JSON.stringify(listing),
-      'listed',
-      new Date().toISOString(),
-      productId
-    )
-  }
-
   item.status = 'done'
-  item.stage = job.options.listing ? '完成（已入库 + 已生成 listing）' : '完成（已入库）'
+  item.stage = '完成（已入库）'
   item.updatedAt = new Date().toISOString()
   saveBatchJob(job)
 }
@@ -350,6 +437,7 @@ function computePhase(job: BatchJob): BatchPhase {
   const live = job.items.filter((i) => i.status !== 'error' && i.status !== 'skipped')
   if (!live.length) return 'draft'
   if (live.every((i) => i.productId)) return 'saved'
+  if (live.every((i) => i.reviewId)) return 'listed'
   if (live.every((i) => i.evaluated)) return 'evaluated'
   if (live.every((i) => i.source)) return 'fetched'
   return 'draft'
@@ -357,28 +445,58 @@ function computePhase(job: BatchJob): BatchPhase {
 
 /** 抓取只针对「还没有资料」的条目，避免每次点抓取都把已抓过的重抓一遍 */
 function fetchTargets(item: BatchItem): boolean {
-  return Boolean(item.url) && !item.source && !item.productId
+  return Boolean(item.url) && !item.source && !item.productId && !item.reviewId
+}
+
+/**
+ * 选品预估：只要标题 + 采购价就能先算一版（缺箱规按默认值估运费）。
+ * 目的是让 50 条链接先粗筛一遍，不值得做的不用再去问商家要箱规。
+ * 注意：预估结果会标「估算」，不能直接入库，必须做一次正式评估。
+ */
+function quickTargets(item: BatchItem): boolean {
+  const s = item.source
+  return (
+    Boolean(s?.sourceTitle?.trim()) &&
+    Number(s?.priceCny) > 0 &&
+    !item.productId &&
+    !item.reviewId &&
+    !item.evaluated
+  )
 }
 
 function evaluateTargets(item: BatchItem): boolean {
-  return canEvaluate(item) && !item.productId && !item.evaluated
+  return canEvaluate(item) && !item.productId && !item.reviewId && !item.evaluated
 }
 
+/** 生成英文链接：评估过、还没生成过的 */
+function listingTargets(item: BatchItem): boolean {
+  return Boolean(item.evaluated) && !item.productId && !item.reviewId
+}
+
+/**
+ * 入库：两条路都要认 ——
+ *   ① 生成过英文链接的：审核通过才算（审核通过时产品已经建好，这里只把 id 接回来）
+ *   ② 没生成链接、直接评估完就入库的（老路径）
+ */
 function saveTargets(item: BatchItem): boolean {
-  return Boolean(item.evaluated) && !item.productId
+  if (item.productId) return false
+  if (item.reviewId) return true
+  return Boolean(item.evaluated)
 }
 
 /** 跑指定阶段：逐条串行，任何一条失败只标记这一条 */
-async function runStage(jobId: string, stage: Stage, idxs: number[] | null) {
+async function runStage(jobId: string, stage: BatchStage, idxs: number[] | null) {
   const job = getBatchJob(jobId)
   if (!job) return
   if (running.has(jobId)) return
   running.add(jobId)
-  cancelled.delete(jobId)
+  stopRequests.delete(jobId)
   job.status = 'running'
+  job.lastStage = stage
   saveBatchJob(job)
   const settings = loadSettings()
   const picked = (item: BatchItem) => !idxs || idxs.includes(item.idx)
+  const stopped = () => stopRequests.has(jobId)
 
   const step = async (fn: () => Promise<void>, item: BatchItem, gap: number) => {
     try {
@@ -396,39 +514,54 @@ async function runStage(jobId: string, stage: Stage, idxs: number[] | null) {
   try {
     if (stage === 'fetch' || stage === 'all') {
       for (const item of job.items) {
-        if (cancelled.has(jobId)) break
+        if (stopped()) break
         if (!picked(item) || !fetchTargets(item)) continue
         await step(() => fetchItem(job, item), item, 500)
       }
     }
+    if (stage === 'quick') {
+      for (const item of job.items) {
+        if (stopped()) break
+        if (!picked(item) || !quickTargets(item)) continue
+        await step(() => evaluateItem(job, item, settings, 'quick'), item, 700)
+      }
+    }
     if (stage === 'evaluate' || stage === 'all') {
       for (const item of job.items) {
-        if (cancelled.has(jobId)) break
+        if (stopped()) break
         if (!picked(item) || !evaluateTargets(item)) continue
         // 没抓过资料的（纯手填），先合并一次 source，保证评估用的是手填值
-        if (!item.evaluated) await step(() => evaluateItem(job, item, settings), item, 700)
+        if (!item.evaluated) await step(() => evaluateItem(job, item, settings, 'full'), item, 700)
+      }
+    }
+    if (stage === 'listing' || stage === 'all') {
+      for (const item of job.items) {
+        if (stopped()) break
+        if (!picked(item) || !listingTargets(item)) continue
+        await step(() => makeListing(job, item, settings), item, 700)
       }
     }
     if (stage === 'save' || stage === 'all') {
       for (const item of job.items) {
-        if (cancelled.has(jobId)) break
+        if (stopped()) break
         if (!picked(item) || !saveTargets(item)) continue
         await step(() => saveItem(job, item, settings), item, 400)
       }
     }
   } finally {
+    const req = stopRequests.get(jobId)
     job.phase = computePhase(job)
-    job.status = cancelled.has(jobId) ? 'cancelled' : 'done'
-    if (cancelled.has(jobId)) {
+    job.status = req === 'pause' ? 'paused' : req === 'stop' ? 'cancelled' : 'done'
+    if (req) {
       job.items = job.items.map((i) =>
         ['fetching', 'evaluating', 'saving', 'listing'].includes(i.status)
-          ? { ...i, status: 'pending', stage: '已停止' }
+          ? { ...i, status: 'pending', stage: STOP[req] }
           : i
       )
     }
     saveBatchJob(job)
     running.delete(jobId)
-    cancelled.delete(jobId)
+    stopRequests.delete(jobId)
   }
 }
 
@@ -522,11 +655,13 @@ batchRouter.get('/jobs/:id', (req: Request, res: Response) => {
 })
 
 /**
- * 跑阶段：
- *   fetch    只抓取（抓完停下，等人补箱规）
- *   evaluate 批量评估（不落库）
- *   save     入库（+ 可选 listing）
- *   all      一口气跑完（跳过人工补全，字段缺就按默认值算）
+ * 跑阶段（每个阶段都能单独点，也能一键跑完）：
+ *   fetch    信息预填：抓 1688 / 命中资料库，抓完停下等人补箱规
+ *   quick    选品预估：字段不全也能先粗评一版，用来筛掉明显不值得做的
+ *   evaluate AI 评估：正式评分（要求 6 个关键字段齐全）
+ *   listing  生成英文链接 → 进待审核库（不直接进产品库）
+ *   save     入库产品库（生成过链接的必须审核通过）
+ *   all      一口气跑完（跳过人工补全，缺字段按默认值算，可随时暂停）
  */
 batchRouter.post('/jobs/:id/run', (req: Request, res: Response) => {
   const id = String(req.params.id)
@@ -536,27 +671,39 @@ batchRouter.post('/jobs/:id/run', (req: Request, res: Response) => {
 
   const body = z
     .object({
-      stage: z.enum(['fetch', 'evaluate', 'save', 'all']).default('all'),
+      stage: z.enum(['fetch', 'quick', 'evaluate', 'listing', 'save', 'all']).default('all'),
       idxs: z.array(z.number().int().positive()).max(MAX_BATCH_ITEMS).optional(),
     })
     .parse(req.body ?? {})
 
   const idxs = body.idxs && body.idxs.length ? body.idxs : null
   const candidates = job.items.filter((it) => (idxs ? idxs.includes(it.idx) : true))
+  const pickTargets = (stage: BatchStage) =>
+    stage === 'fetch'
+      ? fetchTargets
+      : stage === 'quick'
+        ? quickTargets
+        : stage === 'evaluate'
+          ? evaluateTargets
+          : stage === 'listing'
+            ? listingTargets
+            : saveTargets
   const eligible =
-    body.stage === 'fetch' || body.stage === 'all'
-      ? candidates.some(fetchTargets)
-      : body.stage === 'evaluate'
-        ? candidates.some(evaluateTargets)
-        : candidates.some(saveTargets)
+    body.stage === 'all'
+      ? candidates.some((it) => fetchTargets(it) || evaluateTargets(it) || listingTargets(it) || saveTargets(it))
+      : candidates.some(pickTargets(body.stage))
 
   if (!eligible) {
     const msg =
       body.stage === 'fetch'
         ? '没有需要抓取的条目（都抓过了，或没有链接）'
-        : body.stage === 'evaluate'
-          ? '没有可评估的条目（缺标题，或已评估/已入库）'
-          : '没有可入库的条目（还没评估，或已入库）'
+        : body.stage === 'quick'
+          ? '没有可预估的条目（需要至少有标题和采购价）'
+          : body.stage === 'evaluate'
+            ? '没有可评估的条目（缺标题/关键字段，或已评估、已生成链接、已入库）'
+            : body.stage === 'listing'
+              ? '没有可生成英文链接的条目（要先完成 AI 评估）'
+              : '没有可入库的条目（还没评估，或已入库；生成过链接的要先审核通过）'
     throw new AppError(400, msg)
   }
 
@@ -564,6 +711,50 @@ batchRouter.post('/jobs/:id/run', (req: Request, res: Response) => {
   saveBatchJob(job)
   void runStage(id, body.stage, idxs)
   res.json({ ok: true, job: getBatchJob(id) ?? job })
+})
+
+/** 暂停：正在跑的这一条跑完就停，进度全部保留，点「继续」接着跑 */
+batchRouter.post('/jobs/:id/pause', (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const job = getBatchJob(id)
+  if (!job) throw new AppError(404, '任务不存在')
+  if (!running.has(id)) {
+    // 没有真的在跑（比如服务重启过）：直接把状态改成暂停，别让界面一直转圈
+    job.status = job.status === 'running' ? 'paused' : job.status
+    saveBatchJob(job)
+    res.json({ ok: true, job })
+    return
+  }
+  stopRequests.set(id, 'pause')
+  res.json({ ok: true, job: getBatchJob(id) ?? job, message: '正在跑的这一条跑完就暂停' })
+})
+
+/** 继续：按上次跑的阶段接着跑（已完成的条目会自动跳过） */
+batchRouter.post('/jobs/:id/resume', (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const job = getBatchJob(id)
+  if (!job) throw new AppError(404, '任务不存在')
+  if (running.has(id)) throw new AppError(409, '这一批正在跑')
+  const stage = (job.lastStage || 'evaluate') as BatchStage
+  job.status = 'running'
+  saveBatchJob(job)
+  void runStage(id, stage, null)
+  res.json({ ok: true, job: getBatchJob(id) ?? job, stage })
+})
+
+/** 停：结束这一轮（条目都保留，随时可以再点别的阶段） */
+batchRouter.post('/jobs/:id/cancel', (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const job = getBatchJob(id)
+  if (!job) throw new AppError(404, '任务不存在')
+  if (!running.has(id)) {
+    job.status = 'cancelled'
+    saveBatchJob(job)
+    res.json({ ok: true, job })
+    return
+  }
+  stopRequests.set(id, 'stop')
+  res.json({ ok: true, job: getBatchJob(id) ?? job, message: '正在跑的这一条跑完就停' })
 })
 
 /** 改一条的资料（补全箱规/每箱数/毛重这些 1688 抓不到的字段） */
@@ -621,6 +812,14 @@ batchRouter.patch('/jobs/:id/items/:idx', (req: Request, res: Response) => {
       ? `缺 ${item.missing.length} 项（${item.missing.join('/')}）`
       : '资料齐全，可以评估'
   }
+  // 资料改了，之前生成的英文链接就过期了：把待审核记录撤掉，避免审的是旧内容
+  if (item.reviewId) {
+    const dropped = dropPendingReview(item.reviewId)
+    if (dropped) {
+      item.reviewId = null
+      item.stage = '资料已改，旧英文链接已撤回，需重新生成'
+    }
+  }
   item.updatedAt = new Date().toISOString()
   job.phase = computePhase(job)
   saveBatchJob(job)
@@ -651,21 +850,6 @@ batchRouter.post('/jobs/:id/items/delete', (req: Request, res: Response) => {
   job.phase = computePhase(job)
   saveBatchJob(job)
   res.json({ ok: true, job, removed, skipped })
-})
-
-/** 停止：当前这条跑完就停，剩下一律不跑（已入库的不回滚） */batchRouter.post('/jobs/:id/cancel', (req: Request, res: Response) => {
-  const id = String(req.params.id)
-  const job = getBatchJob(id)
-  if (!job) throw new AppError(404, '任务不存在')
-  if (!running.has(id)) {
-    job.status = 'cancelled'
-    job.phase = computePhase(job)
-    saveBatchJob(job)
-    res.json({ ok: true, job })
-    return
-  }
-  cancelled.add(id)
-  res.json({ ok: true, job: getBatchJob(id) ?? job })
 })
 
 /** 重试失败项：只把 error 的条目重置成待处理，成功的保持不动 */

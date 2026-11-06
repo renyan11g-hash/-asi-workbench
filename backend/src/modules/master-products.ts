@@ -252,6 +252,15 @@ masterProductsRouter.delete('/:id', async (req: Request, res: Response) => {
   res.json({ ok: true })
 })
 
+/** 批量删除（资料库里勾选后一次删掉，避免前端发几十个请求） */
+masterProductsRouter.post('/bulk-delete', async (req: Request, res: Response) => {
+  const body = z.object({ ids: z.array(z.string().min(1)).min(1).max(500) }).parse(req.body ?? {})
+  const stmt = db.prepare('DELETE FROM master_products WHERE id = ?')
+  let removed = 0
+  for (const id of body.ids) removed += Number(stmt.run(id).changes ?? 0)
+  res.json({ ok: true, removed })
+})
+
 // ---------------------------------------------------------------- 导入 / 导出
 
 /** 导出/导入共用的列定义（顺序即表格列序） */

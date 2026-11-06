@@ -21,6 +21,7 @@ import { emailDraftsRouter } from './modules/email-drafts'
 import { dashboardRouter } from './modules/dashboard'
 import { productImagesRouter } from './modules/product-images'
 import { batchRouter } from './modules/batch'
+import { listingReviewsRouter } from './modules/listing-reviews'
 import { masterProductsRouter } from './modules/master-products'
 
 export const createApp = (): Application => {
@@ -66,6 +67,7 @@ export const createApp = (): Application => {
   app.use(`${env.API_PREFIX}/product-images`, productImagesRouter)
   // 批量处理：粘贴多条链接，后台逐条跑单品同款流程
   app.use(`${env.API_PREFIX}/batch`, batchRouter)
+  app.use(`${env.API_PREFIX}/listing-reviews`, listingReviewsRouter)
   // 产品资料库：自建主数据，抓取时优先命中，避免重复补箱规和图片
   app.use(`${env.API_PREFIX}/master-products`, masterProductsRouter)
 

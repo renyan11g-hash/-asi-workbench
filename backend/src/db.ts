@@ -215,6 +215,30 @@ CREATE TABLE IF NOT EXISTS batch_item_images (
   PRIMARY KEY (job_id, idx)
 );
 
+-- 英文链接待审核库：批量生成的 listing 先放这里，人工审核通过后才写进 products。
+-- 审核状态 pending / approved / rejected，approved 时 product_id 记录落到产品库的那一条。
+CREATE TABLE IF NOT EXISTS listing_reviews (
+  id TEXT PRIMARY KEY,
+  batch_job_id TEXT,
+  batch_idx INTEGER,
+  title TEXT NOT NULL DEFAULT '',
+  source_url TEXT NOT NULL DEFAULT '',
+  image TEXT,
+  score INTEGER,
+  verdict TEXT,
+  source TEXT NOT NULL DEFAULT '{}',
+  evaluation TEXT,
+  listing TEXT NOT NULL DEFAULT '{}',
+  price_grid TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending',
+  product_id TEXT,
+  review_note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_listing_reviews_status ON listing_reviews(status);
+CREATE INDEX IF NOT EXISTS idx_listing_reviews_batch ON listing_reviews(batch_job_id);
+
 -- 订单运营中心表结构
 CREATE TABLE IF NOT EXISTS customers (
   id TEXT PRIMARY KEY,
@@ -404,6 +428,9 @@ ensureColumn('market_list_low', 'market_list_low REAL')
 ensureColumn('market_list_high', 'market_list_high REAL')
 ensureColumn('market_source', "market_source TEXT")
 ensureColumn('market_checked_at', 'market_checked_at TEXT')
+
+// 批量任务：记住上一次跑的是哪个阶段，暂停/中断后能一键接着跑
+ensureTableColumn('batch_jobs', 'last_stage', "last_stage TEXT NOT NULL DEFAULT ''")
 
 // 订单运营中心表兼容性检查
 function ensureTableColumn(tableName: string, name: string, ddl: string) {

@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
+  ClipboardCheck,
   Compass,
   Database,
   FolderOpen,
@@ -22,6 +23,7 @@ const NAV = [
   { to: '/master-data', label: '产品资料库', icon: Database, end: false },
   { to: '/batch', label: '批量处理', icon: Layers, end: false },
   { to: '/evaluations', label: '评估库', icon: FolderOpen, end: false },
+  { to: '/listing-reviews', label: '英文链接待审核', icon: ClipboardCheck, end: false },
   { to: '/library', label: '产品库', icon: Package, end: false },
   { to: '/order-center', label: '订单运营中心', icon: ShoppingBag, end: false },
   { to: '/settings', label: '设置', icon: SettingsIcon, end: false },
@@ -31,7 +33,8 @@ const TITLES: Record<string, { title: string; sub: string }> = {
   '/': { title: '工作台概览', sub: '选品进度、链接产出与利润概览' },
   '/sourcing-suggest': { title: '选品预估', sub: 'AI 自动搜寻适合美国促销礼品市场的选品方向与 1688 搜索词' },
   '/sourcing': { title: '产品信息预填', sub: '粘贴 1688 链接带出商品资料，补全尺寸、材质、箱规后正式评估' },
-  '/batch': { title: '批量处理', sub: '一次粘贴多条产品，后台逐条跑「抓取 → 评估 → 入库 → 生成链接」' },
+  '/batch': { title: '批量处理', sub: '一次粘多条产品，按阶段批量跑：预填 → 补全 → 预估 → 评估 → 生成链接 → 入库' },
+  '/listing-reviews': { title: '英文链接待审核', sub: '批量生成的英文 listing 先在这里审，通过才进产品库' },
   '/master-data': { title: '产品资料库', sub: '自建主数据：链接、箱规、每箱数、毛重、多张图片录一次，之后抓取自动命中' },
   '/evaluations': { title: '评估库', sub: '选品评估草稿集中存放，随时载入继续编辑' },
   '/library': { title: '产品库', sub: '所有已保存的选品与生成的英文链接' },

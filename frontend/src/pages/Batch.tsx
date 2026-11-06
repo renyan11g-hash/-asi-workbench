@@ -3,12 +3,14 @@ import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
   Check,
+  ClipboardCheck,
   ClipboardPaste,
   Download,
   ExternalLink,
   ImagePlus,
   Layers,
   Loader2,
+  Pause,
   Pencil,
   Play,
   RotateCcw,
@@ -32,19 +34,21 @@ import {
   BatchJobStatus,
   BatchOptions,
   BatchPhase,
+  BatchStage,
   SourceInfo,
 } from '@/types'
 
 const JOB_KEY = 'asi-batch:jobId'
 
 const ITEM_STATUS: Record<BatchItemStatus, { label: string; cls: string }> = {
-  pending: { label: '待抓取', cls: 'bg-slate-100 text-slate-600 border-slate-200' },
+  pending: { label: '待处理', cls: 'bg-slate-100 text-slate-600 border-slate-200' },
   fetching: { label: '抓取中', cls: 'bg-sky-100 text-sky-700 border-sky-200' },
   fetched: { label: '待补全', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
   evaluating: { label: '评估中', cls: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
   evaluated: { label: '已评估', cls: 'bg-blue-100 text-blue-700 border-blue-200' },
   saving: { label: '入库中', cls: 'bg-violet-100 text-violet-700 border-violet-200' },
   listing: { label: '生成链接', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
+  review: { label: '待审核', cls: 'bg-orange-100 text-orange-700 border-orange-200' },
   done: { label: '已入库', cls: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   error: { label: '失败', cls: 'bg-rose-100 text-rose-600 border-rose-200' },
   skipped: { label: '跳过', cls: 'bg-slate-100 text-slate-500 border-slate-200' },
@@ -53,6 +57,7 @@ const ITEM_STATUS: Record<BatchItemStatus, { label: string; cls: string }> = {
 const JOB_STATUS: Record<BatchJobStatus, { label: string; cls: string }> = {
   draft: { label: '待处理', cls: 'bg-slate-100 text-slate-600 border-slate-200' },
   running: { label: '处理中', cls: 'bg-blue-100 text-blue-700 border-blue-200' },
+  paused: { label: '已暂停', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
   done: { label: '已停', cls: 'bg-slate-100 text-slate-600 border-slate-200' },
   cancelled: { label: '已停止', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
   interrupted: { label: '已中断', cls: 'bg-rose-100 text-rose-600 border-rose-200' },
@@ -60,27 +65,90 @@ const JOB_STATUS: Record<BatchJobStatus, { label: string; cls: string }> = {
 
 const PHASE_LABEL: Record<BatchPhase, string> = {
   draft: '待抓取',
-  fetched: '已抓取 · 待补全',
-  evaluated: '已评估 · 待入库',
+  fetched: '已预填 · 待补全',
+  evaluated: '已评估 · 待生成链接',
+  listed: '已生成链接 · 待审核',
   saved: '已入库',
 }
 
-const STEPS: Array<{ key: BatchPhase | 'fill'; label: string }> = [
-  { key: 'draft', label: '① 抓取资料' },
-  { key: 'fill', label: '② 补全信息' },
-  { key: 'evaluated', label: '③ AI 评估' },
-  { key: 'saved', label: '④ 入库' },
+const STEPS: Array<{ key: string; label: string }> = [
+  { key: 'draft', label: '① 信息预填' },
+  { key: 'fill', label: '② 补全资料' },
+  { key: 'evaluated', label: '③ 选品评估' },
+  { key: 'listed', label: '④ 英文链接待审核' },
+  { key: 'saved', label: '⑤ 入库产品库' },
 ]
 
 function phaseStep(phase: BatchPhase): number {
-  return phase === 'draft' ? 0 : phase === 'fetched' ? 1 : phase === 'evaluated' ? 2 : 3
+  return phase === 'draft' ? 0 : phase === 'fetched' ? 1 : phase === 'evaluated' ? 2 : phase === 'listed' ? 3 : 4
+}
+
+const STAGE_LABEL: Record<BatchStage, string> = {
+  fetch: '信息预填',
+  quick: '选品预估',
+  evaluate: 'AI 评估',
+  listing: '生成英文链接',
+  save: '入库产品库',
+  all: '一键全流程',
+}
+
+const STAGE_START: Record<BatchStage, string> = {
+  fetch: '开始信息预填：抓 1688 / 命中资料库，抓完停下来等补全',
+  quick: '开始选品预估：缺字段按默认值估算，用来先筛掉不值得做的',
+  evaluate: '开始 AI 评估（不落库，先看分）',
+  listing: '开始生成英文链接 → 进待审核库，审核通过才进产品库',
+  save: '开始入库：生成过链接的必须审核通过',
+  all: '一键全流程已开始（跳过人工补全），可以随时暂停',
+}
+
+/** 一个阶段按钮：带待处理条数，0 条自动禁用 */
+function StageBtn({
+  label,
+  count,
+  hint,
+  disabled,
+  onClick,
+}: {
+  label: string
+  count: number
+  hint: string
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={hint}
+      className={[
+        'flex flex-col items-start gap-1 rounded-lg border px-2.5 py-2 text-left transition',
+        disabled
+          ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400'
+          : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300 hover:bg-blue-50/60',
+      ].join(' ')}
+    >
+      <span className="flex w-full items-center justify-between gap-1 text-[12px] font-medium">
+        <span className="truncate">{label}</span>
+        <span
+          className={[
+            'rounded px-1 text-[10px]',
+            count > 0 ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-400',
+          ].join(' ')}
+        >
+          {count}
+        </span>
+      </span>
+      <span className="line-clamp-1 text-[10px] leading-tight text-slate-400">{hint}</span>
+    </button>
+  )
 }
 
 const DEFAULT_OPTIONS: BatchOptions = { fetch: true, evaluate: true, save: true, listing: false }
 
-const SAMPLE = `链接	标题	采购价	MOQ	尺寸	材质	颜色	箱规	每箱数	箱毛重
-https://detail.1688.com/offer/123456789.html	折叠收纳盒	3.5	100	20x15x8cm	PU皮	黑/灰	40x30x25	60	12
-https://detail.1688.com/offer/123456790.html	硅胶杯托	2.8	200	12x12x3cm	硅胶	三色	45x35x30	120	9`
+const SAMPLE = `图片	链接	标题	采购价	MOQ	尺寸	材质	颜色	箱规	每箱数	箱毛重
+https://img.alicdn.com/1.jpg https://img.alicdn.com/2.jpg	https://detail.1688.com/offer/123456789.html	折叠收纳盒	3.5	100	20x15x8cm	PU皮	黑/灰	40x30x25	60	12
+https://img.alicdn.com/3.jpg	https://detail.1688.com/offer/123456790.html	硅胶杯托	2.8	200	12x12x3cm	硅胶	三色	45x35x30	120	9`
 
 /** 缺哪些关键字段（与后端 missingFields 一致，用于逐个输入框标黄） */
 function fieldMissing(source: SourceInfo | null | undefined, key: keyof BatchItemInput): boolean {
@@ -194,7 +262,7 @@ function ImageStack({ images }: { images: string[] }) {
 export default function Batch() {
   const navigate = useNavigate()
   const [text, setText] = useState('')
-  const [options, setOptions] = useState<BatchOptions>(DEFAULT_OPTIONS)
+  const [options] = useState<BatchOptions>(DEFAULT_OPTIONS)
   const [creating, setCreating] = useState(false)
   const [job, setJob] = useState<BatchJob | null>(null)
   const [jobId, setJobId] = useState<string | null>(() => localStorage.getItem(JOB_KEY))
@@ -225,6 +293,8 @@ export default function Batch() {
   const [selected, setSelected] = useState<number[]>([])
   const [deleting, setDeleting] = useState(false)
   const [grabbingImages, setGrabbingImages] = useState(false)
+  /** 英文链接待审核条数（顶部入口用） */
+  const [reviewPending, setReviewPending] = useState(0)
 
   const loadRecent = useCallback(async () => {
     try {
@@ -238,6 +308,25 @@ export default function Batch() {
   useEffect(() => {
     void loadRecent()
   }, [loadRecent])
+
+  // 待审核英文链接数量：批次跑完/暂停时顺手刷新一下
+  useEffect(() => {
+    let alive = true
+    const load = async () => {
+      try {
+        const r = await api.listListingReviews({ status: 'pending', limit: 1 })
+        if (alive) setReviewPending(r.counts?.pending ?? 0)
+      } catch {
+        /* 拿不到不影响批量处理 */
+      }
+    }
+    void load()
+    const t = window.setInterval(load, 15000)
+    return () => {
+      alive = false
+      window.clearInterval(t)
+    }
+  }, [nonce, job?.status])
 
   // 轮询：只要任务还在跑就每 2.5 秒刷新一次进度（顺手把服务端保活，避免免费层休眠）
   useEffect(() => {
@@ -288,6 +377,27 @@ export default function Batch() {
     return { total, fetched, evaluated, saved, failed, missing: missingItems.length, canEval }
   }, [items])
 
+  const stageCounts = useMemo(() => {
+    const live = items.filter((i) => i.status !== 'error')
+    const fetch = live.filter((i) => i.url && !i.source && !i.productId && !i.reviewId).length
+    const quick = live.filter((i) => {
+      const s = i.source
+      return (
+        Boolean(s?.sourceTitle?.trim()) &&
+        Number(s?.priceCny) > 0 &&
+        !i.productId &&
+        !i.reviewId &&
+        !i.evaluated
+      )
+    }).length
+    const evaluate = live.filter(
+      (i) => !i.evaluated && !i.productId && !i.reviewId && (i.missing?.length ?? 0) === 0 && Boolean(i.source?.sourceTitle)
+    ).length
+    const listing = live.filter((i) => i.evaluated && !i.productId && !i.reviewId).length
+    const save = live.filter((i) => !i.productId && (Boolean(i.reviewId) || Boolean(i.evaluated))).length
+    return { fetch, quick, evaluate, listing, save }
+  }, [items])
+
   const start = async () => {
     if (!text.trim()) {
       toast.error('先把产品链接粘贴进来')
@@ -312,20 +422,36 @@ export default function Batch() {
     }
   }
 
-  const run = async (stage: 'fetch' | 'evaluate' | 'save' | 'all', idxs?: number[]) => {
+  const run = async (stage: BatchStage, idxs?: number[]) => {
     if (!jobId) return
     try {
       await api.runBatchStage(jobId, stage, idxs)
       setNonce((n) => n + 1)
-      const label =
-        stage === 'fetch'
-          ? '开始抓取资料，抓完会停下来等补全'
-          : stage === 'evaluate'
-            ? '开始批量评估（不落库，先看分）'
-            : stage === 'save'
-              ? '开始入库'
-              : '一键跑完（跳过人工补全）'
-      toast.success(label)
+      toast.success(STAGE_START[stage])
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  const pause = async () => {
+    if (!jobId) return
+    try {
+      const j = await api.pauseBatchJob(jobId)
+      setJob(j)
+      setNonce((n) => n + 1)
+      toast.success('已暂停：正在跑的这一条跑完就停，进度都保住了')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  const resume = async () => {
+    if (!jobId) return
+    try {
+      const r = await api.resumeBatchJob(jobId)
+      setJob(r.job)
+      setNonce((n) => n + 1)
+      toast.success(`继续跑「${STAGE_LABEL[(r.stage as BatchStage) ?? 'evaluate']}」`)
     } catch (err) {
       toast.error(getErrorMessage(err))
     }
@@ -498,48 +624,12 @@ export default function Batch() {
   const visibleItems = onlyMissing ? items.filter((i) => (i.missing?.length ?? 0) > 0) : items
   const failedCount = items.filter((i) => i.status === 'error').length
 
-  /** 主按钮跟着阶段走：抓取 → (补全) → 评估 → 入库 */
-  const primary = (() => {
-    if (!job) return null
-    if (isRunning) return { label: '处理中…', stage: null as null, disabled: true, hint: '' }
-    if (job.phase === 'draft') {
-      return {
-        label: `① 抓取资料（${items.filter((i) => i.url && !i.source).length} 条）`,
-        stage: 'fetch' as const,
-        disabled: false,
-        hint: '抓完会停下来，等你补全箱规等 1688 抓不到的字段',
-      }
-    }
-    if (job.phase === 'fetched') {
-      return {
-        label: `③ 批量评估（${stats.canEval} 条）`,
-        stage: 'evaluate' as const,
-        disabled: stats.canEval === 0,
-        hint: '评估不落库，先看分数；补全资料可以随时改',
-      }
-    }
-    if (job.phase === 'evaluated') {
-      return {
-        label: `④ 入库（${stats.evaluated - stats.saved} 条）`,
-        stage: 'save' as const,
-        disabled: stats.evaluated - stats.saved <= 0,
-        hint: '入库后在产品库里能看到，再进链接生成页微调',
-      }
-    }
-    return {
-      label: '已全部入库',
-      stage: null as null,
-      disabled: true,
-      hint: '这一批已经进产品库了',
-    }
-  })()
-
   return (
     <div className="space-y-4">
       {/* ① 输入 */}
       <SectionCard
         title="① 批量输入产品"
-        hint="每行一个产品。只粘贴 1688 链接就能跑；从 Excel 复制多列也行（顺序：链接 / 标题 / 采购价 / MOQ / 尺寸 / 材质 / 颜色 / 箱规 / 每箱数 / 箱毛重 / 单件重 / 备注），第一行有表头会自动识别"
+        hint="每行一个产品。第一行有表头会自动识别列，列的顺序无所谓 —— 图片可以放最前面。图片一格能写多张（空格或、分隔），也可以留空：命中产品资料库时会自动带图。"
         right={
           <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
             {text.split('\n').filter((l) => l.trim()).length} 行
@@ -563,13 +653,6 @@ export default function Batch() {
               <Trash2 className="mr-1 h-3.5 w-3.5" /> 清空
             </Button>
           )}
-          <label className="ml-1 flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600">
-            <Checkbox
-              checked={options.listing}
-              onCheckedChange={(v) => setOptions((o) => ({ ...o, listing: Boolean(v) }))}
-            />
-            入库时顺便生成英文 listing（每条多约 1 分钟）
-          </label>
           <Button onClick={() => void start()} disabled={creating || isRunning} size="sm">
             {creating ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Layers className="mr-1 h-3.5 w-3.5" />}
             建立批次
@@ -577,6 +660,15 @@ export default function Batch() {
           <span className="text-[11px] text-slate-400">
             以 # 开头当注释；同一批重复链接只跑一次；单批最多 50 条
           </span>
+        </div>
+
+        {/* 图片怎么来的三种情况，直接写清楚，省得来回猜 */}
+        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
+          <span className="font-medium text-slate-700">图片从哪来？</span>{' '}
+          ① 资料库里有的链接，预填时自动带图（推荐：先导一次资料库）；
+          ② 表格里加一列「图片」，填网址（多张用空格/、分隔）；
+          ③ 建批次后，在表格里点「补全 → 上传本地图」逐条加。
+          <span className="text-amber-700">　从 1688 链接实时抓图不可靠</span>（对方反爬，服务器侧基本拿不到），别指望这条路。
         </div>
       </SectionCard>
 
@@ -620,18 +712,70 @@ export default function Batch() {
             })}
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {primary && (
-              <Button
-                onClick={() => primary.stage && void run(primary.stage)}
-                disabled={primary.disabled || isRunning}
-              >
-                {isRunning ? (
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                ) : (
-                  <Play className="mr-1.5 h-4 w-4" />
-                )}
-                {primary.label}
+          {/* 阶段按钮：每个都能单独点，已完成/不满足条件的自动跳过 */}
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            <StageBtn
+              label="① 信息预填"
+              count={stageCounts.fetch}
+              hint="抓 1688 / 命中资料库"
+              disabled={isRunning || stageCounts.fetch === 0}
+              onClick={() => void run('fetch')}
+            />
+            <StageBtn
+              label="② 人工补全"
+              count={stats.missing}
+              hint="逐条填箱规等抓不到的字段"
+              disabled={isRunning || stats.missing === 0}
+              onClick={() => {
+                setOnlyMissing(true)
+                toast.info('点表格里每条右侧的「补全」逐条填，填完点保存')
+              }}
+            />
+            <StageBtn
+              label="③ 选品预估"
+              count={stageCounts.quick}
+              hint="字段不全也能先粗评一版"
+              disabled={isRunning || stageCounts.quick === 0}
+              onClick={() => void run('quick')}
+            />
+            <StageBtn
+              label="④ AI 评估"
+              count={stageCounts.evaluate}
+              hint="正式评分（要 6 个关键字段齐全）"
+              disabled={isRunning || stageCounts.evaluate === 0}
+              onClick={() => void run('evaluate')}
+            />
+            <StageBtn
+              label="⑤ 生成英文链接"
+              count={stageCounts.listing}
+              hint="进待审核库，不直接进产品库"
+              disabled={isRunning || stageCounts.listing === 0}
+              onClick={() => void run('listing')}
+            />
+            <StageBtn
+              label="⑥ 入库产品库"
+              count={stageCounts.save}
+              hint="审核通过的才会真进产品库"
+              disabled={isRunning || stageCounts.save === 0}
+              onClick={() => void run('save')}
+            />
+          </div>
+
+          {/* 运行控制 */}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {isRunning && (
+              <Button size="sm" variant="outline" onClick={() => void pause()}>
+                <Pause className="mr-1 h-3.5 w-3.5" /> 暂停
+              </Button>
+            )}
+            {job.status === 'paused' && (
+              <Button size="sm" onClick={() => void resume()}>
+                <Play className="mr-1 h-3.5 w-3.5" /> 继续（{STAGE_LABEL[job.lastStage || 'evaluate']}）
+              </Button>
+            )}
+            {(isRunning || job.status === 'paused') && (
+              <Button size="sm" variant="ghost" className="text-rose-600" onClick={() => void stop()}>
+                <Square className="mr-1 h-3.5 w-3.5" /> 停止
               </Button>
             )}
             <Button
@@ -639,15 +783,10 @@ export default function Batch() {
               size="sm"
               disabled={isRunning}
               onClick={() => void run('all')}
-              title="跳过人工补全，抓完直接评估入库（缺的字段按默认值算，分数会不准）"
+              title="跳过人工补全，抓完直接评估 → 生成链接（缺的字段按默认值算，分数会不准）；跑的过程中可以随时暂停"
             >
-              <Wand2 className="mr-1 h-3.5 w-3.5" /> 一键跑完
+              <Wand2 className="mr-1 h-3.5 w-3.5" /> 一键全流程（跳过补全）
             </Button>
-            {isRunning && (
-              <Button variant="outline" size="sm" onClick={() => void stop()}>
-                <Square className="mr-1 h-3.5 w-3.5" /> 停止
-              </Button>
-            )}
             {failedCount > 0 && !isRunning && (
               <Button variant="outline" size="sm" onClick={() => void retry()}>
                 <RotateCcw className="mr-1 h-3.5 w-3.5" /> 重试失败项（{failedCount}）
@@ -656,7 +795,15 @@ export default function Batch() {
             <Button variant="outline" size="sm" onClick={exportCsv} disabled={!items.length}>
               <Download className="mr-1 h-3.5 w-3.5" /> 导出结果
             </Button>
-            {primary?.hint && <span className="text-[11px] text-slate-500">{primary.hint}</span>}
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-orange-200 text-orange-700"
+              onClick={() => navigate('/listing-reviews')}
+            >
+              <ClipboardCheck className="mr-1 h-3.5 w-3.5" />
+              英文链接待审核（{reviewPending}）
+            </Button>
           </div>
 
           {/* 缺字段提醒：这才是「预填」不能省的原因 */}

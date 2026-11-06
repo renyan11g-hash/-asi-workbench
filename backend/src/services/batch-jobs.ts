@@ -24,12 +24,25 @@ export type BatchItemStatus =
   | 'evaluated'
   | 'saving'
   | 'listing'
+  /** 英文链接已生成，等人工审核 */
+  | 'review'
   | 'done'
   | 'error'
   | 'skipped'
 
-export type BatchJobStatus = 'draft' | 'running' | 'done' | 'cancelled' | 'interrupted'
-export type BatchPhase = 'draft' | 'fetched' | 'evaluated' | 'saved'
+export type BatchJobStatus =
+  | 'draft'
+  | 'running'
+  | 'done'
+  | 'paused'
+  | 'cancelled'
+  | 'interrupted'
+
+/** 整批走到哪一站：抓取 → 评估 → 生成英文链接（待审核）→ 入库 */
+export type BatchPhase = 'draft' | 'fetched' | 'evaluated' | 'listed' | 'saved'
+
+/** 可单独跑的阶段 */
+export type BatchStage = 'fetch' | 'quick' | 'evaluate' | 'listing' | 'save' | 'all'
 
 /** 手填资料：全部可选，填了就覆盖 1688 抓取到的同名字段 */
 export interface BatchItemInput {
@@ -70,6 +83,8 @@ export interface BatchItem {
   missing?: string[]
   /** 是否已评估过（评估结果单独存表） */
   evaluated?: boolean
+  /** 只跑过「选品预估」（缺字段按默认值估算），还没做正式评估 */
+  quickEvaluated?: boolean
   /** 抓取失败的提示（仍可能继续评估） */
   warn?: string
   error?: string
@@ -77,6 +92,8 @@ export interface BatchItem {
   verdict?: string | null
   marketNote?: string | null
   productId?: string | null
+  /** 英文链接（待审核库）的 id；审核通过并入库后才有 productId */
+  reviewId?: string | null
   /** 抓到哪些字段，前端展示「抓取 5 项」 */
   fetchedFields?: string[]
   updatedAt?: string
@@ -100,6 +117,8 @@ export interface BatchJob {
   options: BatchOptions
   items: BatchItem[]
   note: string
+  /** 上一次跑的阶段：暂停/中断后「继续」按这个接着跑 */
+  lastStage: BatchStage | ''
   createdAt: string
   updatedAt: string
 }
@@ -148,6 +167,8 @@ type ColKey = keyof BatchItemInput | 'url' | 'carton'
 
 /** 表头别名：中英文都认。检测顺序就是这里的书写顺序，「装箱尺寸」要先于「尺寸」 */
 const COLUMN_ALIASES: Array<[ColKey, RegExp[]]> = [
+  // 图片列放最前面：用户习惯把「商品主图」放在链接/名称左边（Excel 里就是这样）
+  ['images', [/图片/, /主图/, /^images?$/i, /^photos?$/i, /^pic/i]],
   ['url', [/^url$/i, /链接/, /^link$/i, /地址/]],
   ['carton', [/箱规/, /外箱/, /装箱尺寸/, /包装尺寸/, /^carton/i]],
   ['pcsPerCarton', [/每箱/, /装箱数/, /^pcs/i, /^qty.*carton/i]],
@@ -213,6 +234,19 @@ function num(v: string | undefined): number | null {
 
 function text(v: string | undefined): string {
   return (v ?? '').trim()
+}
+
+/**
+ * 图片一格多张的写法都认：「a.jpg b.jpg」「a.jpg、b.jpg」「a.jpg,b.jpg」「a.jpg|b.jpg」。
+ * 只收 http(s) 开头和 data:image 开头的，其它（文件名、说明文字）忽略。
+ */
+function splitImageCell(cell: string): string[] {
+  if (!cell) return []
+  const parts = cell
+    .split(/[\s,，、;；|]+/)
+    .map((s) => s.trim().replace(/^["'（(]+|[)"'）】]+$/g, ''))
+    .filter((s) => /^(https?:\/\/|data:image\/)/i.test(s))
+  return Array.from(new Set(parts)).slice(0, 8)
 }
 
 export interface ParsedRow {
@@ -287,6 +321,9 @@ export function parseBatchInput(raw: string): ParseResult {
       if (key && cell) keyed[key] = cell
     })
 
+    // 图片列：一格可以塞多个网址（空格 / 逗号 / 顿号 / 竖线 / 分号分隔），最多 8 张
+    const images = splitImageCell(text(keyed.images))
+
     let url = text(keyed.url)
     let titleRaw = text(keyed.title)
     if (url && !/^https?:\/\//i.test(url)) {
@@ -297,10 +334,12 @@ export function parseBatchInput(raw: string): ParseResult {
       }
       url = ''
     }
-    // URL 可能被粘在标题列里（比如直接复制整行富文本）：全行再兜一次
+    // URL 可能被粘在标题列里（比如直接复制整行富文本）：全行再兜一次。
+    // 但图片列里的网址不能当产品链接用，否则整条产品的链接会变成一张 jpg。
     if (!url) {
-      const m = trimmed.match(URL_RE)
-      if (m) url = m[0]
+      const candidates = trimmed.match(new RegExp(URL_RE.source, 'gi')) ?? []
+      const m = candidates.find((u) => !images.includes(u.replace(/[)）】。，,、；;]+$/, '')))
+      if (m) url = m
     }
     url = url.replace(/[)）】。，,、；;]+$/, '')
     if (url && !/^https?:\/\//i.test(url)) {
@@ -347,6 +386,7 @@ export function parseBatchInput(raw: string): ParseResult {
     put('cartonGwKg', num(keyed.cartonGwKg))
     put('weightG', num(keyed.weightG))
     put('description', text(keyed.description) || undefined)
+    put('images', images.length ? images : undefined)
 
     rows.push({ url, input })
   })
@@ -363,6 +403,7 @@ interface Row {
   options: string
   items: string
   note: string
+  last_stage?: string | null
   created_at: string
   updated_at: string
 }
@@ -383,6 +424,7 @@ function rowToJob(r: Row): BatchJob {
     options: { ...DEFAULT_BATCH_OPTIONS, ...safeJson<Partial<BatchOptions>>(r.options, {}) },
     items: safeJson<BatchItem[]>(r.items, []),
     note: r.note ?? '',
+    lastStage: ((r.last_stage ?? '') as BatchStage | ''),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -459,8 +501,8 @@ export function createBatchJob(options: BatchOptions, items: BatchItem[], note =
   const id = `batch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO batch_jobs (id, status, phase, options, items, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(id, 'draft', 'draft', JSON.stringify(options), JSON.stringify(items), note, now, now)
+    'INSERT INTO batch_jobs (id, status, phase, options, items, note, last_stage, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(id, 'draft', 'draft', JSON.stringify(options), JSON.stringify(items), note, '', now, now)
   return {
     id,
     status: 'draft',
@@ -468,6 +510,7 @@ export function createBatchJob(options: BatchOptions, items: BatchItem[], note =
     options,
     items,
     note,
+    lastStage: '',
     createdAt: now,
     updatedAt: now,
   }
@@ -482,13 +525,14 @@ export function saveBatchJob(job: BatchJob): void {
     it.source && it.source.images.length ? { ...it, source: { ...it.source, images: [] } } : it
   )
   db.prepare(
-    'UPDATE batch_jobs SET status=?, phase=?, options=?, items=?, note=?, updated_at=? WHERE id=?'
+    'UPDATE batch_jobs SET status=?, phase=?, options=?, items=?, note=?, last_stage=?, updated_at=? WHERE id=?'
   ).run(
     job.status,
     job.phase,
     JSON.stringify(job.options),
     JSON.stringify(slimItems),
     job.note,
+    job.lastStage ?? '',
     now,
     job.id
   )

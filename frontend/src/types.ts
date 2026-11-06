@@ -517,14 +517,25 @@ export type BatchItemStatus =
   | 'evaluated'
   | 'saving'
   | 'listing'
+  /** 英文链接已生成，等人工审核 */
+  | 'review'
   | 'done'
   | 'error'
   | 'skipped'
 
-export type BatchJobStatus = 'draft' | 'running' | 'done' | 'cancelled' | 'interrupted'
+export type BatchJobStatus =
+  | 'draft'
+  | 'running'
+  | 'done'
+  | 'paused'
+  | 'cancelled'
+  | 'interrupted'
 
-/** 整批数据走到哪一站：草稿 → 已抓取待补全 → 已评估待入库 → 已入库 */
-export type BatchPhase = 'draft' | 'fetched' | 'evaluated' | 'saved'
+/** 整批数据走到哪一站：草稿 → 已抓取待补全 → 已评估 → 已生成链接待审核 → 已入库 */
+export type BatchPhase = 'draft' | 'fetched' | 'evaluated' | 'listed' | 'saved'
+
+/** 可单独跑的阶段 */
+export type BatchStage = 'fetch' | 'quick' | 'evaluate' | 'listing' | 'save' | 'all'
 
 export interface BatchOptions {
   /** 抓取 1688 详情 */
@@ -571,12 +582,16 @@ export interface BatchItem {
   /** 还缺哪些字段（箱规这类 1688 抓不到的） */
   missing?: string[]
   evaluated?: boolean
+  /** 只跑过「选品预估」（缺字段按默认值估算），还没做正式评估 */
+  quickEvaluated?: boolean
   warn?: string
   error?: string
   score?: number | null
   verdict?: string | null
   marketNote?: string | null
   productId?: string | null
+  /** 英文链接待审核记录的 id（审核通过后才有 productId） */
+  reviewId?: string | null
   fetchedFields?: string[]
   updatedAt?: string
 }
@@ -588,6 +603,8 @@ export interface BatchJob {
   options: BatchOptions
   items: BatchItem[]
   note: string
+  /** 上一次跑的阶段：暂停后「继续」按它接着跑 */
+  lastStage?: BatchStage | ''
   createdAt: string
   updatedAt: string
 }
@@ -649,4 +666,33 @@ export interface MasterProduct {
   colorsCn: string
   createdAt: string
   updatedAt: string
+}
+
+// ---------------- 英文链接待审核库（批量生成的 listing 先在这里审核，通过才进产品库） ----------------
+
+export type ReviewStatus = 'pending' | 'approved' | 'rejected'
+
+/** 列表用的轻量记录 */
+export interface ListingReviewSummary {
+  id: string
+  batchJobId: string | null
+  batchIdx: number | null
+  title: string
+  sourceUrl: string
+  image: string | null
+  score: number | null
+  verdict: string | null
+  status: ReviewStatus
+  productId: string | null
+  reviewNote: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** 详情：审核时看的全量内容 */
+export interface ListingReview extends ListingReviewSummary {
+  source: SourceInfo
+  evaluation: Evaluation | null
+  listing: Listing
+  priceGrid: PriceRow[]
 }

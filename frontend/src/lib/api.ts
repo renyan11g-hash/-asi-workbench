@@ -14,6 +14,8 @@ import {
   Inquiry,
   InquiryStatus,
   Listing,
+  ListingReview,
+  ListingReviewSummary,
   MasterProduct,
   Order,
   OrderItem,
@@ -734,7 +736,7 @@ export const api = {
   /** 跑阶段：fetch 只抓取 / evaluate 批量评估 / save 入库 / all 一口气 */
   async runBatchStage(
     id: string,
-    stage: 'fetch' | 'evaluate' | 'save' | 'all',
+    stage: 'fetch' | 'quick' | 'evaluate' | 'listing' | 'save' | 'all',
     idxs?: number[]
   ): Promise<BatchJob> {
     const { data } = await apiClient.post<{ ok: boolean; job: BatchJob }>(
@@ -742,6 +744,76 @@ export const api = {
       { stage, idxs }
     )
     return data.job
+  },
+
+  /** 暂停：正在跑的这一条跑完就停，进度全部保留 */
+  async pauseBatchJob(id: string): Promise<BatchJob> {
+    const { data } = await apiClient.post<{ ok: boolean; job: BatchJob }>(`/batch/jobs/${id}/pause`)
+    return data.job
+  },
+
+  /** 继续：按上次跑的阶段接着跑 */
+  async resumeBatchJob(id: string): Promise<{ job: BatchJob; stage: string }> {
+    const { data } = await apiClient.post<{ ok: boolean; job: BatchJob; stage: string }>(
+      `/batch/jobs/${id}/resume`
+    )
+    return { job: data.job, stage: data.stage }
+  },
+
+  // ---------------- 英文链接待审核库 ----------------
+  async listListingReviews(params: {
+    status?: string
+    q?: string
+    limit?: number
+    offset?: number
+  }): Promise<{
+    reviews: ListingReviewSummary[]
+    counts: { pending: number; approved: number; rejected: number }
+    limit: number
+    offset: number
+  }> {
+    const { data } = await apiClient.get('/listing-reviews', { params })
+    return data
+  },
+
+  async getListingReview(id: string): Promise<ListingReview> {
+    const { data } = await apiClient.get<{ review: ListingReview }>(`/listing-reviews/${id}`)
+    return data.review
+  },
+
+  async updateListingReview(
+    id: string,
+    listing: { title?: string; summary?: string; description?: string; keywords?: string[] }
+  ): Promise<ListingReview> {
+    const { data } = await apiClient.patch<{ review: ListingReview }>(`/listing-reviews/${id}`, { listing })
+    return data.review
+  },
+
+  /** 通过 → 直接写进产品库（返回 productId） */
+  async approveListingReviews(ids: string[]): Promise<{
+    approved: string[]
+    failed: Array<{ id: string; error: string }>
+  }> {
+    const { data } = await apiClient.post<{
+      approved: string[]
+      failed: Array<{ id: string; error: string }>
+    }>('/listing-reviews/approve', { ids })
+    return data
+  },
+
+  async rejectListingReviews(ids: string[], note?: string): Promise<{ rejected: number }> {
+    const { data } = await apiClient.post<{ rejected: number }>('/listing-reviews/reject', {
+      ids,
+      note,
+    })
+    return data
+  },
+
+  async deleteListingReviews(ids: string[]): Promise<{ removed: number }> {
+    const { data } = await apiClient.post<{ removed: number }>('/listing-reviews/bulk-delete', {
+      ids,
+    })
+    return data
   },
 
   /** 改一条的资料（补全箱规等抓不到的字段）；改动会让已有评估作废 */
@@ -820,6 +892,12 @@ export const api = {
 
   async deleteMasterProduct(id: string): Promise<void> {
     await apiClient.delete(`/master-products/${id}`)
+  },
+
+  /** 批量删除资料库条目 */
+  async bulkDeleteMasterProducts(ids: string[]): Promise<{ removed: number }> {
+    const { data } = await apiClient.post<{ removed: number }>('/master-products/bulk-delete', { ids })
+    return data
   },
 
   /** 从 1688 链接抓多张产品图（资料库里有图优先用资料库的） */

@@ -16,6 +16,7 @@ import {
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { SectionCard } from '@/components/ui/primitives'
 import { api, getErrorMessage } from '@/lib/api'
 import { MasterProduct } from '@/types'
@@ -99,6 +100,9 @@ export default function MasterData() {
   const [fetching, setFetching] = useState(false)
   const [imgUrl, setImgUrl] = useState('')
   const [importing, setImporting] = useState(false)
+  /** 勾选的资料 id（批量删除用） */
+  const [selected, setSelected] = useState<string[]>([])
+  const [bulkDeleting, setBulkDeleting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [importResult, setImportResult] = useState<{
     created: number
@@ -232,12 +236,31 @@ export default function MasterData() {
   }
 
   const remove = async (p: MasterProduct) => {
+    if (!window.confirm(`确定删除「${p.title || '（未命名）'}」？删掉之后这条链接再抓取就不会自动命中资料库了。`)) return
     try {
       await api.deleteMasterProduct(p.id)
       toast.success('已删除')
+      setSelected((cur) => cur.filter((id) => id !== p.id))
       await load(q)
     } catch (err) {
       toast.error(getErrorMessage(err))
+    }
+  }
+
+  /** 批量删除：资料库条目多了以后，逐条点叉很费时间 */
+  const removeSelected = async () => {
+    if (!selected.length) return
+    if (!window.confirm(`确定删除选中的 ${selected.length} 条资料？删除后不可恢复。`)) return
+    setBulkDeleting(true)
+    try {
+      const r = await api.bulkDeleteMasterProducts(selected)
+      toast.success(`已删除 ${r.removed} 条`)
+      setSelected([])
+      await load(q)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBulkDeleting(false)
     }
   }
 
@@ -635,7 +658,28 @@ export default function MasterData() {
         </SectionCard>
       )}
 
-      <SectionCard title="已录入商品" hint="点击「编辑」补全或改数；资料齐全的商品，批量处理时可以一路跑到入库">
+      <SectionCard
+        title="已录入商品"
+        hint="点击「编辑」补全或改数；资料齐全的商品，批量处理时可以一路跑到入库"
+        right={
+          selected.length > 0 ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-rose-600"
+              disabled={bulkDeleting}
+              onClick={() => void removeSelected()}
+            >
+              {bulkDeleting ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+              )}
+              删除选中（{selected.length}）
+            </Button>
+          ) : undefined
+        }
+      >
         {loading ? (
           <div className="flex items-center justify-center py-10 text-sm text-slate-500">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载中…
@@ -651,6 +695,13 @@ export default function MasterData() {
             <table className="min-w-full text-left text-[12px]">
               <thead className="text-[11px] text-slate-400">
                 <tr className="border-b border-slate-100">
+                  <th className="w-8 py-2 pr-2 font-medium">
+                    <Checkbox
+                      checked={list.length > 0 && list.every((p) => selected.includes(p.id))}
+                      onCheckedChange={(v) => setSelected(v ? list.map((p) => p.id) : [])}
+                      title="全选"
+                    />
+                  </th>
                   <th className="py-2 pr-2 font-medium">商品</th>
                   <th className="py-2 pr-2 font-medium">采购价</th>
                   <th className="py-2 pr-2 font-medium">尺寸</th>
@@ -666,6 +717,14 @@ export default function MasterData() {
                   const full = Boolean(p.cartonLCm && p.pcsPerCarton && p.cartonGwKg && p.priceCny)
                   return (
                     <tr key={p.id} className="border-b border-slate-50 align-top">
+                      <td className="py-2 pr-2">
+                        <Checkbox
+                          checked={selected.includes(p.id)}
+                          onCheckedChange={(v) =>
+                            setSelected((cur) => (v ? [...cur, p.id] : cur.filter((x) => x !== p.id)))
+                          }
+                        />
+                      </td>
                       <td className="max-w-[280px] py-2 pr-2">
                         <div className="truncate font-medium text-slate-800" title={p.title}>
                           {p.title || '（未命名）'}
@@ -717,8 +776,9 @@ export default function MasterData() {
                             variant="ghost"
                             className="h-7 px-2 text-[11px] text-rose-600"
                             onClick={() => void remove(p)}
+                            title="删除这条资料"
                           >
-                            <Trash2 className="h-3 w-3" />
+                            <Trash2 className="mr-0.5 h-3 w-3" /> 删除
                           </Button>
                         </div>
                       </td>

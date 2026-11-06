@@ -13,6 +13,7 @@ import SourcingSuggest from "./pages/SourcingSuggest";
 import Evaluations from "./pages/Evaluations";
 import Library from "./pages/Library";
 import ListingEditor from "./pages/ListingEditor";
+import ListingReviews from "./pages/ListingReviews";
 import SettingsPage from "./pages/SettingsPage";
 import NotFound from "./pages/NotFound";
 
@@ -95,6 +96,12 @@ function App() {
                 data-genie-key="Listing"
                 data-genie-title="英文链接生成"
                 element={<PageTransition transition="fade"><ListingEditor /></PageTransition>}
+              />
+              <Route
+                path="listing-reviews"
+                data-genie-key="ListingReviews"
+                data-genie-title="英文链接待审核"
+                element={<PageTransition transition="fade"><ListingReviews /></PageTransition>}
               />
               <Route
                 path="order-center"
