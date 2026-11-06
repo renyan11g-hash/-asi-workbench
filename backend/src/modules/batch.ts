@@ -399,6 +399,12 @@ async function makeListing(job: BatchJob, item: BatchItem, settings: ReturnType<
   }
 
   setStage(job, item, 'listing', '生成英文 listing（标题/卖点/描述/关键词）…')
+  // 上次生成的被驳回了：先把旧记录撤掉，再重新生成一条
+  if (item.reviewId) {
+    const old = getListingReview(item.reviewId)
+    if (old?.status === 'rejected') dropPendingReview(item.reviewId)
+    item.reviewId = null
+  }
   const listing = await runAi(() => generateListing(source, settings, undefined, null))
   const priceGrid = buildPriceGrid(source, settings).rows
   const review = createListingReview({
@@ -539,9 +545,12 @@ function evaluateTargets(item: BatchItem): boolean {
   return canEvaluate(item) && !item.productId && !item.reviewId && !item.evaluated
 }
 
-/** 生成英文链接：评估过、还没生成过的 */
+/** 生成英文链接：评估过、还没生成过的；被驳回的允许重新生成 */
 function listingTargets(item: BatchItem): boolean {
-  return Boolean(item.evaluated) && !item.productId && !item.reviewId
+  if (item.productId || !item.evaluated) return false
+  if (!item.reviewId) return true
+  const old = getListingReview(item.reviewId)
+  return Boolean(old && old.status === 'rejected')
 }
 
 /**
