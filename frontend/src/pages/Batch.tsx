@@ -542,10 +542,13 @@ export default function Batch() {
     setSaveError('')
     let saved = false
     try {
-      const j = await api.patchBatchItem(jobId, idx, draft)
-      setJob(j)
+      const r = await api.patchBatchItem(jobId, idx, draft)
+      setJob(r.job)
       setEditingIdx(null)
       saved = true
+      if (r.imagesDropped > 0) {
+        toast.warning(`有 ${r.imagesDropped} 张图下载失败（1688 防盗链），已跳过，可手动上传`)
+      }
       if (!thenEvaluate) toast.success(`第 ${idx} 条资料已保存`)
     } catch (err) {
       const msg = getErrorMessage(err)
@@ -748,7 +751,7 @@ export default function Batch() {
             <StageBtn
               label="④ AI 评估"
               count={stageCounts.evaluate}
-              hint="正式评分（要 6 个关键字段齐全）"
+              hint="正式评分，结果同时进评估库"
               disabled={isRunning || stageCounts.evaluate === 0}
               onClick={() => void run('evaluate')}
             />

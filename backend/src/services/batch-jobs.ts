@@ -94,6 +94,8 @@ export interface BatchItem {
   productId?: string | null
   /** 英文链接（待审核库）的 id；审核通过并入库后才有 productId */
   reviewId?: string | null
+  /** 评估时写进「评估库」的那条草稿 id（入库时复用，避免重复） */
+  draftId?: string | null
   /** 抓到哪些字段，前端展示「抓取 5 项」 */
   fetchedFields?: string[]
   updatedAt?: string

@@ -222,7 +222,7 @@ export interface SourceInfo {
   notes: string
 }
 
-export type ProductStatus = 'sourced' | 'listed' | 'archived' | 'trashed'
+export type ProductStatus = 'sourced' | 'listed' | 'archived' | 'trashed' | 'pending_review'
 
 /** 产品图片角色：main=主图（含 Logo 融合）/ dimension=尺寸图（inch 标注）/ intro=介绍图 */
 export type ProductImageKind = 'main' | 'dimension' | 'intro'

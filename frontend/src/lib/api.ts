@@ -821,12 +821,12 @@ export const api = {
     id: string,
     idx: number,
     input: BatchItemInput
-  ): Promise<BatchJob> {
-    const { data } = await apiClient.patch<{ ok: boolean; job: BatchJob }>(
+  ): Promise<{ job: BatchJob; imagesDropped: number }> {
+    const { data } = await apiClient.patch<{ ok: boolean; job: BatchJob; imagesDropped?: number }>(
       `/batch/jobs/${id}/items/${idx}`,
       { input }
     )
-    return data.job
+    return { job: data.job, imagesDropped: data.imagesDropped ?? 0 }
   },
 
   async getBatchJob(id: string): Promise<BatchJob> {

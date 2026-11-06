@@ -22,6 +22,7 @@ import { evaluateSource, generateListing } from '../services/workbench'
 import { saveSourcingHistory } from './sourcing-history'
 import { loadSettings } from './settings'
 import { createListingReview, dropPendingReview, getListingReview } from './listing-reviews'
+import { inlineImages } from '../services/image-inline'
 import {
   BatchItem,
   BatchItemInput,
@@ -220,6 +221,14 @@ async function fetchItem(job: BatchJob, item: BatchItem) {
   }
 
   const source = mergeSource(item, fetched)
+  // 1688 的图有防盗链：浏览器直接引用会显示成破损图片。
+  // 所以抓到之后立刻在服务端下载并转成 data URL，抓不到的丢掉并提示。
+  let imgDropped = 0
+  if ((source.images ?? []).some((u) => /^https?:/i.test(u))) {
+    const inlined = await inlineImages(source.images)
+    source.images = inlined.images
+    imgDropped = inlined.dropped
+  }
   item.source = source
   item.title = source.sourceTitle.trim() || item.input.title || item.url
   item.missing = missingFields(source)
@@ -236,7 +245,7 @@ async function fetchItem(job: BatchJob, item: BatchItem) {
     }
     item.warn = `抓取失败，用你手填的资料继续：${failure}`
   } else {
-    item.warn = undefined
+    item.warn = imgDropped ? `有 ${imgDropped} 张产品图下载失败，请手动上传` : undefined
   }
 
   item.status = 'fetched'
@@ -248,7 +257,51 @@ async function fetchItem(job: BatchJob, item: BatchItem) {
 }
 
 /**
- * ③ 评估一条（不落库，结果单独存表，等第 ④ 步入库）
+ * 把评估结果写进「评估库」（drafts 表）—— 和单品页一样：
+ * 评估完先有一条草稿，入库产品时再复用这条，避免重复造草稿。
+ */
+function upsertEvaluationDraft(
+  item: BatchItem,
+  source: SourceInfo,
+  evaluation: Evaluation,
+  priceGrid: ReturnType<typeof buildPriceGrid>['rows']
+): string {
+  const now = new Date().toISOString()
+  const title = (source.sourceTitle || `批量产品 ${item.idx}`).slice(0, 60)
+  const content = JSON.stringify({
+    kind: 'sourcing-evaluation',
+    source,
+    evaluation,
+    priceGrid,
+    keywordsText: (source.sourceKeywords ?? []).join('\n'),
+    imageText: (source.images ?? []).filter((u) => u.startsWith('http')).join('\n'),
+    similar: null,
+  })
+  if (item.draftId) {
+    const exists = db.prepare('SELECT id FROM drafts WHERE id = ?').get(item.draftId)
+    if (exists) {
+      db.prepare('UPDATE drafts SET title=?, content=?, updated_at=? WHERE id=?').run(
+        title,
+        content,
+        now,
+        item.draftId
+      )
+      return item.draftId
+    }
+  }
+  const id = randomUUID()
+  db.prepare('INSERT INTO drafts (id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
+    id,
+    title,
+    content,
+    now,
+    now
+  )
+  return id
+}
+
+/**
+ * ③ 评估一条（不落库到产品库，但会写一条「评估库」草稿）
  *
  * mode = 'quick' 是「选品预估」：字段不全也能先粗评一版（缺箱规按默认值估运费），
  * 结果不标记为已评估，所以正式评估会重新跑一遍并覆盖。
@@ -268,6 +321,12 @@ async function evaluateItem(
     item.error = '没有商品标题，无法评估（抓取失败且未手填）'
     saveBatchJob(job)
     return
+  }
+  if ((source.images ?? []).some((u) => /^https?:/i.test(u))) {
+    // 评估会把这些图喂给 AI 看图：外链在这里也要先内联，否则 AI 拿到的是防盗链页面
+    const inlined = await inlineImages(source.images)
+    source.images = inlined.images
+    item.source = source
   }
 
   setStage(
@@ -297,6 +356,14 @@ async function evaluateItem(
   }
   item.updatedAt = new Date().toISOString()
   saveItemEvaluation(job.id, item.idx, evaluation)
+  // 正式评估同时写一份「评估库」草稿（单品流程就是评估完能在评估库看到）
+  if (mode === 'full') {
+    try {
+      item.draftId = upsertEvaluationDraft(item, source, evaluation, priceGrid)
+    } catch {
+      /* 草稿写失败不影响评估结果 */
+    }
+  }
   if (item.url) {
     try {
       saveSourcingHistory({
@@ -341,6 +408,7 @@ async function makeListing(job: BatchJob, item: BatchItem, settings: ReturnType<
     evaluation,
     listing,
     priceGrid,
+    draftId: item.draftId ?? null,
   })
   item.reviewId = review.id
   item.status = 'review'
@@ -396,26 +464,29 @@ async function saveItem(job: BatchJob, item: BatchItem, settings: ReturnType<typ
   }
 
   setStage(job, item, 'saving', '写入产品库 + 评估库…')
-  // 评估库（云端草稿）也留一份：单品流程是「评估 → 存评估库 → 保存到产品库」，
-  // 批量同样两条都写，否则评估库是空的、想回头看评分明细就没有入口。
+  // 评估库那条草稿在评估时就建好了，这里复用；没有才补一条
   const priceGrid = buildPriceGrid(source, settings).rows
-  const draftId = randomUUID()
-  const draftNow = new Date().toISOString()
-  db.prepare('INSERT INTO drafts (id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
-    draftId,
-    (source.sourceTitle || `批量产品 ${item.idx}`).slice(0, 60),
-    JSON.stringify({
-      kind: 'sourcing-evaluation',
-      source,
-      evaluation,
-      priceGrid,
-      keywordsText: (source.sourceKeywords ?? []).join('\n'),
-      imageText: (source.images ?? []).filter((u) => u.startsWith('http')).join('\n'),
-      similar: null,
-    }),
-    draftNow,
-    draftNow
-  )
+  let draftId = item.draftId ?? null
+  if (!draftId || !db.prepare('SELECT id FROM drafts WHERE id = ?').get(draftId)) {
+    draftId = randomUUID()
+    const draftNow = new Date().toISOString()
+    db.prepare('INSERT INTO drafts (id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
+      draftId,
+      (source.sourceTitle || `批量产品 ${item.idx}`).slice(0, 60),
+      JSON.stringify({
+        kind: 'sourcing-evaluation',
+        source,
+        evaluation,
+        priceGrid,
+        keywordsText: (source.sourceKeywords ?? []).join('\n'),
+        imageText: (source.images ?? []).filter((u) => u.startsWith('http')).join('\n'),
+        similar: null,
+      }),
+      draftNow,
+      draftNow
+    )
+  }
+  item.draftId = draftId
 
   const productId = insertProduct({
     source,
@@ -770,7 +841,7 @@ batchRouter.post('/jobs/:id/cancel', (req: Request, res: Response) => {
 })
 
 /** 改一条的资料（补全箱规/每箱数/毛重这些 1688 抓不到的字段） */
-batchRouter.patch('/jobs/:id/items/:idx', (req: Request, res: Response) => {
+batchRouter.patch('/jobs/:id/items/:idx', async (req: Request, res: Response) => {
   const id = String(req.params.id)
   const idx = Number(req.params.idx)
   if (running.has(id)) throw new AppError(409, '这一批还在跑，等它跑完再改')
@@ -807,6 +878,14 @@ batchRouter.patch('/jobs/:id/items/:idx', (req: Request, res: Response) => {
 
   item.input = { ...item.input, ...body.input }
   item.source = mergeSource(item, null)
+  // 外链图片（1688 的图有防盗链，页面上会显示成破损图）在这里换成 data URL
+  let imagesDropped = 0
+  if ((item.source.images ?? []).some((u) => /^https?:/i.test(u))) {
+    const inlined = await inlineImages(item.source.images)
+    item.source = { ...item.source, images: inlined.images }
+    item.input = { ...item.input, images: inlined.images }
+    imagesDropped = inlined.dropped
+  }
   item.title = item.source.sourceTitle.trim() || item.url
   item.missing = missingFields(item.source)
 
@@ -835,7 +914,59 @@ batchRouter.patch('/jobs/:id/items/:idx', (req: Request, res: Response) => {
   item.updatedAt = new Date().toISOString()
   job.phase = computePhase(job)
   saveBatchJob(job)
-  res.json({ ok: true, job })
+  res.json({ ok: true, job, imagesDropped })
+})
+
+/**
+ * 一次性修复：把历史条目/资料库里存的外链图片（1688 防盗链，页面显示破损）
+ * 下载转存成 data URL。部署后由我调一次即可，不需要用户逐条点保存。
+ */
+batchRouter.post('/maintenance/inline-images', async (_req: Request, res: Response) => {
+  const jobs = listBatchJobs(50)
+  let items = 0
+  let images = 0
+  let dropped = 0
+  for (const summary of jobs) {
+    const job = getBatchJob(summary.id)
+    if (!job) continue
+    let changed = false
+    for (const item of job.items) {
+      const imgs = item.source?.images ?? []
+      if (!imgs.some((u) => /^https?:/i.test(u))) continue
+      const r = await inlineImages(imgs)
+      item.source = item.source ? { ...item.source, images: r.images } : item.source
+      item.input = { ...item.input, images: r.images }
+      images += r.images.length
+      dropped += r.dropped
+      items += 1
+      changed = true
+    }
+    if (changed) saveBatchJob(job)
+  }
+
+  // 资料库里的外链图同样处理
+  let master = 0
+  try {
+    const rows = db
+      .prepare("SELECT id, images FROM master_products WHERE images LIKE '%http%'")
+      .all() as unknown as Array<{ id: string; images: string }>
+    for (const row of rows) {
+      const imgs = JSON.parse(row.images) as string[]
+      if (!imgs.some((u) => /^https?:/i.test(u))) continue
+      const r = await inlineImages(imgs)
+      db.prepare('UPDATE master_products SET images=?, updated_at=? WHERE id=?').run(
+        JSON.stringify(r.images),
+        new Date().toISOString(),
+        row.id
+      )
+      master += 1
+      dropped += r.dropped
+    }
+  } catch {
+    /* 资料库修不了不影响主流程 */
+  }
+
+  res.json({ ok: true, batchItems: items, masterProducts: master, images, dropped })
 })
 
 /** 删除条目（勾选后批量删）：已入库的不动，避免产品库里出现「孤儿」 */

@@ -15,7 +15,7 @@ import { randomUUID } from 'crypto'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { insertProduct, sourceSchema, toSourceInfo } from './products'
-import type { Evaluation, Listing, PriceRow, SimilarResearch, SourceInfo } from '../types'
+import type { Evaluation, Listing, PriceRow, SourceInfo } from '../types'
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected'
 
@@ -90,7 +90,7 @@ function toReview(r: RawRow): ListingReviewRow {
   }
 }
 
-/** 给批量和单品页用：新建一条待审核记录 */
+/** 给批量和单品页用：新建一条待审核记录（同时把产品建好，状态 pending_review） */
 export function createListingReview(input: {
   batchJobId?: string | null
   batchIdx?: number | null
@@ -98,13 +98,32 @@ export function createListingReview(input: {
   evaluation: Evaluation | null
   listing: Listing
   priceGrid: PriceRow[]
-}): { id: string } {
+  draftId?: string | null
+}): { id: string; productId: string } {
   const id = randomUUID()
   const now = new Date().toISOString()
+
+  // 产品先建出来（status=pending_review）：这样审核页可以直接用单品那套
+  // 「英文链接生成」页面打开、编辑、看 QC —— 和单个生成时完全一样。
+  // 产品库列表默认不含 pending_review，所以没审过的不会混进正式产品。
+  let productId = ''
+  try {
+    productId = insertProduct({
+      source: input.source,
+      evaluation: input.evaluation,
+      listing: input.listing,
+      similar: null,
+      status: 'pending_review',
+      draftId: input.draftId ?? null,
+    })
+  } catch (err) {
+    throw new Error(`建立待审核产品失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+
   db.prepare(
     `INSERT INTO listing_reviews (id, batch_job_id, batch_idx, title, source_url, image, score, verdict,
       source, evaluation, listing, price_grid, status, product_id, review_note, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, '', ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, ?)`
   ).run(
     id,
     input.batchJobId ?? null,
@@ -118,10 +137,11 @@ export function createListingReview(input: {
     input.evaluation ? JSON.stringify(input.evaluation) : null,
     JSON.stringify(input.listing ?? {}),
     JSON.stringify(input.priceGrid ?? []),
+    productId,
     now,
     now
   )
-  return { id }
+  return { id, productId }
 }
 
 /**
@@ -156,6 +176,41 @@ export function getListingReview(id: string): {
 }
 
 export const listingReviewsRouter: Router = Router()
+
+/**
+ * 老记录补产品：拆出「先建 pending_review 产品」之前的待审核记录没有 product_id，
+ * 服务启动时补一次，这样审核页也能用完整的英文链接编辑页打开它们。
+ */
+export function backfillPendingReviews(): number {
+  try {
+    const rows = db
+      .prepare("SELECT * FROM listing_reviews WHERE product_id IS NULL AND status = 'pending'")
+      .all() as unknown as RawRow[]
+    let n = 0
+    for (const row of rows) {
+      const r = toReview(row)
+      const pid = insertProduct({
+        source: r.source,
+        evaluation: r.evaluation,
+        listing: r.listing,
+        similar: null,
+        status: 'pending_review',
+        draftId: null,
+      })
+      db.prepare('UPDATE listing_reviews SET product_id=?, updated_at=? WHERE id=?').run(
+        pid,
+        new Date().toISOString(),
+        r.id
+      )
+      n += 1
+    }
+    return n
+  } catch {
+    return 0
+  }
+}
+
+backfillPendingReviews()
 
 /** 列表（默认只看待审核）：轻量字段，不带 source/listing 大对象 */
 listingReviewsRouter.get('/', (req: Request, res: Response) => {
@@ -256,7 +311,7 @@ listingReviewsRouter.patch('/:id', (req: Request, res: Response) => {
   res.json({ review: toReview(fresh) })
 })
 
-/** 通过 → 写进产品库（用单品同一个 insertProduct），并回填 product_id */
+/** 通过 → 把已建好的产品从 pending_review 改成正式状态 */
 listingReviewsRouter.post('/approve', (req: Request, res: Response) => {
   const body = z
     .object({ ids: z.array(z.string().min(1)).min(1).max(200) })
@@ -272,44 +327,28 @@ listingReviewsRouter.post('/approve', (req: Request, res: Response) => {
         failed.push({ id, error: '记录不存在' })
         continue
       }
-      if (row.status === 'approved' && row.product_id) {
-        approved.push(id)
-        continue
-      }
-      const review = toReview(row)
       const now = new Date().toISOString()
+      let productId = row.product_id
 
-      // 评估库（云端草稿）留一份，和单品「评估 → 存评估库 → 入产品库」一致
-      const draftId = randomUUID()
-      db.prepare('INSERT INTO drafts (id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
-        draftId,
-        (review.source.sourceTitle || review.title || '英文明细').slice(0, 60),
-        JSON.stringify({
-          kind: 'sourcing-evaluation',
+      // 老记录（产品还没建）现在补建一条
+      if (!productId) {
+        const review = toReview(row)
+        productId = insertProduct({
           source: review.source,
           evaluation: review.evaluation,
-          priceGrid: review.priceGrid,
-          keywordsText: (review.source.sourceKeywords ?? []).join('\n'),
-          imageText: (review.source.images ?? []).filter((u) => u.startsWith('http')).join('\n'),
-          similar: null as SimilarResearch | null,
-        }),
-        now,
-        now
-      )
+          listing: review.listing,
+          similar: null,
+          status: 'pending_review',
+          draftId: null,
+        })
+      }
 
-      const productId = insertProduct({
-        source: review.source,
-        evaluation: review.evaluation,
-        listing: review.listing,
-        similar: null,
-        status: 'listed',
-        draftId,
-      })
-      db.prepare("UPDATE listing_reviews SET status='approved', product_id=?, updated_at=? WHERE id=?").run(
-        productId,
-        now,
-        id
-      )
+      db.prepare(
+        "UPDATE products SET status='listed', review_state='approved', updated_at=? WHERE id=?"
+      ).run(now, productId)
+      db.prepare(
+        "UPDATE listing_reviews SET status='approved', product_id=?, updated_at=? WHERE id=?"
+      ).run(productId, now, id)
       approved.push(id)
     } catch (err) {
       failed.push({ id, error: err instanceof Error ? err.message : String(err) })
@@ -319,7 +358,7 @@ listingReviewsRouter.post('/approve', (req: Request, res: Response) => {
   res.json({ ok: true, approved, failed })
 })
 
-/** 驳回：留在库里（不删），附一句原因，方便回头改资料重新生成 */
+/** 驳回：产品留在库里但标成 archived（不进产品库、不删数据），附一句原因 */
 listingReviewsRouter.post('/reject', (req: Request, res: Response) => {
   const body = z
     .object({
@@ -331,25 +370,48 @@ listingReviewsRouter.post('/reject', (req: Request, res: Response) => {
   const now = new Date().toISOString()
   let n = 0
   for (const id of body.ids) {
-    const r = db
-      .prepare("UPDATE listing_reviews SET status='rejected', review_note=?, updated_at=? WHERE id=? AND status<>'approved'")
-      .run(body.note ?? '', now, id)
-    n += Number(r.changes ?? 0)
+    const row = db.prepare('SELECT product_id, status FROM listing_reviews WHERE id = ?').get(id) as
+      | { product_id: string | null; status: string }
+      | undefined
+    if (!row || row.status === 'approved') continue
+    db.prepare(
+      "UPDATE listing_reviews SET status='rejected', review_note=?, updated_at=? WHERE id=?"
+    ).run(body.note ?? '', now, id)
+    if (row.product_id) {
+      db.prepare(
+        "UPDATE products SET status='archived', review_state='rejected', review_note=?, updated_at=? WHERE id=?"
+      ).run(body.note ?? '', now, row.product_id)
+    }
+    n += 1
   }
   res.json({ ok: true, rejected: n })
 })
 
-/** 删除（真正删掉，不留档）：批量清理用 */
+/** 删除（真正删掉，不留档）：待审核产品一并清掉 */
 listingReviewsRouter.post('/bulk-delete', (req: Request, res: Response) => {
   const body = z.object({ ids: z.array(z.string().min(1)).min(1).max(200) }).parse(req.body ?? {})
-  const stmt = db.prepare('DELETE FROM listing_reviews WHERE id = ?')
   let n = 0
-  for (const id of body.ids) n += Number(stmt.run(id).changes ?? 0)
+  for (const id of body.ids) {
+    const row = db.prepare('SELECT product_id, status FROM listing_reviews WHERE id = ?').get(id) as
+      | { product_id: string | null; status: string }
+      | undefined
+    if (row?.product_id && row.status !== 'approved') {
+      db.prepare("DELETE FROM products WHERE id = ? AND status = 'pending_review'").run(row.product_id)
+    }
+    n += Number(db.prepare('DELETE FROM listing_reviews WHERE id = ?').run(id).changes ?? 0)
+  }
   res.json({ ok: true, removed: n })
 })
 
 listingReviewsRouter.delete('/:id', (req: Request, res: Response) => {
-  const r = db.prepare('DELETE FROM listing_reviews WHERE id = ?').run(String(req.params.id))
-  if (!r.changes) throw new AppError(404, '记录不存在')
+  const id = String(req.params.id)
+  const row = db.prepare('SELECT product_id, status FROM listing_reviews WHERE id = ?').get(id) as
+    | { product_id: string | null; status: string }
+    | undefined
+  if (!row) throw new AppError(404, '记录不存在')
+  if (row.product_id && row.status !== 'approved') {
+    db.prepare("DELETE FROM products WHERE id = ? AND status = 'pending_review'").run(row.product_id)
+  }
+  db.prepare('DELETE FROM listing_reviews WHERE id = ?').run(id)
   res.json({ ok: true })
 })

@@ -50,7 +50,7 @@ const createSchema = z.object({
   evaluation: z.any().nullable().optional(),
   listing: z.any().nullable().optional(),
   similar: z.any().nullable().optional(),
-  status: z.enum(['sourced', 'listed', 'archived']).optional(),
+  status: z.enum(['sourced', 'listed', 'archived', 'pending_review']).optional(),
   /** 关联的选品评估草稿 id：同一草稿重复保存时更新已关联产品，避免重复建品 */
   draftId: z.string().max(100).optional(),
 })
@@ -59,7 +59,7 @@ const updateSchema = z.object({
   source: sourceSchema.partial().optional(),
   evaluation: z.any().nullable().optional(),
   listing: z.any().nullable().optional(),
-  status: z.enum(['sourced', 'listed', 'archived']).optional(),
+  status: z.enum(['sourced', 'listed', 'archived', 'pending_review']).optional(),
 })
 
 type SourceInput = z.infer<typeof sourceSchema>
@@ -289,7 +289,8 @@ productsRouter.get('/', async (req: Request, res: Response) => {
     where.push('status = ?')
     params.push(status)
   } else {
-    where.push("status != 'trashed'")
+    // 默认排除回收站和「英文链接待审核」：后者在待审核页里审，审过才算正式产品
+    where.push("status != 'trashed' AND status != 'pending_review'")
   }
   if (q) {
     where.push('(source_title LIKE ? OR listing LIKE ? OR category LIKE ? OR amazon_title LIKE ?)')

@@ -233,7 +233,7 @@ export interface SourceInfo {
   notes: string
 }
 
-export type ProductStatus = 'sourced' | 'listed' | 'archived' | 'trashed'
+export type ProductStatus = 'sourced' | 'listed' | 'archived' | 'trashed' | 'pending_review'
 
 export interface Product {
   id: string
