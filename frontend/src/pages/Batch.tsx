@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -128,6 +128,64 @@ function numberOrNull(v: string): number | null {
 }
 
 /**
+ * 本地图片 → 最长边 900px 的 JPEG data URL。
+ * 手机/相机原图动辄 3–5MB，直接塞进保存请求会把一次保存撑成几十 MB（还容易被 413 打回），
+ * 而补全时加图只是给「评估认品类 / 出图参考」用，900px 完全够。
+ */
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('图片读取失败'))
+    reader.onload = () => {
+      const src = String(reader.result ?? '')
+      const img = new Image()
+      img.onerror = () => reject(new Error('这张图打不开'))
+      img.onload = () => {
+        const scale = Math.min(1, 900 / Math.max(img.width || 1, img.height || 1))
+        const w = Math.max(1, Math.round((img.width || 1) * scale))
+        const h = Math.max(1, Math.round((img.height || 1) * scale))
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          resolve(src)
+          return
+        }
+        // 透明底 JPEG 会变黑，先铺白（和出图要求的纯白背景也一致）
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, w, h)
+        ctx.drawImage(img, 0, 0, w, h)
+        resolve(canvas.toDataURL('image/jpeg', 0.82))
+      }
+      img.src = src
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+/** 表格里的小缩略图：让人一眼看出这条到底有没有图、存了几张 */
+function ImageStack({ images }: { images: string[] }) {
+  if (!images.length) return <span className="text-slate-300">—</span>
+  const show = images.slice(0, 3)
+  return (
+    <div className="flex items-center gap-1">
+      {show.map((u, i) => (
+        <img
+          key={`${u.slice(0, 24)}-${i}`}
+          src={u}
+          alt=""
+          className="h-8 w-8 rounded border border-slate-200 bg-white object-cover"
+        />
+      ))}
+      {images.length > show.length && (
+        <span className="text-[10px] text-slate-400">+{images.length - show.length}</span>
+      )}
+    </div>
+  )
+}
+
+/**
  * 批量处理：粘贴多条产品 → 抓取 → **人工补全（箱规等 1688 抓不到的字段）** → 评估 → 入库。
  *
  * 刻意不在这里做任何新的业务判断：每一步都调用单品流程的服务端函数，
@@ -160,6 +218,8 @@ export default function Batch() {
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
   const [draft, setDraft] = useState<BatchItemInput>({})
   const [savingEdit, setSavingEdit] = useState(false)
+  /** 保存失败的具体原因（弹 toast 容易错过，直接钉在表单里） */
+  const [saveError, setSaveError] = useState('')
   const [onlyMissing, setOnlyMissing] = useState(false)
   /** 勾选的条目 idx（用于批量删除） */
   const [selected, setSelected] = useState<number[]>([])
@@ -298,6 +358,7 @@ export default function Batch() {
   const openEdit = (item: BatchItem) => {
     setEditingIdx(item.idx)
     setDraft(draftFromItem(item))
+    setSaveError('')
   }
 
   /** 从 1688 链接抓多张产品图，塞进当前编辑的条目 */
@@ -352,6 +413,7 @@ export default function Batch() {
     const idx = editingIdx
     if (!jobId || idx === null) return
     setSavingEdit(true)
+    setSaveError('')
     try {
       const j = await api.patchBatchItem(jobId, idx, draft)
       setJob(j)
@@ -364,7 +426,9 @@ export default function Batch() {
         toast.success(`第 ${idx} 条资料已保存`)
       }
     } catch (err) {
-      toast.error(getErrorMessage(err))
+      const msg = getErrorMessage(err)
+      setSaveError(msg)
+      toast.error(msg)
     } finally {
       setSavingEdit(false)
     }
@@ -662,6 +726,7 @@ export default function Batch() {
                   </th>
                   <th className="py-2 pr-2 font-medium">#</th>
                   <th className="py-2 pr-2 font-medium">产品</th>
+                  <th className="py-2 pr-2 font-medium">图</th>
                   <th className="py-2 pr-2 font-medium">状态</th>
                   <th className="py-2 pr-2 font-medium">缺什么</th>
                   <th className="py-2 pr-2 font-medium">评分</th>
@@ -679,12 +744,16 @@ export default function Batch() {
                     draft={draft}
                     setDraft={setDraft}
                     savingEdit={savingEdit}
+                    saveError={editingIdx === it.idx ? saveError : ''}
                     selected={selected.includes(it.idx)}
                     grabbingImages={grabbingImages}
                     onToggleSelect={() => toggleSelect(it.idx)}
                     onGrabImages={() => void grabImages(it.url)}
                     onEdit={() => openEdit(it)}
-                    onCancel={() => setEditingIdx(null)}
+                    onCancel={() => {
+                      setEditingIdx(null)
+                      setSaveError('')
+                    }}
                     onSave={() => void saveEdit(false)}
                     onSaveEvaluate={() => void saveEdit(true)}
                     onEvaluate={() => void run('evaluate', [it.idx])}
@@ -755,6 +824,7 @@ function ItemRow({
   draft,
   setDraft,
   savingEdit,
+  saveError,
   selected,
   grabbingImages,
   onToggleSelect,
@@ -774,6 +844,7 @@ function ItemRow({
   draft: BatchItemInput
   setDraft: (v: BatchItemInput) => void
   savingEdit: boolean
+  saveError: string
   selected: boolean
   grabbingImages: boolean
   onToggleSelect: () => void
@@ -791,6 +862,35 @@ function ItemRow({
   const active = ['fetching', 'evaluating', 'saving', 'listing'].includes(item.status)
   const missing = item.missing ?? []
   const canEdit = !running && item.status !== 'done'
+
+  // 补全时加图：1688 抓不到的情况下（几乎总是抓不到），直接传本地图最省事
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [uploadingImages, setUploadingImages] = useState(false)
+  const pickFiles = async (files: FileList | null) => {
+    if (!files?.length) return
+    setUploadingImages(true)
+    try {
+      const urls: string[] = []
+      for (const f of Array.from(files).slice(0, 8)) {
+        try {
+          urls.push(await fileToDataUrl(f))
+        } catch {
+          /* 单张读不出来不影响其他张 */
+        }
+      }
+      if (!urls.length) {
+        toast.error('这几张图读不出来，换一张试试')
+        return
+      }
+      setDraft({
+        ...draft,
+        images: Array.from(new Set([...(draft.images ?? []), ...urls])).slice(0, 8),
+      })
+      toast.success(`已加 ${urls.length} 张图，记得点「保存」`)
+    } finally {
+      setUploadingImages(false)
+    }
+  }
 
   return (
     <>
@@ -814,6 +914,9 @@ function ItemRow({
               <span className="truncate">{item.url.replace(/^https?:\/\//, '')}</span>
             </a>
           )}
+        </td>
+        <td className="py-2 pr-2">
+          <ImageStack images={item.source?.images ?? []} />
         </td>
         <td className="py-2 pr-2">
           <Badge variant="outline" className={meta.cls}>
@@ -887,7 +990,7 @@ function ItemRow({
       {editing && (
         <tr className="border-b border-slate-100 bg-slate-50/60">
           <td />
-          <td colSpan={7} className="py-3 pr-2">
+          <td colSpan={8} className="py-3 pr-2">
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               <Field label="商品标题" full>
                 <input
@@ -1007,6 +1110,30 @@ function ItemRow({
                     从 1688 抓图
                   </Button>
                   <input
+                    ref={fileRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      void pickFiles(e.target.files)
+                      e.target.value = ''
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={uploadingImages}
+                    onClick={() => fileRef.current?.click()}
+                  >
+                    {uploadingImages ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ImagePlus className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    上传本地图
+                  </Button>
+                  <input
                     className="h-7 w-64 rounded border border-slate-200 px-2 text-[11px]"
                     placeholder="粘贴图片地址后回车添加"
                     onKeyDown={(e) => {
@@ -1044,6 +1171,12 @@ function ItemRow({
                 )}
               </Field>
             </div>
+            {saveError && (
+              <div className="mt-2 flex items-start gap-1.5 rounded border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] leading-relaxed text-rose-700">
+                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                <span>保存失败：{saveError}</span>
+              </div>
+            )}
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <Button size="sm" onClick={onSave} disabled={savingEdit}>
                 {savingEdit ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-1 h-3.5 w-3.5" />}

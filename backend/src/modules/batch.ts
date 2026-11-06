@@ -583,14 +583,15 @@ batchRouter.patch('/jobs/:id/items/:idx', (req: Request, res: Response) => {
   const body = z
     .object({
       input: z.object({
-        title: z.string().max(500).optional(),
+        title: z.string().max(2000).optional(),
         priceCny: z.number().nullable().optional(),
         moq: z.number().nullable().optional(),
-        sizeCn: z.string().max(200).optional(),
-        materialCn: z.string().max(200).optional(),
-        colorsCn: z.string().max(200).optional(),
-        description: z.string().max(5000).optional(),
-        images: z.array(z.string().max(4000)).max(12).optional(),
+        sizeCn: z.string().max(2000).optional(),
+        materialCn: z.string().max(1000).optional(),
+        colorsCn: z.string().max(1000).optional(),
+        description: z.string().max(20000).optional(),
+        // 图可能是资料库里的 data URL（一张几十 KB），按 URL 的 4000 字符上限会直接把保存打回 400
+        images: z.array(z.string().max(2_000_000)).max(12).optional(),
         weightG: z.number().nullable().optional(),
         cartonLCm: z.number().nullable().optional(),
         cartonWCm: z.number().nullable().optional(),

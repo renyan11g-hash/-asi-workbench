@@ -205,6 +205,16 @@ CREATE TABLE IF NOT EXISTS batch_item_evals (
   PRIMARY KEY (job_id, idx)
 );
 
+-- 批量条目里的产品图单独存：资料库里的图是 data URL（一张 50–130KB），
+-- 塞进 items JSON 会让每次「进度更新」都重写好几 MB，也会撑爆单行大小上限。
+CREATE TABLE IF NOT EXISTS batch_item_images (
+  job_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  images TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (job_id, idx)
+);
+
 -- 订单运营中心表结构
 CREATE TABLE IF NOT EXISTS customers (
   id TEXT PRIMARY KEY,

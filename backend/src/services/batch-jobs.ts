@@ -388,6 +388,73 @@ function rowToJob(r: Row): BatchJob {
   }
 }
 
+/**
+ * 产品图单独存一张表（batch_item_images）。
+ *
+ * 原因：资料库命中时 item.source.images 里是 data URL，一张 50–130KB。
+ * 批量任务每改一条进度都会把整个 items 数组序列化写回 batch_jobs.items，
+ * 图塞在里面的话一次进度更新就是几 MB～几十 MB，写库会超时、入库还会失败。
+ *
+ * 这里维护一份「每条图 JSON」的内存指纹，内容没变就不重复写。
+ */
+const imageCache = new Map<string, Map<number, string>>()
+
+function persistItemImages(job: BatchJob, now: string): void {
+  let cache = imageCache.get(job.id)
+  if (!cache) {
+    cache = new Map<number, string>()
+    imageCache.set(job.id, cache)
+  }
+  const seen = new Set<number>()
+  for (const it of job.items) {
+    const imgs = it.source?.images ?? []
+    if (!imgs.length) continue
+    seen.add(it.idx)
+    const json = JSON.stringify(imgs)
+    if (cache.get(it.idx) === json) continue
+    db.prepare(
+      'INSERT INTO batch_item_images (job_id, idx, images, updated_at) VALUES (?, ?, ?, ?) ' +
+        'ON CONFLICT(job_id, idx) DO UPDATE SET images=excluded.images, updated_at=excluded.updated_at'
+    ).run(job.id, it.idx, json, now)
+    cache.set(it.idx, json)
+  }
+  // 条目被删掉、或图被清空的，同步清掉
+  for (const idx of Array.from(cache.keys())) {
+    if (seen.has(idx)) continue
+    db.prepare('DELETE FROM batch_item_images WHERE job_id = ? AND idx = ?').run(job.id, idx)
+    cache.delete(idx)
+  }
+}
+
+/** 读回一条任务的所有产品图，塞回 item.source.images */
+function hydrateItemImages(job: BatchJob): void {
+  let rows: Array<{ idx: number; images: string }>
+  try {
+    rows = db
+      .prepare('SELECT idx, images FROM batch_item_images WHERE job_id = ?')
+      .all(job.id) as unknown as Array<{ idx: number; images: string }>
+  } catch {
+    return
+  }
+  if (!rows.length) return
+  let cache = imageCache.get(job.id)
+  if (!cache) {
+    cache = new Map<number, string>()
+    imageCache.set(job.id, cache)
+  }
+  const byIdx = new Map<number, string[]>()
+  for (const r of rows) {
+    const imgs = safeJson<string[]>(r.images, [])
+    if (imgs.length) byIdx.set(Number(r.idx), imgs)
+  }
+  for (const it of job.items) {
+    const imgs = byIdx.get(it.idx)
+    if (!imgs) continue
+    if (it.source) it.source = { ...it.source, images: imgs }
+    cache.set(it.idx, JSON.stringify(imgs))
+  }
+}
+
 export function createBatchJob(options: BatchOptions, items: BatchItem[], note = ''): BatchJob {
   const id = `batch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const now = new Date().toISOString()
@@ -409,13 +476,18 @@ export function createBatchJob(options: BatchOptions, items: BatchItem[], note =
 export function saveBatchJob(job: BatchJob): void {
   const now = new Date().toISOString()
   job.updatedAt = now
+  // 图先单独落表，写进 items 的只有「空数组」占位，避免每次进度更新都重写几 MB
+  persistItemImages(job, now)
+  const slimItems = job.items.map((it) =>
+    it.source && it.source.images.length ? { ...it, source: { ...it.source, images: [] } } : it
+  )
   db.prepare(
     'UPDATE batch_jobs SET status=?, phase=?, options=?, items=?, note=?, updated_at=? WHERE id=?'
   ).run(
     job.status,
     job.phase,
     JSON.stringify(job.options),
-    JSON.stringify(job.items),
+    JSON.stringify(slimItems),
     job.note,
     now,
     job.id
@@ -424,7 +496,10 @@ export function saveBatchJob(job: BatchJob): void {
 
 export function getBatchJob(id: string): BatchJob | null {
   const row = db.prepare('SELECT * FROM batch_jobs WHERE id = ?').get(id) as unknown as Row | undefined
-  return row ? rowToJob(row) : null
+  if (!row) return null
+  const job = rowToJob(row)
+  hydrateItemImages(job)
+  return job
 }
 
 export function listBatchJobs(limit = 10): BatchJob[] {
@@ -437,6 +512,12 @@ export function listBatchJobs(limit = 10): BatchJob[] {
 export function deleteBatchJob(id: string): void {
   db.prepare('DELETE FROM batch_jobs WHERE id = ?').run(id)
   db.prepare('DELETE FROM batch_item_evals WHERE job_id = ?').run(id)
+  try {
+    db.prepare('DELETE FROM batch_item_images WHERE job_id = ?').run(id)
+  } catch {
+    /* 老库没有这张表时忽略 */
+  }
+  imageCache.delete(id)
 }
 
 /** 评估结果单独存：评估对象带海外同款明细，塞进 items JSON 会把每次进度更新撑大几十倍 */
