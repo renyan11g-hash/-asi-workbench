@@ -540,23 +540,30 @@ export default function Batch() {
     if (!jobId || idx === null) return
     setSavingEdit(true)
     setSaveError('')
+    let saved = false
     try {
       const j = await api.patchBatchItem(jobId, idx, draft)
       setJob(j)
       setEditingIdx(null)
-      if (thenEvaluate) {
-        await api.runBatchStage(jobId, 'evaluate', [idx])
-        setNonce((n) => n + 1)
-        toast.success(`第 ${idx} 条已保存并开始评估`)
-      } else {
-        toast.success(`第 ${idx} 条资料已保存`)
-      }
+      saved = true
+      if (!thenEvaluate) toast.success(`第 ${idx} 条资料已保存`)
     } catch (err) {
       const msg = getErrorMessage(err)
       setSaveError(msg)
       toast.error(msg)
     } finally {
       setSavingEdit(false)
+    }
+    // 评估单独一段：保存已经成功时，评估失败不能再报「保存失败」，否则会误导
+    if (saved && thenEvaluate) {
+      try {
+        await api.runBatchStage(jobId, 'evaluate', [idx])
+        setNonce((n) => n + 1)
+        toast.success(`第 ${idx} 条已保存并开始评估`)
+      } catch (err) {
+        const msg = getErrorMessage(err)
+        toast.error(`资料已保存，但评估没跑起来：${msg}`)
+      }
     }
   }
 
@@ -768,12 +775,12 @@ export default function Batch() {
                 <Pause className="mr-1 h-3.5 w-3.5" /> 暂停
               </Button>
             )}
-            {job.status === 'paused' && (
+            {(job.status === 'paused' || job.status === 'interrupted') && (
               <Button size="sm" onClick={() => void resume()}>
                 <Play className="mr-1 h-3.5 w-3.5" /> 继续（{STAGE_LABEL[job.lastStage || 'evaluate']}）
               </Button>
             )}
-            {(isRunning || job.status === 'paused') && (
+            {(isRunning || job.status === 'paused' || job.status === 'interrupted') && (
               <Button size="sm" variant="ghost" className="text-rose-600" onClick={() => void stop()}>
                 <Square className="mr-1 h-3.5 w-3.5" /> 停止
               </Button>

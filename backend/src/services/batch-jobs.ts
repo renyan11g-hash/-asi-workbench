@@ -516,25 +516,48 @@ export function createBatchJob(options: BatchOptions, items: BatchItem[], note =
   }
 }
 
+/**
+ * 写库重试一次：线上用的是 Turso 云库，偶发瞬时错误（连接被掐、事务冲突）
+ * 会让一次「保存」直接 500；这类错误重试一次基本就好，没必要让用户重填。
+ */
+function retryOnce<T>(fn: () => T, fallbackMsg: string): T {
+  try {
+    return fn()
+  } catch (first) {
+    try {
+      return fn()
+    } catch (second) {
+      const msg = (second as Error)?.message ?? String(second)
+      throw new Error(`${fallbackMsg}：${msg}`)
+    }
+  }
+}
+
 export function saveBatchJob(job: BatchJob): void {
   const now = new Date().toISOString()
   job.updatedAt = now
   // 图先单独落表，写进 items 的只有「空数组」占位，避免每次进度更新都重写几 MB
-  persistItemImages(job, now)
+  retryOnce(() => persistItemImages(job, now), '保存产品图失败')
   const slimItems = job.items.map((it) =>
     it.source && it.source.images.length ? { ...it, source: { ...it.source, images: [] } } : it
   )
-  db.prepare(
-    'UPDATE batch_jobs SET status=?, phase=?, options=?, items=?, note=?, last_stage=?, updated_at=? WHERE id=?'
-  ).run(
-    job.status,
-    job.phase,
-    JSON.stringify(job.options),
-    JSON.stringify(slimItems),
-    job.note,
-    job.lastStage ?? '',
-    now,
-    job.id
+  retryOnce(
+    () =>
+      db
+        .prepare(
+          'UPDATE batch_jobs SET status=?, phase=?, options=?, items=?, note=?, last_stage=?, updated_at=? WHERE id=?'
+        )
+        .run(
+          job.status,
+          job.phase,
+          JSON.stringify(job.options),
+          JSON.stringify(slimItems),
+          job.note,
+          job.lastStage ?? '',
+          now,
+          job.id
+        ),
+    '保存任务进度失败'
   )
 }
 
@@ -580,8 +603,12 @@ export function getItemEvaluation(jobId: string, idx: number): unknown | null {
 }
 
 /**
- * 服务重启时，把还挂在 running 的任务标成 interrupted、
- * 把卡在中间步骤的条目标成 error —— 否则前端会一直转圈等一个已经死掉的进程。
+ * 服务重启（包括每次发版部署）时，把还挂在 running 的任务标成 interrupted，
+ * 把卡在中间步骤的条目**放回待处理**，而不是标成 error。
+ *
+ * 为什么不是 error：部署重启不是用户的错，也不是数据的问题。
+ * 标 error 会让整批看起来全挂了（还得手动「重试失败项」），
+ * 放回 pending 后点一次「继续」就能接着跑，已完成的条目本来就会被跳过。
  */
 export function recoverInterruptedJobs(): number {
   let count = 0
@@ -597,9 +624,9 @@ export function recoverInterruptedJobs(): number {
           ? it
           : {
               ...it,
-              status: 'error',
-              stage: '服务重启，这一条被中断',
-              error: '任务因服务重启中断，可以点「重试失败项」继续',
+              status: 'pending',
+              stage: '服务重启（发版）中断，点「继续」接着跑',
+              error: undefined,
             }
       )
       saveBatchJob(job)

@@ -21,6 +21,22 @@ systemRouter.get('/', async (_req: Request, res: Response) => {
 })
 
 /**
+ * 最近的服务器异常（500 现场）。
+ * 线上跑在 Render，日志拿不到，所以异常直接落库，这里查得到真正原因。
+ */
+systemRouter.get('/health/errors', async (req: Request, res: Response) => {
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit ?? 20) || 20))
+  try {
+    const rows = db
+      .prepare('SELECT id, method, path, message, stack, created_at FROM server_errors ORDER BY id DESC LIMIT ?')
+      .all(limit)
+    res.json({ ok: true, errors: rows })
+  } catch (e) {
+    res.json({ ok: false, errors: [], message: (e as Error)?.message ?? String(e) })
+  }
+})
+
+/**
  * Basic health check - always returns OK
  */
 systemRouter.get('/health', async (_req: Request, res: Response) => {

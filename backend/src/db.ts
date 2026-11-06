@@ -239,6 +239,17 @@ CREATE TABLE IF NOT EXISTS listing_reviews (
 CREATE INDEX IF NOT EXISTS idx_listing_reviews_status ON listing_reviews(status);
 CREATE INDEX IF NOT EXISTS idx_listing_reviews_batch ON listing_reviews(batch_job_id);
 
+-- 服务器异常留档：这台跑在 Render 上，用户看不到日志、我也拿不到，
+-- 所以 500 现场直接写库，用 GET /api/health/errors 就能查到真正原因。
+CREATE TABLE IF NOT EXISTS server_errors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  method TEXT NOT NULL DEFAULT '',
+  path TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT '',
+  stack TEXT,
+  created_at TEXT NOT NULL
+);
+
 -- 订单运营中心表结构
 CREATE TABLE IF NOT EXISTS customers (
   id TEXT PRIMARY KEY,

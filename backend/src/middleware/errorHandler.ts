@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express'
 import { ZodError } from 'zod'
 import { createLogger } from '../config/logger'
+import { db } from '../db'
 
 const logger = createLogger('ErrorHandler')
 
@@ -124,8 +125,25 @@ export const errorHandler = (err: Error, req: Request, res: Response, _next: Nex
     'Unhandled error'
   )
 
+  // 500 也要带上原因：这台机器看不到线上日志，只回「Internal server error」
+  // 的话，用户在页面上只能干瞪眼，我也没法定位。截断 200 字，够用了。
+  const detail = (err?.message ?? '').slice(0, 200)
+  // 现场留档，方便事后用 /api/health/errors 查（写失败也不能再抛）
+  try {
+    db.prepare(
+      'INSERT INTO server_errors (method, path, message, stack, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(
+      req.method,
+      req.url.slice(0, 300),
+      (err?.message ?? '').slice(0, 1000),
+      (err?.stack ?? '').slice(0, 4000),
+      new Date().toISOString()
+    )
+  } catch {
+    /* 记录失败不影响返回 */
+  }
   return res.status(500).json({
     status: 'error',
-    message: 'Internal server error',
+    message: detail ? `服务器出错：${detail}` : 'Internal server error',
   })
 }

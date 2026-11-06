@@ -729,13 +729,23 @@ batchRouter.post('/jobs/:id/pause', (req: Request, res: Response) => {
   res.json({ ok: true, job: getBatchJob(id) ?? job, message: '正在跑的这一条跑完就暂停' })
 })
 
+/** 老任务没记 lastStage 时，按条目现有进度推断该从哪一步接着跑 */
+function inferStage(job: BatchJob): BatchStage {
+  if (job.lastStage) return job.lastStage
+  const live = job.items.filter((i) => i.status !== 'error' && i.status !== 'skipped')
+  if (live.some((i) => i.reviewId)) return 'save'
+  if (live.some((i) => i.evaluated)) return 'listing'
+  if (live.some((i) => i.source)) return 'evaluate'
+  return 'fetch'
+}
+
 /** 继续：按上次跑的阶段接着跑（已完成的条目会自动跳过） */
 batchRouter.post('/jobs/:id/resume', (req: Request, res: Response) => {
   const id = String(req.params.id)
   const job = getBatchJob(id)
   if (!job) throw new AppError(404, '任务不存在')
   if (running.has(id)) throw new AppError(409, '这一批正在跑')
-  const stage = (job.lastStage || 'evaluate') as BatchStage
+  const stage = inferStage(job)
   job.status = 'running'
   saveBatchJob(job)
   void runStage(id, stage, null)
