@@ -447,8 +447,38 @@ function ReviewDrawer({
     }
   }
 
-  const aiCheck = async () => {
+  /**
+   * 整条重跑：交给批量生产队列重新跑一次完整的 generateListing（分类/主题/材质/印刷/包装/报价全都会重算），
+   * 而不是只重写四段文案。新产品会替换掉这条还没审的草稿，产品库里的现有 Listing 不受影响。
+   */
+  const fullRegenerate = async () => {
+    if (!review?.productId) return
+    if (
+      !window.confirm(
+        '按当前资料整条重跑一次？\n\n会重新生成全部字段（标题/摘要/描述/关键词/类目/主题/材质/印刷/包装/报价）。\n这条还没审的草稿会被新的替换，产品库里现有的 Listing 不受影响。'
+      )
+    )
+      return
     setBusy(true)
+    try {
+      const { job } = await api.createProductionJob({
+        kind: 'listing',
+        productIds: [review.productId],
+        clientKey: `regen-one-${review.productId}-${Date.now()}`,
+      })
+      localStorage.setItem('asi-production:jobId', job.id)
+      toast.success('已开始整条重跑，进度在「批量生产中心」')
+      onChanged()
+      onClose()
+      navigate('/production')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const aiCheck = async () => {    setBusy(true)
     try {
       const r = await api.reviewAiQc(id)
       toast.success(r.findings.length ? `复检发现 ${r.findings.length} 个问题` : '复检通过，没发现问题')
@@ -651,7 +681,10 @@ function ReviewDrawer({
             保存修改
           </Button>
           <Button size="sm" variant="outline" onClick={() => void regenerate(['title', 'summary', 'description', 'keywords'])} disabled={busy}>
-            <Sparkles className="mr-1 h-3.5 w-3.5" /> 整条重生成
+            <Sparkles className="mr-1 h-3.5 w-3.5" /> 重生成这四段文案
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => void fullRegenerate()} disabled={busy || !review?.productId}>
+            <RotateIcon /> 整条重跑（全字段）
           </Button>
           <Button
             size="sm"

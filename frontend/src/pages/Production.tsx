@@ -124,6 +124,18 @@ export default function Production() {
 
   const start = async () => {
     if (!selected.length) return
+    // 有人工改过的未审草稿：再说一次，避免「重新生成把手工改的顶掉」还不知情
+    const editedDrafts = selectedCards.filter((c) => c.pendingDraft?.edited)
+    if (
+      editedDrafts.length &&
+      !window.confirm(
+        `选中的产品里有 ${editedDrafts.length} 条草稿是你人工改过的（${editedDrafts
+          .slice(0, 3)
+          .map((c) => c.code)
+          .join('、')}${editedDrafts.length > 3 ? ' 等' : ''}）。\n\n重新生成会用新草稿替换掉它们，人工修改会丢失。继续？`
+      )
+    )
+      return
     setSubmitting(true)
     try {
       const { job: created, skipped, deduped } = await api.createProductionJob({
@@ -296,13 +308,29 @@ export default function Production() {
                         </div>
                       </td>
                       <td className="rounded-r-lg py-2 pr-2">
-                        {c.hasListing ? (
-                          <Badge variant="outline" className="border-blue-200 bg-blue-50 text-[10px] text-blue-700">
-                            已有
-                          </Badge>
-                        ) : (
-                          <span className="text-[11px] text-slate-400">未生成</span>
-                        )}
+                        <div className="flex flex-wrap items-center gap-1">
+                          {c.hasListing && (
+                            <Badge variant="outline" className="border-blue-200 bg-blue-50 text-[10px] text-blue-700">
+                              已有
+                            </Badge>
+                          )}
+                          {(c.pendingDraft?.count ?? 0) > 0 && (
+                            <Badge
+                              variant="outline"
+                              className={
+                                c.pendingDraft?.edited
+                                  ? 'border-amber-200 bg-amber-50 text-[10px] text-amber-700'
+                                  : 'border-slate-200 bg-slate-50 text-[10px] text-slate-500'
+                              }
+                              title={c.pendingDraft?.edited ? '草稿人工改过，再生成会覆盖' : '有一条还没审的草稿'}
+                            >
+                              {c.pendingDraft?.edited ? '草稿已改' : '待审草稿'}
+                            </Badge>
+                          )}
+                          {!c.hasListing && !(c.pendingDraft?.count ?? 0) && (
+                            <span className="text-[11px] text-slate-400">未生成</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )

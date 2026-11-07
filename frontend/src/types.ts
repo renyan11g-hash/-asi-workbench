@@ -819,6 +819,11 @@ export interface ProductCard {
   updatedAt: string
   thumb: string
   thumbFallback: string
+  /** 还有没审的批量草稿：再生成会替换掉它（edited=草稿被人改过） */
+  pendingDraft?: {
+    count: number
+    edited: boolean
+  }
   specs: {
     filled: number
     total: number

@@ -43,6 +43,12 @@ export interface ProductCard {
   updatedAt: string
   thumb: string
   thumbFallback: string
+  /** 这个产品还有没有没审的批量草稿（有 = 再生成会替换掉它） */
+  pendingDraft: {
+    count: number
+    /** 草稿被人改过：再生成会覆盖人工修改，界面要提醒 */
+    edited: boolean
+  }
   specs: {
     filled: number
     total: number
@@ -59,6 +65,8 @@ interface CardRow {
   code: string
   source_title: string
   category: string
+  /** 评估里的 ASI 类目（老产品没有 products.category 时兜底，让「按类别筛选」真的能用） */
+  eval_category: string | null
   status: string
   updated_at: string
   listing: string | null
@@ -81,18 +89,49 @@ interface CardRow {
  * 只读 products 的轻量字段，不把 images / listing 大对象读出来。
  */
 export function listProductCards(opts?: { includeTrashed?: boolean }): ProductCard[] {
-  const rows = db
-    .prepare(
-      `SELECT id, code, source_title, category, status, updated_at, listing,
+  const where = opts?.includeTrashed ? '' : "WHERE status != 'trashed'"
+  // 类目兜底：优先 1688 类目，其次评估里的 ASI 类目（json_extract 只在 JSON 合法时取，避免脏数据报错）。
+  // 有些环境没有 json 函数，取不到就退回空串，不影响主流程。
+  const richSql = `SELECT id, code, source_title, category, status, updated_at, listing,
               description, material_cn, colors_cn, size_cn, weight_g,
               carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg, notes,
+              CASE WHEN json_valid(evaluation) THEN json_extract(evaluation, '$.asiCategories[0]') END AS eval_category,
               CASE WHEN images NOT IN ('', '[]') THEN 1 ELSE 0 END AS has_src_images
-       FROM products ${opts?.includeTrashed ? '' : "WHERE status != 'trashed'"}
+       FROM products ${where}
        ORDER BY code DESC`
-    )
-    .all() as unknown as CardRow[]
+  const simpleSql = `SELECT id, code, source_title, category, status, updated_at, listing,
+              description, material_cn, colors_cn, size_cn, weight_g,
+              carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg, notes,
+              '' AS eval_category,
+              CASE WHEN images NOT IN ('', '[]') THEN 1 ELSE 0 END AS has_src_images
+       FROM products ${where}
+       ORDER BY code DESC`
+  let rows: CardRow[]
+  try {
+    rows = db.prepare(richSql).all() as unknown as CardRow[]
+  } catch {
+    rows = db.prepare(simpleSql).all() as unknown as CardRow[]
+  }
 
   const specsMap = listSpecRecords(rows.map((r) => r.id))
+
+  // 未审草稿：同一产品可能有一条 staged 草稿，界面要提示「再生成会替换」
+  const draftMap = new Map<string, { count: number; edited: boolean }>()
+  try {
+    const drafts = db
+      .prepare(
+        `SELECT product_id,
+                COUNT(*) AS n,
+                MAX(CASE WHEN edited_at IS NOT NULL AND edited_at != '' THEN 1 ELSE 0 END) AS edited
+         FROM listing_reviews
+         WHERE status = 'pending' AND product_id IS NOT NULL
+         GROUP BY product_id`
+      )
+      .all() as unknown as Array<{ product_id: string; n: number; edited: number }>
+    for (const d of drafts) draftMap.set(d.product_id, { count: Number(d.n), edited: Number(d.edited) === 1 })
+  } catch {
+    /* 表还没建好 */
+  }
 
   // 生成图第一张当缩略图（和流水线页同一套来源，避免重复实现）
   const firstImage = new Map<string, string>()
@@ -144,13 +183,14 @@ export function listProductCards(opts?: { includeTrashed?: boolean }): ProductCa
       productId: r.id,
       code: r.code || '',
       title: r.source_title || '',
-      category: r.category || listingCategory,
+      category: r.category || String(r.eval_category ?? '') || listingCategory,
       status: r.status,
       hasListing: Boolean(r.listing),
       updatedAt: r.updated_at,
       thumb: file ? `/api/product-images/${r.id}/${file}` : '',
       thumbFallback:
         !file && r.has_src_images ? `/api/flow/thumb/${r.id}?v=${encodeURIComponent(r.updated_at)}` : '',
+      pendingDraft: draftMap.get(r.id) ?? { count: 0, edited: false },
       specs: {
         filled: rec?.filled ?? 0,
         total: rec?.total ?? SPEC_KEYS.length,
