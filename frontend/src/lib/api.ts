@@ -1323,10 +1323,7 @@ export const api = {
     return data
   },
 
-  async patchReviewListing(
-    id: string,
-    listing: Partial<Pick<Listing, 'title' | 'summary' | 'description' | 'keywords'>>
-  ): Promise<{ review: ListingReview }> {
+  async patchReviewListing(id: string, listing: Partial<Listing>): Promise<{ review: ListingReview }> {
     const { data } = await apiClient.patch<{ review: ListingReview }>(`/listing-reviews/${id}`, { listing })
     return data
   },

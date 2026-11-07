@@ -633,6 +633,8 @@ listingReviewsRouter.patch('/:id', (req: Request, res: Response) => {
   if (!row) throw new AppError(404, '这条待审核记录不存在')
   if (row.status === 'approved') throw new AppError(409, '已经通过的不能再改，请到产品库里改')
 
+  // 审核时要能改整套英文链接信息（不只是正文四段）：分类/主题/材质/颜色/印刷/包装/规格/注意事项/中文对照都能改。
+  // 报价表不在这里改（它由报价引擎算，改了会和成本脱节）。
   const body = z
     .object({
       listing: z
@@ -641,6 +643,27 @@ listingReviewsRouter.patch('/:id', (req: Request, res: Response) => {
           summary: z.string().max(20000).optional(),
           description: z.string().max(60000).optional(),
           keywords: z.array(z.string().max(200)).max(200).optional(),
+          category: z.string().max(300).optional(),
+          categories: z.array(z.string().max(300)).max(10).optional(),
+          typeOfProduct: z.string().max(300).optional(),
+          themes: z.array(z.string().max(200)).max(20).optional(),
+          material: z.string().max(500).optional(),
+          materials: z.array(z.string().max(200)).max(20).optional(),
+          colors: z.string().max(1000).optional(),
+          colorChips: z.array(z.string().max(120)).max(60).optional(),
+          imprintMethods: z.array(z.string().max(120)).max(30).optional(),
+          imprintArea: z.string().max(1000).optional(),
+          productionTime: z.string().max(300).optional(),
+          packaging: z.string().max(2000).optional(),
+          warnings: z.array(z.string().max(1000)).max(20).optional(),
+          productSizeInch: z.string().max(300).optional(),
+          unitWeightLb: z.union([z.number(), z.string(), z.null()]).optional(),
+          cartonSizeInch: z.string().max(300).optional(),
+          cartonGwLb: z.union([z.number(), z.string(), z.null()]).optional(),
+          titleZh: z.string().max(2000).optional(),
+          summaryZh: z.string().max(20000).optional(),
+          descriptionZh: z.string().max(60000).optional(),
+          keywordsZh: z.string().max(60000).optional(),
         })
         .optional(),
     })
@@ -648,9 +671,17 @@ listingReviewsRouter.patch('/:id', (req: Request, res: Response) => {
 
   if (body.listing) {
     const merged = { ...parseJson<Record<string, unknown>>(row.listing, {}), ...body.listing }
+    // 改完立刻按最新内容重跑程序质检，避免显示的还是改动前的结论
+    let qc: unknown = null
+    try {
+      qc = runListingQc({ listing: merged })
+    } catch {
+      qc = null
+    }
     const now = new Date().toISOString()
-    db.prepare('UPDATE listing_reviews SET listing=?, edited_at=?, updated_at=? WHERE id=?').run(
+    db.prepare('UPDATE listing_reviews SET listing=?, qc=?, edited_at=?, updated_at=? WHERE id=?').run(
       JSON.stringify(merged),
+      qc ? JSON.stringify(qc) : row.qc ?? null,
       now,
       now,
       id

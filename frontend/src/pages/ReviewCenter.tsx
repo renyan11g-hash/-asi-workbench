@@ -425,7 +425,7 @@ function ReviewDrawer({
 }) {
   const detailQuery = useQuery({ queryKey: ['review-detail', id], queryFn: () => api.getReviewDetail(id) })
   const navigate = useNavigate()
-  const [draft, setDraft] = useState<{ title: string; summary: string; description: string; keywords: string } | null>(null)
+  const [draft, setDraft] = useState<ListingDraft | null>(null)
   const [busy, setBusy] = useState(false)
   const [instruction, setInstruction] = useState('')
 
@@ -433,27 +433,14 @@ function ReviewDrawer({
 
   useEffect(() => {
     if (!review) return
-    setDraft({
-      title: review.listing?.title ?? '',
-      summary: review.listing?.summary ?? '',
-      description: review.listing?.description ?? '',
-      keywords: (review.listing?.keywords ?? []).join(', '),
-    })
+    setDraft(toListingDraft(review.listing ?? {}))
   }, [review])
 
   const save = async () => {
     if (!draft) return
     setBusy(true)
     try {
-      await api.patchReviewListing(id, {
-        title: draft.title,
-        summary: draft.summary,
-        description: draft.description,
-        keywords: draft.keywords
-          .split(/[,，\n]/)
-          .map((s) => s.trim())
-          .filter(Boolean),
-      })
+      await api.patchReviewListing(id, fromListingDraft(draft))
       toast.success('已保存修改（还没通过，产品库未变）')
       onChanged()
       void detailQuery.refetch()
@@ -470,12 +457,7 @@ function ReviewDrawer({
     try {
       const r = await api.regenerateReviewFields(id, fields, instruction || undefined)
       toast.success('已重新生成，并重跑了质检')
-      setDraft({
-        title: r.review.listing?.title ?? '',
-        summary: r.review.listing?.summary ?? '',
-        description: r.review.listing?.description ?? '',
-        keywords: (r.review.listing?.keywords ?? []).join(', '),
-      })
+      setDraft(toListingDraft(r.review.listing ?? {}))
       onChanged()
       void detailQuery.refetch()
     } catch (err) {
@@ -702,11 +684,140 @@ function ReviewDrawer({
                 />
               </div>
 
-              <div className="rounded-lg bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
-                <div className="truncate">材质：{listing.material || '—'}　颜色：{listing.colors || '—'}</div>
-                <div className="truncate">印刷：{(listing.imprintMethods ?? []).join(', ') || '—'}</div>
-                <div className="truncate">类目：{listing.category || '—'}　包装：{listing.packaging || '—'}</div>
-              </div>
+              {/* 分类与主题 */}
+              <details open className="rounded-lg border border-slate-200">
+                <summary className="cursor-pointer px-3 py-1.5 text-[12px] font-semibold text-slate-700">
+                  分类 / 主题 / 材质 / 颜色 / 印刷
+                </summary>
+                <div className="grid gap-2 px-3 pb-3 sm:grid-cols-2">
+                  <SpecInput label="类目（主）" value={draft.category} onChange={(v) => setDraft({ ...draft, category: v })} />
+                  <SpecInput
+                    label="Type of Product"
+                    value={draft.typeOfProduct}
+                    onChange={(v) => setDraft({ ...draft, typeOfProduct: v })}
+                  />
+                  <SpecInput
+                    label="类目（最多 2 个，逗号分隔）"
+                    value={draft.categories}
+                    onChange={(v) => setDraft({ ...draft, categories: v })}
+                  />
+                  <SpecInput
+                    label="主题（5 个，逗号分隔）"
+                    value={draft.themes}
+                    onChange={(v) => setDraft({ ...draft, themes: v })}
+                  />
+                  <SpecInput label="材质" value={draft.material} onChange={(v) => setDraft({ ...draft, material: v })} />
+                  <SpecInput label="颜色（用 / 分隔）" value={draft.colors} onChange={(v) => setDraft({ ...draft, colors: v })} />
+                  <SpecInput
+                    label="印刷方式（逗号分隔）"
+                    value={draft.imprintMethods}
+                    onChange={(v) => setDraft({ ...draft, imprintMethods: v })}
+                  />
+                  <SpecInput label="印刷面积" value={draft.imprintArea} onChange={(v) => setDraft({ ...draft, imprintArea: v })} />
+                  <SpecInput label="生产周期" value={draft.productionTime} onChange={(v) => setDraft({ ...draft, productionTime: v })} />
+                  <SpecInput label="包装" value={draft.packaging} onChange={(v) => setDraft({ ...draft, packaging: v })} />
+                </div>
+              </details>
+
+              {/* 规格与箱规 */}
+              <details className="rounded-lg border border-slate-200">
+                <summary className="cursor-pointer px-3 py-1.5 text-[12px] font-semibold text-slate-700">
+                  规格 / 单件重量 / 箱规
+                </summary>
+                <div className="grid gap-2 px-3 pb-3 sm:grid-cols-2">
+                  <SpecInput
+                    label="产品尺寸（英寸）"
+                    value={draft.productSizeInch}
+                    onChange={(v) => setDraft({ ...draft, productSizeInch: v })}
+                  />
+                  <SpecInput
+                    label="单件重量（磅）"
+                    value={draft.unitWeightLb}
+                    onChange={(v) => setDraft({ ...draft, unitWeightLb: v })}
+                  />
+                  <SpecInput label="箱规（英寸）" value={draft.cartonSizeInch} onChange={(v) => setDraft({ ...draft, cartonSizeInch: v })} />
+                  <SpecInput
+                    label="整箱毛重（磅）"
+                    value={draft.cartonGwLb}
+                    onChange={(v) => setDraft({ ...draft, cartonGwLb: v })}
+                  />
+                </div>
+              </details>
+
+              {/* 注意事项 */}
+              <details className="rounded-lg border border-slate-200">
+                <summary className="cursor-pointer px-3 py-1.5 text-[12px] font-semibold text-slate-700">
+                  注意事项 / 合规提示（一行一条）
+                </summary>
+                <div className="px-3 pb-3">
+                  <textarea
+                    value={draft.warnings}
+                    onChange={(e) => setDraft({ ...draft, warnings: e.target.value })}
+                    rows={3}
+                    className="w-full resize-y rounded-md border border-slate-200 px-2 py-1.5 text-[12px] outline-none focus:border-blue-400"
+                  />
+                </div>
+              </details>
+
+              {/* 阶梯报价（只读，价格由报价引擎算） */}
+              {(listing.priceGrid ?? []).length > 0 && (
+                <details className="rounded-lg border border-slate-200">
+                  <summary className="cursor-pointer px-3 py-1.5 text-[12px] font-semibold text-slate-700">
+                    阶梯报价（{listing.priceGrid?.length} 档，只读）
+                  </summary>
+                  <div className="px-3 pb-3">
+                    <table className="w-full text-left text-[11px]">
+                      <thead className="text-slate-400">
+                        <tr>
+                          <th className="py-1 font-medium">数量</th>
+                          <th className="py-1 font-medium">单价</th>
+                          <th className="py-1 font-medium">计费重</th>
+                          <th className="py-1 font-medium">运输</th>
+                          <th className="py-1 font-medium">毛利率</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(listing.priceGrid ?? []).map((row, i) => (
+                          <tr key={i} className="border-t border-slate-50">
+                            <td className="py-1">{row.qty}</td>
+                            <td className="py-1">${row.unitPrice?.toFixed(2)}</td>
+                            <td className="py-1">{row.billableKg} kg</td>
+                            <td className="py-1">{row.shipping === 'air' ? '空运' : '海运'}</td>
+                            <td className="py-1">{Math.round((row.margin ?? 0) * 100)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              )}
+
+              {/* 中文对照 */}
+              <details className="rounded-lg border border-slate-200">
+                <summary className="cursor-pointer px-3 py-1.5 text-[12px] font-semibold text-slate-700">中文对照</summary>
+                <div className="space-y-2 px-3 pb-3">
+                  <SpecInput label="标题（中）" value={draft.titleZh} onChange={(v) => setDraft({ ...draft, titleZh: v })} />
+                  <SpecInput label="摘要（中）" value={draft.summaryZh} onChange={(v) => setDraft({ ...draft, summaryZh: v })} />
+                  <div>
+                    <div className="mb-1 text-[11px] text-slate-500">描述（中）</div>
+                    <textarea
+                      value={draft.descriptionZh}
+                      onChange={(e) => setDraft({ ...draft, descriptionZh: e.target.value })}
+                      rows={3}
+                      className="w-full resize-y rounded-md border border-slate-200 px-2 py-1.5 text-[11px] outline-none focus:border-blue-400"
+                    />
+                  </div>
+                  <div>
+                    <div className="mb-1 text-[11px] text-slate-500">关键词（中）</div>
+                    <textarea
+                      value={draft.keywordsZh}
+                      onChange={(e) => setDraft({ ...draft, keywordsZh: e.target.value })}
+                      rows={2}
+                      className="w-full resize-y rounded-md border border-slate-200 px-2 py-1.5 text-[11px] outline-none focus:border-blue-400"
+                    />
+                  </div>
+                </div>
+              </details>
             </div>
           )}
         </div>
@@ -741,5 +852,119 @@ function ReviewDrawer({
         </div>
       </div>
     </div>
+  )
+}
+
+// ---------------- 审核抽屉用的完整 Listing 草稿 ----------------
+
+/**
+ * 审核时要能看到并改「整套英文链接信息」，不只是正文四段。
+ * 这里把 Listing 拍平成一组字符串输入，保存时再转回去（列表字段用逗号/换行分隔）。
+ */
+interface ListingDraft {
+  title: string
+  summary: string
+  description: string
+  keywords: string
+  category: string
+  typeOfProduct: string
+  categories: string
+  themes: string
+  material: string
+  colors: string
+  imprintMethods: string
+  imprintArea: string
+  productionTime: string
+  packaging: string
+  warnings: string
+  productSizeInch: string
+  unitWeightLb: string
+  cartonSizeInch: string
+  cartonGwLb: string
+  titleZh: string
+  summaryZh: string
+  descriptionZh: string
+  keywordsZh: string
+}
+
+function toListingDraft(l: Partial<Listing>): ListingDraft {
+  const num = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v))
+  return {
+    title: l.title ?? '',
+    summary: l.summary ?? '',
+    description: l.description ?? '',
+    keywords: (l.keywords ?? []).join(', '),
+    category: l.category ?? '',
+    typeOfProduct: l.typeOfProduct ?? '',
+    categories: (l.categories ?? []).join(', '),
+    themes: (l.themes ?? []).join(', '),
+    material: l.material ?? '',
+    colors: l.colors ?? '',
+    imprintMethods: (l.imprintMethods ?? []).join(', '),
+    imprintArea: l.imprintArea ?? '',
+    productionTime: l.productionTime ?? '',
+    packaging: l.packaging ?? '',
+    warnings: (l.warnings ?? []).join('\n'),
+    productSizeInch: l.productSizeInch ?? '',
+    unitWeightLb: num(l.unitWeightLb),
+    cartonSizeInch: l.cartonSizeInch ?? '',
+    cartonGwLb: num(l.cartonGwLb),
+    titleZh: l.titleZh ?? '',
+    summaryZh: l.summaryZh ?? '',
+    descriptionZh: l.descriptionZh ?? '',
+    keywordsZh: l.keywordsZh ?? '',
+  }
+}
+
+function fromListingDraft(d: ListingDraft): Partial<Listing> {
+  const list = (s: string) =>
+    s
+      .split(/[,，\n]/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+  const toNum = (s: string): number | null => {
+    const n = Number(s.replace(/[^\d.]/g, ''))
+    return Number.isFinite(n) && s.trim() ? n : null
+  }
+  return {
+    title: d.title,
+    summary: d.summary,
+    description: d.description,
+    keywords: list(d.keywords),
+    category: d.category,
+    typeOfProduct: d.typeOfProduct,
+    categories: list(d.categories),
+    themes: list(d.themes),
+    material: d.material,
+    colors: d.colors,
+    imprintMethods: list(d.imprintMethods),
+    imprintArea: d.imprintArea,
+    productionTime: d.productionTime,
+    packaging: d.packaging,
+    warnings: d.warnings
+      .split('\n')
+      .map((x) => x.trim())
+      .filter(Boolean),
+    productSizeInch: d.productSizeInch,
+    unitWeightLb: toNum(d.unitWeightLb),
+    cartonSizeInch: d.cartonSizeInch,
+    cartonGwLb: toNum(d.cartonGwLb),
+    titleZh: d.titleZh,
+    summaryZh: d.summaryZh,
+    descriptionZh: d.descriptionZh,
+    keywordsZh: d.keywordsZh,
+  }
+}
+
+function SpecInput({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="block">
+      <span className="mb-0.5 block text-[11px] text-slate-500">{label}</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-7 w-full rounded border border-slate-200 px-2 text-[12px] outline-none focus:border-blue-400"
+      />
+    </label>
   )
 }
