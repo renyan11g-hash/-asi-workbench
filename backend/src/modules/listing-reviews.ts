@@ -674,7 +674,8 @@ listingReviewsRouter.patch('/:id', (req: Request, res: Response) => {
     // 改完立刻按最新内容重跑程序质检，避免显示的还是改动前的结论
     let qc: unknown = null
     try {
-      qc = runListingQc({ listing: merged })
+      // 人工改过的重量可能存成字符串，交给质检时按 Listing 形状收口
+      qc = runListingQc({ listing: merged as unknown as Partial<Listing> })
     } catch {
       qc = null
     }
