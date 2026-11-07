@@ -199,12 +199,19 @@ flowRouter.get('/overview', (_req: Request, res: Response) => {
     needEvalReview: count((r) => sourced(r) && Boolean(r.has_eval) && r.eval_review === 'pending'),
     /** 评估没通过（待定） */
     parked: count((r) => sourced(r) && r.eval_review === 'rejected'),
-    /** 待生成文案：评估已通过、还没英文链接 */
-    needListing: count((r) => sourced(r) && Boolean(r.has_eval) && !r.has_listing),
+    /** 待生成文案：评估结论已经定了（通过或没走评估审核的老数据）、还没英文链接 */
+    needListing: count(
+      (r) =>
+        sourced(r) &&
+        Boolean(r.has_eval) &&
+        r.eval_review !== 'pending' &&
+        r.eval_review !== 'rejected' &&
+        !r.has_listing
+    ),
     /** 待审核 */
     pendingReview: count((r) => r.status === 'pending_review'),
     /** 已生成文案但还没确认保存（老数据） */
-    needConfirm: count((r) => sourced(r) && Boolean(r.has_listing)),
+    needConfirm: count((r) => sourced(r) && Boolean(r.has_listing) && r.eval_review !== 'rejected'),
     /** 已上架（预产品库 + RPA 档案库） */
     listed: count((r) => r.status === 'listed'),
     /** 预产品库（已发 GLS 号） */
