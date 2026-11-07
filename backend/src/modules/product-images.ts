@@ -10,7 +10,10 @@ import { editImage, generateImage, ImageRef, ImageSettings, testImageConnection 
 import { buildImagePromptSet, buildIntroSuggestions, translateImageEditInstruction } from '../services/image-prompts'
 import { overlayDimensions } from '../services/dimension-overlay'
 import { finalizeMainImage } from '../services/image-post'
+import Jimp from 'jimp'
 import { ProductImage, ProductImageKind, SourceInfo } from '../types'
+import { reviewProductImage } from '../services/image-review'
+import { fetch1688Page } from './products'
 import { loadSettings } from './settings'
 import { createTask, getTask, runTask, updateTask } from '../services/task-manager'
 import { findProduct } from './products'
@@ -75,6 +78,7 @@ interface ImageRow {
   file: string
   dimension_spec: string | null
   with_logo: number | null
+  review: string | null
   created_at: string
   updated_at: string
 }
@@ -90,6 +94,7 @@ function rowToImage(r: ImageRow): ProductImage {
     history: JSON.parse(r.history || '[]'),
     file: r.file,
     dimensionSpec: r.dimension_spec ? JSON.parse(r.dimension_spec) : null,
+    review: r.review ? (JSON.parse(r.review) as ProductImage['review']) : null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -222,15 +227,42 @@ const generateSchema = z.object({
     })
     .optional(),
   /** 只生成指定角色（默认全部 5 张） */
-  kinds: z.array(z.enum(['main', 'dimension', 'intro'])).max(5).optional(),
+  /** 要生成哪几种图：主图/尺寸图/细节图/场景图（intro 是旧名字，等同 detail） */
+  kinds: z.array(z.enum(['main', 'dimension', 'intro', 'detail', 'scene'])).max(6).optional(),
+  /** 主图样式：white=纯白底单主图；combo=产品+卖点组合展示（仍纯白底，不出现文字） */
+  mainStyle: z.enum(['white', 'combo']).optional(),
   /** 生成前用户注意事项（中文，可空）：融入 Prompt 编排，AI 必须遵循 */
   notes: z.string().max(2000).optional(),
   /** 主图是否融合品牌 Logo（默认 true；false=干净产品图，禁止出现任何 Logo） */
   withLogo: z.boolean().optional(),
 })
 
-async function runAi<T>(fn: () => Promise<T>): Promise<T> {
+/** 生图前把产品资料读成一段事实清单（特点/颜色/材质/使用场景），让模型先理解再画 */
+function buildProductInfoBlock(source: SourceInfo, listingSizeInch?: string): string {
+  const lines = [
+    source.sourceTitle ? `- Product: ${source.sourceTitle}` : '',
+    source.materialCn ? `- Material: ${source.materialCn}` : '',
+    source.colorsCn ? `- Colours: ${source.colorsCn}` : '',
+    source.sizeCn ? `- Size: ${source.sizeCn}` : listingSizeInch ? `- Size: ${listingSizeInch}` : '',
+    source.description ? `- Details: ${source.description.slice(0, 600)}` : '',
+    source.notes ? `- Notes: ${source.notes.slice(0, 300)}` : '',
+  ].filter(Boolean)
+  return lines.join('\n')
+}
+
+/** 审查时把图缩到 512px 再发（视觉 token 大头在分辨率，512 足够判断一致性） */
+async function smallDataUrl(buf: Buffer): Promise<string> {
   try {
+    const img = await Jimp.read(buf)
+    img.scaleToFit(512, 512)
+    const out = await img.quality(80).getBufferAsync(Jimp.MIME_JPEG)
+    return `data:image/jpeg;base64,${out.toString('base64')}`
+  } catch {
+    return `data:image/png;base64,${buf.toString('base64')}`
+  }
+}
+
+async function runAi<T>(fn: () => Promise<T>): Promise<T> {  try {
     return await fn()
   } catch (err) {
     if (err instanceof AiError) {
@@ -265,6 +297,137 @@ function parseDimensions(source: SourceInfo, listingSizeInch?: string) {
   }
 }
 
+// ---------- 产品图 / 参考图（两个独立区域） ----------
+/**
+ * 「产品图」= 产品自己的真身图（1688 抓的 / 人工上传），是生成时的事实基准；
+ * 「参考图」= 人工上传或粘贴的行业优秀图，只学构图/排版/光线/场景，
+ * 绝不允许改变产品本身（结构/外形/颜色/材质/配件/比例/功能/纹理）。
+ */
+
+interface RefRow {
+  id: string
+  product_id: string
+  url: string
+  file: string
+  note: string
+  created_at: string
+}
+
+function listRefs(productId: string): Array<{ id: string; url: string; createdAt: string; note: string }> {
+  let rows: RefRow[] = []
+  try {
+    rows = db
+      .prepare('SELECT * FROM product_ref_images WHERE product_id = ? ORDER BY created_at ASC')
+      .all(productId) as unknown as RefRow[]
+  } catch {
+    rows = []
+  }
+  return rows.map((r) => ({ id: r.id, url: r.url, createdAt: r.created_at, note: r.note }))
+}
+
+/** 产品自己的图（products.images），前端「产品图」区展示 */
+productImagesRouter.get('/product/:productId/sources', (req: Request, res: Response) => {
+  const p = findProduct(String(req.params.productId))
+  const images = (p.source.images ?? []).filter((u) => typeof u === 'string' && u.length > 0)
+  res.json({
+    images,
+    count: images.length,
+    sourceUrl: p.source.sourceUrl ?? '',
+    /** 已经抓到过 1688 图没有（没有就可以点「从 1688 抓取」） */
+    hasSourceImages: images.some((u) => /^https?:\/\//.test(u) || u.startsWith('data:image')),
+  })
+})
+
+/** 从 1688 链接补抓产品详情图 / 颜色图，抓到的合并进产品图，并告诉前端这次新增了哪几张 */
+productImagesRouter.post('/product/:productId/fetch-source', async (req: Request, res: Response) => {
+  const id = String(req.params.productId)
+  const p = findProduct(id)
+  if (!p.source.sourceUrl) throw new AppError(400, '这个产品没有 1688 链接，无法抓图；可以手动上传或在下面粘贴图片地址')
+  let fetched: string[] = []
+  let message = ''
+  try {
+    const r = await fetch1688Page(p.source.sourceUrl)
+    fetched = (r.fetched?.images ?? []).filter((u) => typeof u === 'string' && u.length > 0)
+    message = r.message || ''
+  } catch (err) {
+    throw new AppError(502, `抓取失败：${err instanceof Error ? err.message : String(err)}。可以手动粘贴图片地址`)
+  }
+  const before = new Set(p.source.images ?? [])
+  const added = fetched.filter((u) => !before.has(u))
+  const merged = Array.from(new Set([...(p.source.images ?? []), ...fetched]))
+  if (added.length) {
+    db.prepare('UPDATE products SET images=?, updated_at=? WHERE id=?').run(
+      JSON.stringify(merged),
+      new Date().toISOString(),
+      id
+    )
+  }
+  res.json({
+    ok: true,
+    added: added.length,
+    total: merged.length,
+    /** 这次新增的图（前端高亮展示「抓到哪几张」） */
+    addedImages: added,
+    images: merged,
+    message,
+  })
+})
+
+/** 产品图：手动追加图片地址（1688 抓不到时的兜底） */
+productImagesRouter.post('/product/:productId/sources', (req: Request, res: Response) => {
+  const id = String(req.params.productId)
+  const body = z.object({ urls: z.array(z.string().max(4000)).min(1).max(20) }).parse(req.body ?? {})
+  const p = findProduct(id)
+  const valid = body.urls
+    .map((u) => u.trim())
+    .filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
+  const merged = Array.from(new Set([...(p.source.images ?? []), ...valid]))
+  db.prepare('UPDATE products SET images=?, updated_at=? WHERE id=?').run(
+    JSON.stringify(merged),
+    new Date().toISOString(),
+    id
+  )
+  res.json({ images: merged, added: merged.length - (p.source.images ?? []).length })
+})
+
+/** 参考图列表 */
+productImagesRouter.get('/product/:productId/refs', (req: Request, res: Response) => {
+  res.json({ refs: listRefs(String(req.params.productId)) })
+})
+
+/** 新增参考图（粘贴 URL / base64） */
+productImagesRouter.post('/product/:productId/refs', (req: Request, res: Response) => {
+  const id = String(req.params.productId)
+  const body = z
+    .object({
+      urls: z.array(z.string().max(4000)).max(10).optional(),
+      images: z.array(z.string().max(8_000_000)).max(10).optional(),
+      note: z.string().max(300).optional(),
+    })
+    .parse(req.body ?? {})
+  const urls = [...(body.urls ?? []), ...(body.images ?? [])]
+    .map((u) => u.trim())
+    .filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
+  if (!urls.length) throw new AppError(400, '没有可用的图片地址（要 http(s):// 或 data:image 开头）')
+  const existing = listRefs(id)
+  const room = Math.max(0, 6 - existing.length)
+  if (!room) throw new AppError(400, '参考图最多 6 张，先删几张再加')
+  const now = new Date().toISOString()
+  const stmt = db.prepare(
+    'INSERT INTO product_ref_images (id, product_id, url, file, note, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  )
+  for (const u of urls.slice(0, room)) {
+    stmt.run(randomUUID(), id, u, '', body.note ?? '', now)
+  }
+  res.json({ ok: true, refs: listRefs(id), added: Math.min(urls.length, room) })
+})
+
+/** 删除参考图 */
+productImagesRouter.delete('/refs/:refId', (req: Request, res: Response) => {
+  db.prepare('DELETE FROM product_ref_images WHERE id = ?').run(String(req.params.refId))
+  res.json({ ok: true })
+})
+
 productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   const body = generateSchema.parse(req.body ?? {})
   const settings = loadSettings()
@@ -288,21 +451,50 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   }
 
   const dims = body.dimensions ?? parseDimensions(source, listingSizeInch)
-  // 默认只生成主图 + 尺寸图（介绍图改为文字建议，省 AI 费用）；需要时可传 kinds 指定
-  const kinds = body.kinds ?? ['main', 'dimension']
+  // 四种模式：主图 1 张、尺寸图 1 张、细节图+场景图合计 2~3 张。
+  // 默认给一套完整组合（主图 + 尺寸图 + 2 张细节 + 1 张场景 = 3 张细节/场景，符合上限）。
+  const rawKinds = body.kinds ?? ['main', 'dimension', 'detail', 'detail', 'scene']
+  // 细节/场景合计超过 3 张就截断（硬上限）
+  const detailSceneCap = 3
+  let detailScene = 0
+  const kinds: ProductImageKind[] = []
+  for (const k of rawKinds) {
+    const kind = (k === 'intro' ? 'detail' : k) as ProductImageKind
+    if (kind === 'main' || kind === 'dimension') {
+      if (!kinds.includes(kind)) kinds.push(kind)
+      continue
+    }
+    if (detailScene >= detailSceneCap) continue
+    detailScene += 1
+    kinds.push(kind)
+  }
+  if (!kinds.length) kinds.push('main')
+  const mainStyle = body.mainStyle ?? 'white'
+
   const logo = readLogo()
   // 主图 Logo 开关：默认加 Logo；用户明确选择不加时不传 Logo 参考图（还省 1 张输入费）
   const withLogo = body.withLogo !== false
 
-  // 参考图按 kind 分配（Seedream 按「输入图+输出图」总张数计费，参考图越少越省钱）：
-  // - 主图：3 张产品图 + Logo（Logo 融合 + 颜色适配需要看清 Logo 与产品色）
-  // - 尺寸图/介绍图：1 张产品图即可（不需要 Logo，纯浪费计费）
-  const productUrls = (source.images ?? []).filter((u) => /^https?:\/\//.test(u))
+  // 「产品图」才是产品事实基准：只认产品真身图（1688 抓的 / 人工上传的），含 data URL。
+  // 「参考图」只学构图/光线/场景，单独传给生图模型，并在提示词里明确禁止改产品。
+  const productUrls = (source.images ?? []).filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
+  const styleRefs = listRefs(productId)
+    .map((r) => r.url)
+    .filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
+
   const mainRefs: ImageRef[] = productUrls
     .slice(0, 4)
     .map((u) => ({ url: u }) as ImageRef)
   if (logo && withLogo) mainRefs.push({ buffer: logo })
-  const plainRefs: ImageRef[] = productUrls.slice(0, 1).map((u) => ({ url: u }) as ImageRef)
+  const plainRefs: ImageRef[] = productUrls.slice(0, 2).map((u) => ({ url: u }) as ImageRef)
+  // 参考图放最后 2 张：模型对「靠后的参考图」通常当风格参考，产品事实仍以前面产品图为准
+  const refsWithStyle = (base: ImageRef[]): ImageRef[] => [
+    ...base,
+    ...styleRefs.slice(0, 2).map((u) => ({ url: u }) as ImageRef),
+  ]
+
+  // 生图前先读产品资料（特点/颜色/材质/场景），拼成事实清单交给提示词编排
+  const productInfo = buildProductInfoBlock(source, listingSizeInch)
 
   // 异步任务：5 张图逐张生成耗时 1-5 分钟，同步等待会超 Render 100 秒代理超时（502）
   const task = createTask('generate-product-images')
@@ -312,21 +504,37 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   let promptSet: Awaited<ReturnType<typeof buildImagePromptSet>> | null = null
 
   runTask(task, async () => {
-    // 1) 文本模型产出 5 张图 Prompt（带产品参考图 + Logo；用户注意点融入编排）
+    // 1) 文本模型产出全部图片的 Prompt（带产品事实清单 + 参考图；用户注意点融入编排）
     const ps =
       promptSet ??
-      (promptSet = await runAi(() => buildImagePromptSet(source, settings, body.notes, withLogo)))
+      (promptSet = await runAi(() =>
+        buildImagePromptSet(source, settings, body.notes, withLogo, {
+          productInfo,
+          styleRefCount: Math.min(styleRefs.length, 2),
+          mainStyle,
+          withDetail: kinds.includes('detail'),
+          withScene: kinds.includes('scene'),
+        })
+      ))
 
     // 2) 逐张生成（任务重试时跳过已完成的，续跑剩余的）
     for (const kind of kinds) {
-      const isIntro = kind === 'intro'
-      const existingIntros = created.filter((c) => c.kind === 'intro').length
-      const slot = isIntro ? existingIntros + 1 : 0
+      const isMulti = kind === 'detail' || kind === 'scene' || kind === 'intro'
+      const existing = created.filter((c) => c.kind === kind).length
+      const slot = isMulti ? existing + 1 : 0
       if (created.some((c) => c.kind === kind && c.slot === slot)) continue
       const prompt =
-        kind === 'main' ? ps.main : kind === 'dimension' ? ps.dimension : ps.intro[slot - 1]
+        kind === 'main'
+          ? ps.main
+          : kind === 'dimension'
+            ? ps.dimension
+            : kind === 'scene'
+              ? (ps.scene[slot - 1] ?? ps.scene[0] ?? ps.detail[0] ?? ps.main)
+              : (ps.detail[slot - 1] ?? ps.detail[0] ?? ps.main)
 
-      let buf = await runAi(() => generateImage(settings, prompt, kind === 'main' ? mainRefs : plainRefs))
+      let buf = await runAi(() =>
+        generateImage(settings, prompt, kind === 'main' ? refsWithStyle(mainRefs) : refsWithStyle(plainRefs))
+      )
 
       // 主图：外圈刷成纯白。生图模型常给一点点灰底/渐变，而 ASI 目录要求纯白背景。
       // 只清理外圈（提示词保证那里是空白边距），不会动到产品本身的浅色边缘。
@@ -381,6 +589,34 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
         record.createdAt,
         record.updatedAt
       )
+
+      // 3) 自动审查：拿生成图对照原产品图，按 8 项硬指标体检（不通过就把问题记下来）
+      try {
+        const parsedListing = productId !== 'preview' ? findProduct(productId).listing : null
+        const expectColors = String(parsedListing?.colors || source.colorsCn || '')
+          .split(/[/,，、]/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+        const review = await reviewProductImage(
+          settings,
+          {
+            image: await smallDataUrl(buf),
+            productImages: productUrls.slice(0, 2),
+            kind,
+            colors: expectColors,
+            material: String(parsedListing?.material || source.materialCn || ''),
+            hasLogo: withLogo && kind === 'main',
+          },
+          productId === 'preview' ? null : productId
+        )
+        if (review) {
+          record.review = review
+          db.prepare('UPDATE product_images SET review=? WHERE id=?').run(JSON.stringify(review), record.id)
+        }
+      } catch {
+        /* 审查失败不影响出图结果 */
+      }
+
       created.push(record)
       updateTask(task.id, { progress: `已完成 ${created.length}/${kinds.length} 张` })
     }

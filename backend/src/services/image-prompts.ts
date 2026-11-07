@@ -8,18 +8,32 @@ import { callChatJson } from './ai'
  */
 
 export interface ImagePromptSet {
-  /** 主图：主产品 + 其他颜色缩略图（下方/右侧）+ Logo 融合，无文字 */
+  /** 主图：主产品 + 其他颜色缩略图（下方/右侧）+ Logo 融合，无文字；combo 时带卖点特写组合 */
   main: string
   /** 尺寸图：干净产品图（后端程序化叠加 inch 标注，AI 不画数字） */
   dimension: string
-  /** 介绍图 1-3：特点卖点 / 使用场景 */
-  intro: string[]
+  /** 细节图 1-2：真实材质 / 结构 / 功能特写 */
+  detail: string[]
+  /** 场景图 1-2：真实使用场景 */
+  scene: string[]
 }
 
 interface RawPromptSet {
   main?: string
   dimension?: string
-  intro?: string[]
+  detail?: string[]
+  scene?: string[]
+}
+
+export interface PromptOptions {
+  /** 生图前读到的产品资料（特点/颜色/材质/场景） */
+  productInfo?: string
+  /** 参考图张数（只学构图光线场景，严禁改产品） */
+  styleRefCount?: number
+  /** 主图样式：white=纯白底单主图；combo=产品+卖点组合展示 */
+  mainStyle?: 'white' | 'combo'
+  withDetail?: boolean
+  withScene?: boolean
 }
 
 const SYSTEM = `You are a prompt engineer for AI product photography (gpt-image-1).
@@ -43,7 +57,7 @@ Rules for every prompt:
 - If the user message contains a "USER NOTES" block, those are the client's hard requirements (composition, colours, which variant to show, where the logo goes, background, etc.). Follow them STRICTLY in the affected prompts; they override the defaults above (but still never add text/numbers or invented content).
 
 Output STRICT JSON only:
-{"main":"<prompt>","dimension":"<prompt>","intro":["<prompt1>","<prompt2>","<prompt3>"]}
+{"main":"<prompt>","dimension":"<prompt>","detail":["<prompt1>","<prompt2>"],"scene":["<prompt1>","<prompt2>"]}
 
 Prompt requirements per image:
 - "main": HERO + COLOUR VARIANTS, all on a PURE WHITE seamless background.
@@ -59,7 +73,17 @@ Prompt requirements per image:
   * The product is fully visible and centred, occupying about 60-70% of the frame, with a GENEROUS empty white margin on ALL FOUR sides (at least 12% of the frame width/height each). Nothing may touch or bleed off the edges — dimension lines and labels are drawn into that margin afterwards by the system.
   * Do NOT draw dimension lines, arrows, rulers, numbers, labels or text of any kind. No protractor, no grid, no measuring props.
   * Same fidelity rule as above: the product must look exactly like the reference, not a redrawn or idealized version.
-- "intro": 3 lifestyle/context prompts showcasing selling points and usage scenarios (e.g. office, outdoor, gift-giving). Each prompt must describe ONE scene, photorealistic, no text.`
+- "detail": 1-2 extreme close-up prompts showing the PRODUCT'S REAL material texture, construction seams, functional mechanism and hardware.
+  * Macro lens look, shallow depth of field, soft studio light, neutral or pure white background.
+  * Show only what is actually visible in the reference photos — never invent stitching, ridges, ports, buttons, logos or accessories.
+  * No text, no numbers, no dimension lines, no props.
+- "scene": 1-2 realistic lifestyle prompts of the product being used in a plausible setting that matches its real use case.
+  * The product must stay identical (shape, colour, material, parts, scale relative to hands/objects).
+  * Physically plausible: rests on a surface / held naturally, correct scale, correct gravity, no floating, no impossible use, no extra products.
+  * Natural light mixed with soft fill, photorealistic, no text.
+
+STYLE REFERENCES (when provided) are DIFFERENT products used only to learn composition, layout, lighting, colour grading and scene treatment.
+Never copy their product, parts, accessories, colours, material or proportions into our product.`
 
 export async function buildImagePromptSet(
   source: SourceInfo,
@@ -67,7 +91,9 @@ export async function buildImagePromptSet(
   /** 生成前用户注意事项（中文，可空）：融入 Prompt 编排，AI 必须遵循 */
   userNotes?: string,
   /** 主图是否融合品牌 Logo（false=干净产品图，禁止出现任何 Logo） */
-  withLogo = true
+  withLogo = true,
+  /** V2：产品资料、参考图、主图样式、要哪些图种 */
+  opts?: PromptOptions
 ): Promise<ImagePromptSet> {
   const productFacts = [
     `Product title: ${source.sourceTitle}`,
@@ -91,15 +117,20 @@ ${notes}
   const logoDirective = withLogo
     ? `LOGO: blend the user's brand logo (the LAST reference image) onto the product front in the "main" prompt only.`
     : `LOGO: none — the "main" prompt must describe a completely clean product with NO logo, brand mark, or imprint anywhere.`
-  const user = `Create the 5 image prompts for this 1688 product.
+  const user = `Create the image prompts for this 1688 product.
 
 PRODUCT FACTS:
 ${productFacts}
-${notesBlock}
+${opts?.productInfo ? `\nSTRUCTURED PRODUCT DATA (read this before writing prompts — features / colours / material / usage):\n${opts.productInfo}\n` : ''}${notesBlock}
 ${logoDirective}
+${opts?.styleRefCount ? `STYLE REFERENCES: the LAST ${opts.styleRefCount} reference image(s) are style references only (composition, layout, lighting, background treatment). They may be DIFFERENT products. Never copy their product; only borrow the photographic style.` : ''}
+IMAGE SET REQUESTED: ${[opts?.withDetail !== false ? 'detail' : '', opts?.withScene !== false ? 'scene' : ''].filter(Boolean).join(' + ') || 'main + dimension'}
+MAIN STYLE: ${opts?.mainStyle === 'combo' ? 'combo (hero + selling-point close-up insets, still pure white)' : 'white (single hero + colour variants)'}
 The reference images (if any) show the real product.${withLogo ? ' The LAST reference image (if provided) is the user\'s brand logo to blend onto the product front in the "main" prompt only.' : ' No logo reference image is provided — do not include any logo in any prompt.'}`
 
-  const images = (source.images ?? []).filter((u) => /^https?:\/\//.test(u)).slice(0, 6)
+  const images = (source.images ?? [])
+    .filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
+    .slice(0, 6)
   const raw = await callChatJson<RawPromptSet>(
     settings,
     SYSTEM,
@@ -108,17 +139,28 @@ The reference images (if any) show the real product.${withLogo ? ' The LAST refe
     images.length ? images : undefined
   )
 
-  const intro = (raw.intro ?? []).map((s) => String(s).trim()).filter(Boolean).slice(0, 3)
-  while (intro.length < 3) {
-    intro.push(
-      `Photorealistic lifestyle photo of the ${source.sourceTitle || 'product'} in a bright modern office desk setting, shallow depth of field, no text.`
-    )
-  }
+  const detailRaw = (raw.detail ?? []).map((s) => String(s).trim()).filter(Boolean).slice(0, 2)
+  const sceneRaw = (raw.scene ?? []).map((s) => String(s).trim()).filter(Boolean).slice(0, 2)
+  while (detailRaw.length < 2) detailRaw.push(fallbackDetail(source, detailRaw.length))
+  while (sceneRaw.length < 1) sceneRaw.push(fallbackScene(source))
   return {
     main: String(raw.main ?? '').trim() || fallbackMain(source, withLogo),
     dimension: String(raw.dimension ?? '').trim() || fallbackDimension(source),
-    intro,
+    detail: detailRaw,
+    scene: sceneRaw,
   }
+}
+
+function fallbackDetail(source: SourceInfo, index: number): string {
+  const angles = [
+    'a tight macro close-up of the material texture and construction seams',
+    'a close-up showing the functional mechanism and hardware details',
+  ]
+  return `Extreme close-up product detail photo of the ${source.sourceTitle || 'product'} reproduced exactly as in the reference photos — ${angles[index % angles.length]}, identical colour and finish, shallow depth of field, soft studio lighting, neutral background, photorealistic, no text, no numbers, no props, no invented parts.`
+}
+
+function fallbackScene(source: SourceInfo): string {
+  return `Photorealistic lifestyle photo of the ${source.sourceTitle || 'product'} being used in a realistic everyday setting that matches its real use case, natural light mixed with soft studio fill, product clearly visible and accurate to the reference photos (same shape, colour, material, parts), no text, no numbers, no floating objects, no exaggerated scale.`
 }
 
 function fallbackMain(source: SourceInfo, withLogo = true): string {

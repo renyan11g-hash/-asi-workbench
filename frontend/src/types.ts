@@ -225,7 +225,7 @@ export interface SourceInfo {
 export type ProductStatus = 'sourced' | 'listed' | 'archived' | 'trashed' | 'pending_review'
 
 /** 产品图片角色：main=主图（含 Logo 融合）/ dimension=尺寸图（inch 标注）/ intro=介绍图 */
-export type ProductImageKind = 'main' | 'dimension' | 'intro'
+export type ProductImageKind = 'main' | 'dimension' | 'intro' | 'detail' | 'scene'
 
 /** 单张产品图片记录（AI 生成，存于后端 data/images/{productId}/） */
 export interface ProductImage {
@@ -241,6 +241,13 @@ export interface ProductImage {
   history: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
   /** 图片文件名，访问地址：{API_URL}/product-images/{productId}/{file} */
   file: string
+  /** 生成后的自动审查结果 */
+  review?: {
+    ok: boolean
+    checks: Array<{ key: string; label: string; ok: boolean; note: string }>
+    issues: string[]
+    reviewedAt: string
+  } | null
   dimensionSpec: {
     widthIn: number
     heightIn: number

@@ -139,6 +139,19 @@ CREATE TABLE IF NOT EXISTS product_images (
 );
 CREATE INDEX IF NOT EXISTS idx_product_images_product ON product_images(product_id);
 
+-- 「参考图」：人工上传/粘贴的行业优秀产品图，只用来学构图/排版/光线/场景，
+-- 绝不允许改变自己产品的结构/外形/颜色/材质/配件/比例/功能/纹理。
+-- 和「产品图」（products.images，来自 1688 或人工上传的产品真身图）是两回事，必须分开存。
+CREATE TABLE IF NOT EXISTS product_ref_images (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  url TEXT NOT NULL DEFAULT '',
+  file TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_product_ref_images_product ON product_ref_images(product_id);
+
 -- 品牌 Logo（全局单条，key='brand-logo'，value=文件名）
 CREATE TABLE IF NOT EXISTS brand_assets (
   key TEXT PRIMARY KEY,
@@ -532,6 +545,9 @@ ensureTableColumn('orders', 'balance_amount', 'balance_amount REAL')
 
 // 批量任务：老库补 phase 列（表是后建的，线上可能已存在旧结构）
 ensureTableColumn('batch_jobs', 'phase', "phase TEXT NOT NULL DEFAULT 'draft'")
+
+// 生成图的自检结果（产品/颜色/结构/配件/Logo 一致性、场景合理、白底、画质），JSON
+ensureTableColumn('product_images', 'review', 'review TEXT')
 
 // 产品图片表：老库补 with_logo 列（主图是否融合 Logo，0/1）
 ensureTableColumn('product_images', 'with_logo', 'with_logo INTEGER NOT NULL DEFAULT 1')

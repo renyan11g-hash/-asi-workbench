@@ -530,7 +530,7 @@ export interface AfterSale {
 }
 
 /** 产品图片类型：主图 / 尺寸图 / 介绍图 */
-export type ProductImageKind = 'main' | 'dimension' | 'intro'
+export type ProductImageKind = 'main' | 'dimension' | 'intro' | 'detail' | 'scene'
 
 /** 单张产品图片记录（含生成历史链） */
 export interface ProductImage {
@@ -548,6 +548,13 @@ export interface ProductImage {
   history: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
   /** 图片文件名（存于 data/images/{productId}/） */
   file: string
+  /** 生成后的自动审查结果（产品/颜色/结构/配件/Logo/场景/白底/画质） */
+  review?: {
+    ok: boolean
+    checks: Array<{ key: string; label: string; ok: boolean; note: string }>
+    issues: string[]
+    reviewedAt: string
+  } | null
   /** 尺寸图叠加的标注数据（inch），非尺寸图为 null */
   dimensionSpec: {
     /** 宽（正面横向） */
