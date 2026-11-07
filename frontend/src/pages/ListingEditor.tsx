@@ -11,8 +11,6 @@ import {
   Globe,
   HelpCircle,
   History,
-  ImageOff,
-  ImagePlus,
   Loader2,
   MessageSquare,
   Pencil,
@@ -28,10 +26,10 @@ import {
 import { toast } from 'sonner'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { ProductImageStudio } from '@/components/ProductImageStudio'
 import {
   Dialog,
   DialogContent,
@@ -457,103 +455,6 @@ function SectionAiTools({
 }
 
 /** 单图 AI 对话窗口：针对主图/尺寸图单独对话修改（每次发送会生成新图，消耗 AI 额度） */
-/**
- * 生成前注意事项对话框：点「生成图片」先弹出，用户可填写对 AI 的注意点（可留空），
- * 确认后才开始生成；注意点融入 Prompt 编排，AI 必须遵循。
- */
-function GenerateNotesDialog({
-  open,
-  onOpenChange,
-  onConfirm,
-  generating,
-  target,
-}: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  onConfirm: (notes: string, withLogo: boolean) => void
-  generating: boolean
-  /** 本次生成目标：main=主图 dimension=尺寸图 both=两者 */
-  target: 'main' | 'dimension' | 'both'
-}) {
-  const [notes, setNotes] = useState('')
-  const [withLogo, setWithLogo] = useState(true)
-  const [openState, setOpenState] = useState(open)
-
-  // 打开时清空输入、重置 Logo 开关为默认（添加）
-  useEffect(() => {
-    if (open) {
-      setNotes('')
-      setWithLogo(true)
-    }
-  }, [open])
-
-  // 受 open 控制的内部同步（避免 onOpenChange 被外层覆盖）
-  useEffect(() => {
-    setOpenState(open)
-  }, [open])
-
-  const showLogoSwitch = target !== 'dimension'
-  const costHint = showLogoSwitch
-    ? withLogo
-      ? target === 'main'
-        ? '约 5 张（3 张参考图 + Logo + 1 张输出）'
-        : '约 7 张（主图 5 张 + 尺寸图 2 张）'
-      : target === 'main'
-        ? '约 4 张（3 张参考图 + 1 张输出，不加 Logo 省 1 张）'
-        : '约 6 张（主图 4 张 + 尺寸图 2 张）'
-    : '约 2 张（1 张参考图 + 1 张输出）'
-
-  return (
-    <Dialog
-      open={openState}
-      onOpenChange={(o) => {
-        setOpenState(o)
-        onOpenChange(o)
-      }}
-    >
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-base">
-            <MessageSquare className="h-4 w-4 text-blue-600" />
-            生成{target === 'main' ? '主图' : target === 'dimension' ? '尺寸图' : '主图 + 尺寸图'}：告诉 AI 注意点（可选）
-          </DialogTitle>
-          <DialogDescription>
-            例如「产品是黑色的那款，Logo 改成白色」「不要出现其他颜色缩略图」「只展示绿色款」。
-            留空直接开始生成。生成后每张图仍可单独「AI 修改」。
-            <span className="mt-1 block text-amber-700">
-              费用提示：图像模型按「输入参考图 + 输出图」总张数计费——本次预计消耗 {costHint}。
-            </span>
-          </DialogDescription>
-        </DialogHeader>
-        {showLogoSwitch && (
-          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-            <Checkbox checked={withLogo} onCheckedChange={(v) => setWithLogo(v === true)} disabled={generating} />
-            <span className="font-medium">添加 Logo</span>
-            <span className="text-xs text-slate-500">
-              {withLogo ? '将把您上传的品牌 Logo 融合到主图产品正面' : '主图为干净产品图，不出现任何 Logo'}
-            </span>
-          </label>
-        )}
-        <Textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          rows={5}
-          placeholder="例：产品是绿色的那款，Logo 用白筒印在正面，不要出现任何文字…"
-          className="resize-none text-sm"
-        />
-        <DialogFooter className="gap-2">
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={generating}>
-            取消
-          </Button>
-          <Button size="sm" onClick={() => onConfirm(notes.trim(), withLogo)} disabled={generating}>
-            {generating ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Sparkles className="mr-1 h-3 w-3" />}
-            {generating ? '生成中…' : '开始生成'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
 
 function ImageChatDialog({
   image,
@@ -823,7 +724,6 @@ export default function ListingEditor() {
   }
 
   // 计费重 / 倍率人工覆盖（留空 = 按箱规自动算）
-  const [grabbingRefs, setGrabbingRefs] = useState(false)
   const [ovBillable, setOvBillable] = useState<string | null>(null)
   const [ovMarkupAir, setOvMarkupAir] = useState<string | null>(null)
   const [ovMarkupSea, setOvMarkupSea] = useState<string | null>(null)
@@ -912,78 +812,11 @@ export default function ListingEditor() {
   const setSrc = <K extends keyof SourceInfo>(key: K, value: SourceInfo[K]) =>
     setSourceForm((s) => (s ? { ...s, [key]: value } : s))
 
-  // ---------- 产品图片（AI 生成）：异步任务 + 轮询进度 ----------
-  const [productImages, setProductImages] = useState<ProductImage[]>([])
-  const [generatingImages, setGeneratingImages] = useState(false)
-  const [imgProgress, setImgProgress] = useState<string | null>(null)
-  // 介绍图拍摄建议（纯文字，不生成图片，省 AI 费用）
-  const [introSuggestions, setIntroSuggestions] = useState<string[]>([])
-  const [loadingSuggestions, setLoadingSuggestions] = useState(false)
+  // ---------- 产品图片：生成结果由 ProductImageStudio 自己管，这里只保留聊天窗口状态 ----------
   // 单图 AI 对话窗口（主图 / 尺寸图各自独立，对话状态由 ImageChatDialog 内部管理）
   const [chatImage, setChatImage] = useState<ProductImage | null>(null)
-
-  // 加载已生成的图片（产品切换时）
-  useEffect(() => {
-    if (!product) return
-    let cancelled = false
-    api
-      .listProductImages(product.id)
-      .then((imgs) => {
-        if (!cancelled) setProductImages(imgs)
-      })
-      .catch(() => {
-        /* 图片列表加载失败不阻塞页面 */
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [product])
-
-  const [genNotesOpen, setGenNotesOpen] = useState(false)
-  const [genTarget, setGenTarget] = useState<'main' | 'dimension' | 'both'>('both')
-
-  const generateImages = async (
-    notes = '',
-    kinds?: Array<'main' | 'dimension'>,
-    withLogo?: boolean
-  ) => {
-    if (!product) return
-    setGeneratingImages(true)
-    setImgProgress('正在提交生成任务…')
-    try {
-      const imgs = await api.generateProductImages(
-        product.id,
-        (progress, elapsed) => {
-          setImgProgress(progress ? `${progress}（已耗时 ${elapsed} 秒）` : `生成中…（已耗时 ${elapsed} 秒）`)
-        },
-        notes,
-        kinds,
-        withLogo
-      )
-      setProductImages(imgs)
-      toast.success(`已生成 ${imgs.length} 张产品图片`)
-    } catch (err) {
-      toast.error(getErrorMessage(err))
-    } finally {
-      setGeneratingImages(false)
-      setImgProgress(null)
-    }
-  }
-
-  /** 获取介绍图拍摄建议（纯文字，不消耗生图费用） */
-  const fetchSuggestions = async () => {
-    if (!product) return
-    setLoadingSuggestions(true)
-    try {
-      const suggestions = await api.fetchIntroSuggestions(product.id)
-      setIntroSuggestions(suggestions)
-      toast.success('已获取介绍图拍摄建议')
-    } catch (err) {
-      toast.error(getErrorMessage(err))
-    } finally {
-      setLoadingSuggestions(false)
-    }
-  }
+  /** 对话改完图后让图片工作台重新挂载、重新拉列表 */
+  const [imgVersion, setImgVersion] = useState(0)
 
   // 按行索引更新，避免数量可编辑后出现重复 qty 匹配错行
   const setPrice = (idx: number, price: number) => {
@@ -1340,195 +1173,23 @@ export default function ListingEditor() {
         )}
       </SectionCard>
 
-      {/* 产品图片（AI 生成）：主图 + 尺寸图 + 介绍图文字建议 */}
+      {/* 产品图片工作台：产品图 / 参考图 / 四种生成模式 / 生成后自动审查 */}
       <SectionCard
         title="产品图片（AI 生成）"
-        hint="输出统一 1200×1200 纯白底方图，不改动产品任何细节与比例；主图＝主色大图 + 其他颜色小图（产品下方或右侧），尺寸图的 inch 标注画在留白区、不会压在产品上。约需 1-5 分钟；介绍图（第 3-5 张）改为下方文字拍摄建议，不消耗生图费用。每张图可单独与 AI 对话修改。"
-        right={
-          <div className="flex items-center gap-1.5">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              disabled={grabbingRefs}
-              onClick={async () => {
-                const url = product?.source.sourceUrl ?? ''
-                if (!/^https?:\/\/[^/]*\.?1688\.com\//i.test(url)) {
-                  toast.error('这个产品没有 1688 链接，无法补抓图片')
-                  return
-                }
-                setGrabbingRefs(true)
-                try {
-                  const r = await api.fetch1688Images(url)
-                  if (!r.images?.length) {
-                    toast.warning(r.message || '没抓到图')
-                    return
-                  }
-                  const merged = Array.from(
-                    new Set([...(product?.source.images ?? []), ...r.images])
-                  ).slice(0, 8)
-                  const res = await api.updateProductSource(id!, { images: merged })
-                  setListing(res.product.listing ?? listing)
-                  qc.invalidateQueries({ queryKey: ['product', id] })
-                  toast.success(
-                    r.source === 'master'
-                      ? `已用产品资料库里的 ${r.images.length} 张图`
-                      : `抓到 ${r.images.length} 张参考图，出图会更像`
-                  )
-                } catch (err) {
-                  toast.error(getErrorMessage(err))
-                } finally {
-                  setGrabbingRefs(false)
-                }
-              }}
-            >
-              {grabbingRefs ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <ImagePlus className="mr-1 h-3 w-3" />}
-              补抓 1688 图
-            </Button>
-            <Button
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => {
-                setGenTarget('main')
-                setGenNotesOpen(true)
-              }}
-              disabled={generatingImages || !product}
-            >
-              {generatingImages && genTarget === 'main' ? (
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-              ) : (
-                <Sparkles className="mr-1 h-3 w-3" />
-              )}
-              {generatingImages && genTarget === 'main' ? '生成中…' : productImages.some((i) => i.kind === 'main') ? '重新生成主图' : '生成主图'}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              onClick={() => {
-                setGenTarget('dimension')
-                setGenNotesOpen(true)
-              }}
-              disabled={generatingImages || !product}
-            >
-              {generatingImages && genTarget === 'dimension' ? (
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-              ) : (
-                <Sparkles className="mr-1 h-3 w-3" />
-              )}
-              {generatingImages && genTarget === 'dimension' ? '生成中…' : productImages.some((i) => i.kind === 'dimension') ? '重新生成尺寸图' : '生成尺寸图'}
-            </Button>
-          </div>
-        }
+        hint="产品图是 AI 的事实基准；参考图只学构图光线场景，不改产品。输出统一 1200×1200，每张图生成后自动做 8 项一致性审查，可逐张与 AI 对话修改。"
       >
-        {imgProgress && (
-          <div className="mb-3 flex items-center gap-2 text-xs text-blue-700">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            {imgProgress}
-          </div>
+        {product && (
+          <ProductImageStudio key={imgVersion} productId={product.id} onChatImage={setChatImage} />
         )}
-        {productImages.length === 0 && !generatingImages ? (
-          <div className="flex items-center gap-2 text-xs text-slate-500">
-            <ImageOff className="h-4 w-4 text-slate-300" />
-            还没有生成图片。点击右上角「生成图片」，系统将基于 1688 源图 + Logo 生成主图与尺寸图。
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3 sm:max-w-md">
-            {productImages.map((img) => (
-              <div key={img.id}>
-                <a
-                  href={api.productImageUrl(img.productId, img.file)}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="查看原图"
-                >
-                  <img
-                    src={api.productImageUrl(img.productId, img.file)}
-                    alt={img.kind}
-                    className="aspect-square w-full rounded-md border border-slate-200 bg-white object-cover"
-                    referrerPolicy="no-referrer"
-                  />
-                </a>
-                <div className="mt-1 flex items-center justify-center gap-1">
-                  <span className="text-[10px] text-slate-500">
-                    {img.kind === 'main' ? '主图' : img.kind === 'dimension' ? '尺寸图' : `介绍图 ${img.slot}`}
-                  </span>
-                  <button
-                    type="button"
-                    className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100 hover:text-blue-700"
-                    onClick={() => setChatImage(img)}
-                    title="和 AI 对话修改这张图"
-                  >
-                    <MessageSquare className="h-3 w-3" /> AI 修改
-                  </button>
-                </div>
-                {img.kind === 'dimension' && !img.dimensionSpec ? (
-                  <p className="mt-0.5 text-center text-[10px] leading-tight text-amber-700">
-                    未读到尺寸，这张没有标注线
-                  </p>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* 介绍图拍摄建议（纯文字，不生成图片，省 AI 费用） */}
-        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs font-medium text-slate-700">介绍图拍摄建议（第 3-5 张）</p>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              onClick={fetchSuggestions}
-              disabled={loadingSuggestions || !product}
-            >
-              {loadingSuggestions ? (
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-              ) : (
-                <Sparkles className="mr-1 h-3 w-3" />
-              )}
-              {introSuggestions.length ? '重新获取建议' : '获取拍摄建议'}
-            </Button>
-          </div>
-          {introSuggestions.length === 0 ? (
-            <p className="mt-2 text-xs leading-relaxed text-slate-400">
-              点击「获取拍摄建议」，AI 将根据产品资料给出 3 条介绍图（生活场景图）的拍摄/构图建议，可一键复制给美工或 AI 绘图工具。
-            </p>
-          ) : (
-            <ol className="mt-2 space-y-2">
-              {introSuggestions.map((s, i) => (
-                <li
-                  key={i}
-                  className="flex items-start justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2"
-                >
-                  <p className="text-xs leading-relaxed text-slate-700">
-                    {i + 1}. {s}
-                  </p>
-                  <CopyBtn text={s} label="复制" />
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
       </SectionCard>
 
-      <GenerateNotesDialog
-        open={genNotesOpen}
-        onOpenChange={setGenNotesOpen}
-        generating={generatingImages}
-        target={genTarget}
-        onConfirm={(notes, withLogo) => {
-          setGenNotesOpen(false)
-          generateImages(notes, genTarget === 'both' ? undefined : [genTarget], withLogo)
-        }}
-      />
       <ImageChatDialog
         image={chatImage}
         onClose={() => setChatImage(null)}
         onUpdated={(updated) => {
-          setProductImages((imgs) => imgs.map((i) => (i.id === updated.id ? updated : i)))
+          // 对话改完图：让工作台重新拉一次列表（它自己管图片状态）
           setChatImage((cur) => (cur && cur.id === updated.id ? updated : cur))
+          setImgVersion((v) => v + 1)
         }}
       />
 

@@ -616,6 +616,60 @@ export const api = {
     return data.product
   },
 
+  /** 产品图（产品真身图，生成时的事实基准） */
+  async getSourceImages(productId: string): Promise<{
+    images: string[]
+    count: number
+    sourceUrl: string
+    hasSourceImages: boolean
+  }> {
+    const { data } = await apiClient.get(`/product-images/product/${productId}/sources`)
+    return data
+  },
+
+  /** 从 1688 补抓产品详情图/颜色图，返回这次新增了哪几张 */
+  async fetchSourceImages(productId: string): Promise<{
+    ok: boolean
+    added: number
+    total: number
+    addedImages: string[]
+    images: string[]
+    message: string
+  }> {
+    const { data } = await apiClient.post(
+      `/product-images/product/${productId}/fetch-source`,
+      {},
+      { timeout: 150_000 }
+    )
+    return data
+  },
+
+  /** 手动粘贴产品图地址（1688 抓不到时兜底） */
+  async addSourceImages(productId: string, urls: string[]): Promise<{ images: string[]; added: number }> {
+    const { data } = await apiClient.post(`/product-images/product/${productId}/sources`, { urls })
+    return data
+  },
+
+  /** 参考图（只学构图/光线/场景，不改产品） */
+  async listRefImages(
+    productId: string
+  ): Promise<{ refs: Array<{ id: string; url: string; createdAt: string; note: string }> }> {
+    const { data } = await apiClient.get(`/product-images/product/${productId}/refs`)
+    return data
+  },
+
+  async addRefImages(
+    productId: string,
+    payload: { urls?: string[]; images?: string[]; note?: string }
+  ): Promise<{ refs: Array<{ id: string; url: string; createdAt: string; note: string }>; added: number }> {
+    const { data } = await apiClient.post(`/product-images/product/${productId}/refs`, payload)
+    return data
+  },
+
+  async deleteRefImage(refId: string): Promise<void> {
+    await apiClient.delete(`/product-images/refs/${refId}`)
+  },
+
   /**
    * 产品图片：对话式修改某张图（主图/尺寸图各自独立 AI 窗口）
    */
@@ -664,10 +718,12 @@ export const api = {
     productId: string,
     onProgress?: (progress: string, elapsedSec: number) => void,
     notes?: string,
-    /** 只生成指定角色：['main'] 主图 / ['dimension'] 尺寸图；缺省=两者 */
-    kinds?: Array<'main' | 'dimension' | 'intro'>,
+    /** 生成哪些图：main/dimension/detail/scene（detail/scene 可重复给，表示张数） */
+    kinds?: Array<'main' | 'dimension' | 'intro' | 'detail' | 'scene'>,
     /** 主图是否融合品牌 Logo（默认 true；false=干净产品图） */
-    withLogo?: boolean
+    withLogo?: boolean,
+    /** 主图样式：white=纯白底单主图；combo=产品+卖点组合展示 */
+    mainStyle?: 'white' | 'combo'
   ): Promise<ProductImage[]> {
     const { data: start } = await apiClient.post<{ taskId: string; status: string }>(
       `/product-images/generate`,
@@ -676,6 +732,7 @@ export const api = {
         notes: (notes ?? '').trim() || undefined,
         kinds,
         withLogo: withLogo === undefined ? undefined : withLogo,
+        mainStyle,
       }
     )
     const taskId = start.taskId
