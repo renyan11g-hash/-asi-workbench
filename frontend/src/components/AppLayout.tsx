@@ -1,15 +1,13 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
-  Boxes,
+  Archive,
   ClipboardCheck,
   Compass,
   Database,
-  FileText,
   FolderOpen,
   Layers,
   LayoutDashboard,
   Package,
-  SearchCheck,
   Settings as SettingsIcon,
   ShoppingBag,
   Sparkles,
@@ -19,44 +17,27 @@ import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 /**
- * 导航按「干什么活」分组，而不是按功能模块平铺。
- * 一个产品从录入到上架的路径就是从上往下走：
- *   工作总览 → 产品流水线 → 录入与选品 → 批量生产 → 审核与上架
+ * 导航按「一个产品从进来到上架」的真实顺序排：
+ *   工作总览 → 产品流水线 → 选品预估 → 产品资料库 → 评估库 → listing 待审核中心
+ *   → 预产品库 → RPA 档案库 → 订单运营中心 → 设置
+ * 合并后不再有「产品资料卡 / Listing 审核中心 / 批量处理」这些重复入口：
+ * 资料卡并入产品资料库，审核并入 listing 待审核中心，批量任务在对应页里点。
  */
 const NAV_GROUPS: Array<{
   title: string
   items: Array<{ to: string; label: string; icon: React.ElementType; end?: boolean; badge?: 'flow' | 'review' }>
 }> = [
   {
-    title: '工作台',
+    title: '工作流程',
     items: [
       { to: '/', label: '工作总览', icon: LayoutDashboard, end: true },
       { to: '/pipeline', label: '产品流水线', icon: Layers, badge: 'flow' },
-    ],
-  },
-  {
-    title: '录入与选品',
-    items: [
       { to: '/sourcing-suggest', label: '选品预估', icon: Compass },
-      { to: '/sourcing', label: '产品信息预填', icon: SearchCheck },
-      { to: '/specs', label: '产品资料卡', icon: FileText },
-      { to: '/evaluations', label: '评估库', icon: FolderOpen },
       { to: '/master-data', label: '产品资料库', icon: Database },
-    ],
-  },
-  {
-    title: '批量生产',
-    items: [
-      { to: '/production', label: '批量生产中心', icon: Layers },
-      { to: '/review-center', label: 'Listing 审核中心', icon: ClipboardCheck },
-      { to: '/batch', label: '批量导入处理', icon: Boxes },
-    ],
-  },
-  {
-    title: '审核与上架',
-    items: [
-      { to: '/listing-reviews', label: '英文链接待审核', icon: ClipboardCheck, badge: 'review' },
-      { to: '/library', label: '正式产品库', icon: Package },
+      { to: '/evaluations', label: '评估库', icon: FolderOpen },
+      { to: '/listing-reviews', label: 'listing 待审核中心', icon: ClipboardCheck, badge: 'review' },
+      { to: '/library', label: '预产品库', icon: Package },
+      { to: '/rpa', label: 'RPA 档案库', icon: Archive },
     ],
   },
   {
@@ -70,19 +51,18 @@ const NAV_GROUPS: Array<{
 
 const TITLES: Record<string, { title: string; sub: string }> = {
   '/': { title: '工作总览', sub: '今天该处理哪些产品、卡在哪一步、有多少待审核' },
-  '/pipeline': { title: '产品流水线', sub: '一个产品一条档案（RPA 编号）：资料 → 评估 → 英文文案 → 审核 → 正式产品' },
-  '/sourcing-suggest': { title: '选品预估', sub: 'AI 自动搜寻适合美国促销礼品市场的选品方向与 1688 搜索词' },
+  '/pipeline': { title: '产品流水线', sub: '一个产品一条档案：资料 → 评估 → 评估审核 → 英文文案 → 文案审核 → 预产品库 → RPA 档案库' },
+  '/sourcing-suggest': { title: '选品预估', sub: 'AI 自动搜寻适合美国促销礼品市场的选品方向与 1688 搜索词（单个产品预估也在这）' },
+  '/master-data': { title: '产品资料库', sub: '批量导入产品资料（导入即进系统）、每产品一张资料卡、批量推进到产品评估' },
+  '/evaluations': { title: '评估库', sub: '所有评估过的产品都在这：看优缺点与改善建议，批量决定通过（自动去生成文案）还是待定' },
+  '/listing-reviews': { title: 'listing 待审核中心', sub: '批量生成的草稿 + 流水线里待审核的文案，都在这一页审：通过进预产品库，驳回可改' },
+  '/library': { title: '预产品库', sub: '审核通过、已发 GLS 编号的产品；可导出上传 ASI，也可挑出来送进 RPA 档案库换号' },
+  '/rpa': { title: 'RPA 档案库', sub: '从预产品库挑出来、人工重新赋号的产品（旧 GLS 号留存、不再复用）' },
+  '/order-center': { title: '订单运营中心', sub: '客户、询盘、订单、供应商沟通与邮件草稿一站式管理' },
+  '/settings': { title: '设置', sub: 'AI 接口、模型分工、成本参数与数据维护' },
   '/sourcing': { title: '产品信息预填', sub: '粘贴 1688 链接带出商品资料，补全尺寸、材质、箱规后正式评估' },
   '/batch': { title: '批量导入处理', sub: '批量跑单品同一条流程：预填 → 补全 → 预估 → 评估 → 生成链接 → 入库' },
-  '/production': { title: '批量生产中心', sub: '一次 5～10 个产品，各自独立生成英文 Listing，可暂停/继续/重试失败项' },
-  '/specs': { title: '产品资料卡', sub: '每个产品一张卡：14 个标准字段，资料里没有的标 Unknown，可人工修改、可重新提取' },
-  '/review-center': { title: 'Listing 审核中心', sub: '批量生成的草稿都在这里：看质检、直接改、单段重生成、批量通过或驳回，通过才写回产品库' },
-  '/listing-reviews': { title: '英文链接待审核', sub: '待审核就是产品档案里状态为「待审核」的那些：通过→正式产品库，驳回→改后重做' },
-  '/master-data': { title: '产品资料库', sub: '自建主数据：链接、箱规、每箱数、毛重、多张图片录一次，之后抓取自动命中' },
-  '/evaluations': { title: '评估库', sub: '选品评估草稿集中存放，随时载入继续编辑或直接生成英文链接' },
-  '/library': { title: '正式产品库', sub: '审核通过的产品；可查询、修改、导出与上传 ASI ESP' },
-  '/order-center': { title: '订单运营中心', sub: '客户、询盘、订单、供应商沟通与邮件草稿一站式管理' },
-  '/settings': { title: '设置', sub: 'AI 接口、成本参数与报价规则' },
+  '/production': { title: '批次进度', sub: '批量评估 / 批量生成文案的后台任务进度（可暂停、继续、重试失败项）' },
 }
 
 export function AppLayout() {
@@ -105,7 +85,7 @@ export function AppLayout() {
   const badgeValue = (kind: 'flow' | 'review' | undefined): number => {
     if (!flow || !kind) return 0
     if (kind === 'review') return flow.pendingReview
-    return flow.needSpecs + flow.needEval + flow.needListing + flow.needConfirm
+    return (flow.needSpecs ?? 0) + (flow.needEval ?? 0) + (flow.needEvalReview ?? 0) + flow.needListing + flow.needConfirm
   }
 
   return (

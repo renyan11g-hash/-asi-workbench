@@ -18,7 +18,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { SectionCard } from '@/components/ui/primitives'
+import { useNavigate } from 'react-router-dom'
 import { api, getErrorMessage } from '@/lib/api'
+import { ProductSpecCards } from './ProductSpecs'
 import { MasterProduct } from '@/types'
 
 type FormState = {
@@ -91,7 +93,8 @@ const numOrNull = (v: string): number | null => {
  * 关键作用：批量处理 / 单品预填去抓 1688 时，先查这里——命中就直接用，
  * 不用再重复补箱规、每箱数、箱毛重，图片也能一次录多张供出图参考。
  */
-export default function MasterData() {
+function MasterDataPanel() {
+  const navigate = useNavigate()
   const [list, setList] = useState<MasterProduct[]>([])
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
@@ -102,6 +105,7 @@ export default function MasterData() {
   const [importing, setImporting] = useState(false)
   /** 勾选的资料 id（批量删除用） */
   const [selected, setSelected] = useState<string[]>([])
+  const [pushing, setPushing] = useState(false)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [importResult, setImportResult] = useState<{
@@ -261,6 +265,35 @@ export default function MasterData() {
       toast.error(getErrorMessage(err))
     } finally {
       setBulkDeleting(false)
+    }
+  }
+
+  /**
+   * 推进到下一进程：把选中的资料建进产品流水线，然后直接排队做产品评估。
+   * 资料在导入时其实已经建过档了，这里只是让用户能明确地「再推一次 + 立刻评估」。
+   */
+  const pushToSystem = async (ids: string[]) => {
+    if (!ids.length) return
+    setPushing(true)
+    try {
+      const r = await api.pushMasterProducts({ ids })
+      if (r.productIds.length) {
+        await api.evaluateProducts({
+          productIds: r.productIds.slice(0, 20),
+          clientKey: `eval-${Date.now()}`,
+        })
+        toast.success(
+          `已进入系统 ${r.productIds.length} 条（新建 ${r.created} / 复用 ${r.existing}），已开始产品评估，可在「产品流水线」看进度`
+        )
+      } else {
+        toast.warning('没有可推进的资料')
+      }
+      setSelected([])
+      await load(q)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setPushing(false)
     }
   }
 
@@ -660,24 +693,32 @@ export default function MasterData() {
 
       <SectionCard
         title="已录入商品"
-        hint="点击「编辑」补全或改数；资料齐全的商品，批量处理时可以一路跑到入库"
+        hint="导入/录入的资料会自动建进产品流水线；这里可以再手动推进一次，或直接去批量评估"
         right={
-          selected.length > 0 ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-rose-600"
-              disabled={bulkDeleting}
-              onClick={() => void removeSelected()}
-            >
-              {bulkDeleting ? (
-                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Trash2 className="mr-1 h-3.5 w-3.5" />
-              )}
-              删除选中（{selected.length}）
-            </Button>
-          ) : undefined
+          <div className="flex flex-wrap items-center gap-2">
+            {selected.length > 0 && (
+              <Button size="sm" disabled={pushing} onClick={() => void pushToSystem(selected)}>
+                {pushing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1 h-3.5 w-3.5" />}
+                推进到产品评估（{selected.length}）
+              </Button>
+            )}
+            {selected.length > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-rose-600"
+                disabled={bulkDeleting}
+                onClick={() => void removeSelected()}
+              >
+                {bulkDeleting ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="mr-1 h-3.5 w-3.5" />
+                )}
+                删除选中（{selected.length}）
+              </Button>
+            )}
+          </div>
         }
       >
         {loading ? (
@@ -709,6 +750,7 @@ export default function MasterData() {
                   <th className="py-2 pr-2 font-medium">每箱</th>
                   <th className="py-2 pr-2 font-medium">毛重</th>
                   <th className="py-2 pr-2 font-medium">图片</th>
+                  <th className="py-2 pr-2 font-medium">系统</th>
                   <th className="py-2 font-medium">操作</th>
                 </tr>
               </thead>
@@ -757,6 +799,27 @@ export default function MasterData() {
                           <span className="text-[11px] text-slate-400">{p.images.length}</span>
                         </div>
                       </td>
+                      <td className="py-2 pr-2">
+                        {/* 已经进系统的显示编号，没进的显示按钮：导入即建档，这里只做兜底 */}
+                        {p.productCode ? (
+                          <button
+                            className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-white"
+                            onClick={() => navigate('/pipeline')}
+                            title="看产品流水线"
+                          >
+                            {p.productCode}
+                          </button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-1.5 text-[10px] text-blue-600"
+                            onClick={() => void pushToSystem([p.id])}
+                          >
+                            进入系统
+                          </Button>
+                        )}
+                      </td>
                       <td className="py-2">
                         <div className="flex items-center gap-1">
                           {full ? (
@@ -800,5 +863,39 @@ function Field({ label, full, children }: { label: string; full?: boolean; child
       <span className="mb-0.5 block text-[11px] text-slate-500">{label}</span>
       {children}
     </label>
+  )
+}
+
+/**
+ * 产品资料库 = 两件事合在一页：
+ *   ① 资料条目：批量导入 / 编辑 / 推进到产品评估（导入时已自动建档进流水线）
+ *   ② 产品信息卡：每个产品 14 个结构化字段（原来单独的「产品资料卡」页并进来了，不再重复入口）
+ */
+export default function MasterData() {
+  const [tab, setTab] = useState<'entries' | 'cards'>('entries')
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {(
+          [
+            { key: 'entries', label: '资料条目（批量导入）' },
+            { key: 'cards', label: '产品信息卡' },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={
+              tab === t.key
+                ? 'rounded-full border border-blue-300 bg-blue-50 px-3 py-1 text-[12px] font-semibold text-blue-700'
+                : 'rounded-full border border-slate-200 bg-white px-3 py-1 text-[12px] text-slate-500 hover:border-slate-300'
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === 'entries' ? <MasterDataPanel /> : <ProductSpecCards />}
+    </div>
   )
 }

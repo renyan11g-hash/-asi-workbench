@@ -24,11 +24,12 @@ import type {
   Settings,
 } from '../types'
 import { findProduct } from '../modules/products'
-import { generateListing } from './workbench'
+import { evaluateSource, findSimilarForSource, generateListing } from './workbench'
 import { extractSpecs, getSpecRecord, saveSpecs, specsSourceHash } from './product-specs'
 import { runListingQc } from './listing-qc'
 import { createStagedListingReview } from '../modules/listing-reviews'
 import { loadSettings } from '../modules/settings'
+import { randomUUID } from 'crypto'
 
 /** 一批最多几个：再多就是压测了（每个产品 30~90 秒） */
 export const MAX_PRODUCTION_ITEMS = 20
@@ -357,6 +358,8 @@ async function runOne(jobId: string, item: ProductionItem): Promise<void> {
     const settings: Settings = loadSettings()
     if (job.kind === 'spec') {
       await runSpecItem(item, settings, jobId)
+    } else if (job.kind === 'evaluate') {
+      await runEvalItem(item, settings, jobId)
     } else {
       await runListingItem(item, settings, jobId)
     }
@@ -388,8 +391,74 @@ async function runSpecItem(item: ProductionItem, settings: Settings, jobId: stri
   updateItem(jobId, item.idx, { filled, stage: `已提取 ${filled}/14 项` })
 }
 
-async function runListingItem(item: ProductionItem, settings: Settings, jobId: string): Promise<void> {
+/**
+ * 产品评估（一键跑完，不用人工点两次）：
+ *   AI 评估（评分/结论/优缺点/改善建议）→ 看图找亚马逊与 ASI 同款 → 落库 →
+ *   存进评估库（drafts）→ 标记「待人工审核」。
+ * 评估通过与否由人事后在评估库/流水线批量决定，这里不替人做判断。
+ */
+async function runEvalItem(item: ProductionItem, settings: Settings, jobId: string): Promise<void> {
   const product = findProduct(item.productId)
+  if (!settings.aiApiKey?.trim()) throw new Error('尚未配置 API Key，无法评估')
+
+  // 抓到的类似商品关键词能省一次看图调用：有就带上，没有就让 AI 自己判断
+  const evaluation = await evaluateSource(product.source, settings, {})
+  const similar = await findSimilarForSource(product.source, settings)
+
+  const now = new Date().toISOString()
+  db.prepare(
+    `UPDATE products SET score=?, verdict=?, evaluation=?, similar=?, eval_review='pending', updated_at=? WHERE id=?`
+  ).run(evaluation.score, evaluation.verdict, JSON.stringify(evaluation), JSON.stringify(similar), now, product.id)
+
+  // 评估库：同一条产品只维护一条草稿（草稿 id 记在 products.draft_id 上）
+  const draftContent = JSON.stringify({
+    kind: 'sourcing-evaluation',
+    source: product.source,
+    evaluation,
+    similar,
+    priceGrid: [],
+  })
+  const draftId = ensureEvalDraft(product.id, product.source.sourceTitle || product.code || '未命名产品', draftContent)
+
+  updateItem(jobId, item.idx, {
+    stage: `评估完成（${evaluation.verdict} ${evaluation.score} 分），已存入评估库，待人工审核`,
+    filled: typeof evaluation.score === 'number' ? evaluation.score : null,
+  })
+  void draftId
+}
+
+/** 建/更新评估库草稿，返回草稿 id */
+function ensureEvalDraft(productId: string, title: string, content: string): string {
+  const row = db.prepare('SELECT draft_id FROM products WHERE id = ?').get(productId) as
+    | { draft_id: string | null }
+    | undefined
+  const now = new Date().toISOString()
+  const existingId = row?.draft_id
+  if (existingId) {
+    const hit = db.prepare('SELECT id FROM drafts WHERE id = ?').get(existingId) as { id: string } | undefined
+    if (hit) {
+      db.prepare('UPDATE drafts SET title = ?, content = ?, updated_at = ? WHERE id = ?').run(
+        title.slice(0, 200),
+        content,
+        now,
+        existingId
+      )
+      return existingId
+    }
+  }
+  const id = randomUUID()
+  db.prepare('INSERT INTO drafts (id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
+    id,
+    title.slice(0, 200),
+    content,
+    now,
+    now
+  )
+  db.prepare('UPDATE products SET draft_id = ?, updated_at = ? WHERE id = ?').run(id, now, productId)
+  return id
+}
+
+async function runListingItem(item: ProductionItem, settings: Settings, jobId: string): Promise<void> {  const product = findProduct(item.productId)
   // 结构化资料存在就用它当事实清单；没有就与原流程完全一致（不强制先做结构化）
   const specRecord = getSpecRecord(product.id)
   const specs: ProductSpecs | null = specRecord?.specs ?? null

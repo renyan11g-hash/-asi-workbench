@@ -1267,10 +1267,10 @@ productsRouter.post('/', async (req: Request, res: Response) => {
 function maxCodeNumber(): number {
   try {
     const row = db
-      .prepare("SELECT code FROM products WHERE code LIKE 'RPA%' ORDER BY code DESC LIMIT 1")
+      .prepare("SELECT code FROM products WHERE code LIKE 'PIP%' ORDER BY code DESC LIMIT 1")
       .get() as { code: string } | undefined
     if (!row?.code) return 0
-    const n = Number.parseInt(row.code.slice(3), 10)
+    const n = Number.parseInt(row.code.replace(/^PIP/i, ''), 10)
     return Number.isFinite(n) ? n : 0
   } catch {
     return 0
@@ -1278,12 +1278,12 @@ function maxCodeNumber(): number {
 }
 
 /**
- * 产品编号（对外）：RPA0001、RPA0002…
- * 一个产品从「资料录入 → 评估 → 英文文案 → 审核 → 正式产品库」始终是同一个编号，
- * 所以编号只在这里发一次，之后全流程都按编号认产品。删掉的号不回收。
+ * 流水线临时编号：PIP0001、PIP0002…
+ * 产品第一次进「预产品库」时会换成 GLS0001…（见 services/numbering.ts），进 RPA 档案库再换人工号。
+ * 所以这里的 PIP 号只是流水线期间用来认产品的临时号，不对外。
  */
 function nextProductCode(): string {
-  return `RPA${String(maxCodeNumber() + 1).padStart(4, '0')}`
+  return `PIP${String(maxCodeNumber() + 1).padStart(4, '0')}`
 }
 
 /**
@@ -1315,7 +1315,7 @@ export function backfillProductCodes(): number {
     const stmt = db.prepare('UPDATE products SET code = ? WHERE id = ?')
     for (const r of rows) {
       n += 1
-      stmt.run(`RPA${String(n).padStart(4, '0')}`, r.id)
+      stmt.run(`PIP${String(n).padStart(4, '0')}`, r.id)
     }
     return rows.length
   } catch (err) {

@@ -23,6 +23,8 @@ import type { FlowNextStep } from '@/types'
 const NEXT_LABEL: Record<FlowNextStep, string> = {
   specs: '待补资料',
   evaluate: '待评估',
+  evalReview: '待定评估结论',
+  parked: '待定（评估未通过）',
   listing: '待生成文案',
   confirm: '待确认保存',
   review: '待审核',

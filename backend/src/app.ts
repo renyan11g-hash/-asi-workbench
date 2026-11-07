@@ -26,6 +26,8 @@ import { masterProductsRouter } from './modules/master-products'
 import { flowRouter } from './modules/flow'
 import { productSpecsRouter } from './modules/product-specs'
 import { productionRouter } from './modules/production'
+import { libraryRouter } from './modules/library'
+import { adminRouter } from './modules/admin'
 
 export const createApp = (): Application => {
   const app = express()
@@ -79,6 +81,10 @@ export const createApp = (): Application => {
   app.use(`${env.API_PREFIX}/product-specs`, productSpecsRouter)
   // 批量生产中心：批量生成 Listing / 批量提取结构化资料（任务落库，可暂停继续）
   app.use(`${env.API_PREFIX}/production`, productionRouter)
+  // 库与编号：预产品库 / RPA 档案库 / 评估库（含评估人工审核）
+  app.use(`${env.API_PREFIX}/library`, libraryRouter)
+  // 一次性数据管理：备份 / 重编号 / 删除（需确认串，幂等）
+  app.use(`${env.API_PREFIX}/admin`, adminRouter)
 
   // 生产环境：托管前端构建产物（单端口部署）
   const staticDir = resolveStaticDir()

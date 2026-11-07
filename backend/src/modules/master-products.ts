@@ -16,6 +16,8 @@ import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { dispImgIds, extractWpsCellImages } from '../services/cell-images'
 import { createTask, runTask, updateTask } from '../services/task-manager'
+import type { SourceInfo } from '../types'
+import { insertProduct } from './products'
 
 export interface MasterProduct {
   id: string
@@ -200,6 +202,73 @@ function updateMaster(id: string, input: MasterInput): void {
 
 export const masterProductsRouter: Router = Router()
 
+/**
+ * 资料库 → 产品档案：资料库里的一条资料必须有对应的产品档案，否则导入完只停在资料库里，
+ * 产品流水线上一片空白（这就是「导入后完全没反应」的根因）。
+ *
+ * 幂等：优先按 master_id 找，其次按 1688 链接找；找到就复用，不重复建档、不覆盖已有文案/评估。
+ */
+export function ensureProductFromMaster(m: MasterProduct): { productId: string; created: boolean } {
+  const byMaster = db.prepare('SELECT id FROM products WHERE master_id = ?').get(m.id) as
+    | { id: string }
+    | undefined
+  if (byMaster) return { productId: byMaster.id, created: false }
+
+  if (m.sourceUrl) {
+    const byUrl = db
+      .prepare('SELECT id, master_id FROM products WHERE source_url = ? LIMIT 1')
+      .get(m.sourceUrl) as { id: string; master_id: string | null } | undefined
+    if (byUrl) {
+      if (!byUrl.master_id) {
+        db.prepare('UPDATE products SET master_id = ? WHERE id = ?').run(m.id, byUrl.id)
+      }
+      return { productId: byUrl.id, created: false }
+    }
+  }
+
+  const source: SourceInfo = {
+    sourceTitle: m.title,
+    sourceUrl: m.sourceUrl,
+    description: m.notes,
+    sourceKeywords: [],
+    amazonTitle: '',
+    priceCny: m.priceCny ?? 0,
+    priceMaxCny: null,
+    moq: 0,
+    supplier: m.supplier,
+    materialCn: m.materialCn,
+    colorsCn: m.colorsCn,
+    sizeCn: m.sizeCn,
+    weightG: m.weightG,
+    cartonLCm: m.cartonLCm,
+    cartonWCm: m.cartonWCm,
+    cartonHCm: m.cartonHCm,
+    pcsPerCarton: m.pcsPerCarton,
+    cartonGwKg: m.cartonGwKg,
+    // 资料库里的图就是出图参考图，一起带进产品档案
+    images: m.images,
+    category: '',
+    notes: '',
+  }
+  const id = insertProduct({ source, evaluation: null, listing: null, status: 'sourced' })
+  db.prepare('UPDATE products SET master_id = ? WHERE id = ?').run(m.id, id)
+  return { productId: id, created: true }
+}
+
+/** 资料库里每条资料对应的产品档案（没有就是 null），列表里显示「已进入系统」 */
+function linkedProducts(): Map<string, { id: string; code: string; status: string }> {
+  const out = new Map<string, { id: string; code: string; status: string }>()
+  try {
+    const rows = db
+      .prepare('SELECT master_id, id, code, status FROM products WHERE master_id IS NOT NULL')
+      .all() as unknown as Array<{ master_id: string; id: string; code: string; status: string }>
+    for (const r of rows) out.set(r.master_id, { id: r.id, code: r.code, status: r.status })
+  } catch {
+    /* ignore */
+  }
+  return out
+}
+
 /** 列表 / 搜索 */
 masterProductsRouter.get('/', async (req: Request, res: Response) => {
   const q = String(req.query.q ?? '').trim()
@@ -212,7 +281,48 @@ masterProductsRouter.get('/', async (req: Request, res: Response) => {
           .all(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`)
       : db.prepare('SELECT * FROM master_products ORDER BY updated_at DESC LIMIT 500').all()
   ) as unknown as Row[]
-  res.json({ products: rows.map(rowToMaster) })
+  const linked = linkedProducts()
+  res.json({
+    products: rows.map((r) => {
+      const m = rowToMaster(r)
+      return { ...m, productId: linked.get(m.id)?.id ?? null, productCode: linked.get(m.id)?.code ?? null, productStatus: linked.get(m.id)?.status ?? null }
+    }),
+  })
+})
+
+/**
+ * 推进到下一进程：把资料库里的资料变成产品档案（已在系统里的就复用）。
+ * 前端勾选后一次调用，之后这些产品就出现在产品流水线上，可以批量评估。
+ */
+masterProductsRouter.post('/push', async (req: Request, res: Response) => {
+  const body = z
+    .object({ ids: z.array(z.string().min(1)).max(200).optional(), all: z.boolean().optional() })
+    .parse(req.body ?? {})
+  const rows = (
+    body.all
+      ? db.prepare('SELECT * FROM master_products ORDER BY updated_at DESC').all()
+      : db
+          .prepare(
+            `SELECT * FROM master_products WHERE id IN (${(body.ids ?? ['']).map(() => '?').join(',')})`
+          )
+          .all(...(body.ids ?? []))
+  ) as unknown as Row[]
+  if (!rows.length) throw new AppError(400, '没有选中任何资料')
+
+  const productIds: string[] = []
+  let created = 0
+  let existing = 0
+  for (const r of rows) {
+    try {
+      const res2 = ensureProductFromMaster(rowToMaster(r))
+      productIds.push(res2.productId)
+      if (res2.created) created += 1
+      else existing += 1
+    } catch {
+      /* 单条失败不影响其他条 */
+    }
+  }
+  res.json({ ok: true, total: rows.length, created, existing, productIds })
 })
 
 /** 按链接查（前端粘贴链接时先问一句，命中就直接填） */
@@ -649,6 +759,8 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
   let created = 0
   let updated = 0
   let skipped = 0
+  let productsCreated = 0
+  let productsLinked = 0
   const errors: Array<{ row: number; error: string }> = []
 
   // 记录哪些行有「嵌入单元格图片」，导入完成后交给后台任务慢慢解
@@ -672,6 +784,17 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
       } else {
         insertMaster(input)
         created += 1
+      }
+      // 导入即进入系统：顺手建/复用产品档案，产品流水线里立刻看得到这条
+      try {
+        const master = input.sourceUrl ? findMasterByUrl(input.sourceUrl) : null
+        if (master) {
+          const pushed = ensureProductFromMaster(master)
+          if (pushed.created) productsCreated += 1
+          else productsLinked += 1
+        }
+      } catch {
+        /* 建档失败不影响资料入库本身 */
       }
       if (imgCol != null) {
         const ids = dispImgIds(String(row[imgCol] ?? ''))
@@ -721,6 +844,9 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
     created,
     updated,
     skipped,
+    /** 导入同时自动建进产品流水线：新建 X 条、复用已有 Y 条 */
+    productsCreated,
+    productsLinked,
     errors: errors.slice(0, 20),
     total: Math.max(0, grid.length - headerRow - 1),
     /** 有这么多行带「嵌入单元格图片」，图片在后台解析 */

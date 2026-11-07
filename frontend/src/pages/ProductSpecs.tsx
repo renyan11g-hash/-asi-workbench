@@ -29,7 +29,7 @@ import type { ProductSpecDetail, ProductSpecs } from '@/types'
  *
  * 结构化结果单独存，原始资料一个字节都不动 —— 所以在这里改错了也不会影响 1688 原文。
  */
-export default function ProductSpecsPage() {
+export function ProductSpecCards() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [q, setQ] = useState('')

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, RefreshCw, Save, Trash2, Wifi } from 'lucide-react'
+import { Download, Loader2, RefreshCw, Save, Trash2, Wifi } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -658,6 +658,13 @@ export default function SettingsPage() {
         </div>
       </SectionCard>
 
+      <SectionCard
+        title="数据维护（一次性）"
+        hint="把现有产品整理成新编号体系：只保留原正式产品库里的产品，按加入顺序重编 GLS0001…；其余产品会被删除"
+      >
+        <MigrationPanel />
+      </SectionCard>
+
       <div className="flex items-center justify-between">
         <Button onClick={save} disabled={saving}>
           {saving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Save className="mr-1 h-4 w-4" />}
@@ -667,6 +674,113 @@ export default function SettingsPage() {
           <Trash2 className="mr-1 h-4 w-4" /> 清空产品库
         </Button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * 一次性数据整理（编号体系）。三步走，顺序不能反：
+ *   ① 先下载备份（要删的产品整行导出）
+ *   ② 看一眼重编号预览（谁变成 GLS0001…）
+ *   ③ 输入确认串执行
+ */
+function MigrationPanel() {
+  const [status, setStatus] = useState<{
+    done: string | null
+    total: number
+    listed: number
+    willDelete: number
+    glsSeq: number
+  } | null>(null)
+  const [confirmText, setConfirmText] = useState('')
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<string>('')
+
+  const load = async () => {
+    try {
+      setStatus(await api.adminMigrationStatus())
+    } catch {
+      /* 未登录或接口未就绪时忽略 */
+    }
+  }
+
+  useEffect(() => {
+    void load()
+  }, [])
+
+  const run = async () => {
+    if (confirmText.trim() !== 'RENUMBER-75') {
+      toast.error('确认串不对，请输入 RENUMBER-75')
+      return
+    }
+    if (!window.confirm(`确认执行？\n\n会删除 ${status?.willDelete ?? '?'} 个产品，并把 ${status?.listed ?? '?'} 个产品重编为 GLS0001…\n此操作不可撤销，请确认已经下载备份。`))
+      return
+    setRunning(true)
+    try {
+      const r = await api.adminMigrateGls(confirmText.trim())
+      setResult(
+        r.alreadyDone
+          ? `已经执行过（${r.doneAt}），不会重复编号`
+          : `完成：删除 ${r.deleted} 条，重编号 ${r.renumbered} 条，下一个号 ${r.nextGls}`
+      )
+      toast.success('数据整理完成')
+      await load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3 text-[12px] text-slate-600">
+        <span>产品总数 {status?.total ?? '—'}</span>
+        <span>保留（原正式产品库）{status?.listed ?? '—'}</span>
+        <span className="text-rose-600">将删除 {status?.willDelete ?? '—'}</span>
+        <span>已发出 GLS 到 {status?.glsSeq ?? 0} 号</span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <a href={api.adminBackupUrl()} download>
+          <Button size="sm" variant="outline">
+            <Download className="mr-1 h-3.5 w-3.5" /> ① 下载备份（将被删除的产品）
+          </Button>
+        </a>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={async () => {
+            const r = await api.adminRenumberPreview()
+            toast.message(`共 ${r.total} 个产品会重编号：${r.rows[0]?.oldCode} → ${r.rows[0]?.newCode} … ${r.rows[r.rows.length - 1]?.oldCode} → ${r.rows[r.rows.length - 1]?.newCode}`)
+          }}
+        >
+          ② 预览重编号
+        </Button>
+      </div>
+
+      {status?.done ? (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-800">
+          已在 {new Date(status.done).toLocaleString('zh-CN')} 执行过，不会重复编号。{result}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-800">
+          <div className="font-medium">③ 执行前请确认已下载备份</div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder="输入 RENUMBER-75 确认"
+              className="h-8 w-52 rounded border border-rose-200 bg-white px-2 text-[12px] outline-none focus:border-rose-400"
+            />
+            <Button size="sm" variant="outline" className="text-rose-600" disabled={running} onClick={() => void run()}>
+              {running ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Trash2 className="mr-1 h-3.5 w-3.5" />}
+              执行删除 + 重编号
+            </Button>
+            {result && <span className="text-slate-700">{result}</span>}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

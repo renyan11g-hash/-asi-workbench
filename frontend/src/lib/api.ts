@@ -14,7 +14,9 @@ import {
   Evaluation,
   FlowOverview,
   FlowRow,
+  EvaluationRow,
   ImprintRecommendResult,
+  LibraryRow,
   Inquiry,
   InquiryStatus,
   Listing,
@@ -1141,6 +1143,117 @@ export const api = {
   }> {
     const { data } = await apiClient.get('/production/ai-logs', { params })
     return data
+  },
+
+  // ---------- 产品资料库 → 系统（导入即建档 / 批量推进） ----------
+  /** 把资料库里的资料推进系统：建/复用产品档案（之后就能在流水线看到） */
+  async pushMasterProducts(payload: { ids?: string[]; all?: boolean }): Promise<{
+    total: number
+    created: number
+    existing: number
+    productIds: string[]
+  }> {
+    const { data } = await apiClient.post('/master-products/push', payload)
+    return data
+  },
+
+  // ---------- 预产品库 / RPA 档案库 / 评估库 ----------
+  async listPreProducts(q?: string): Promise<{ rows: LibraryRow[]; total: number }> {
+    const { data } = await apiClient.get('/library/pre-products', { params: { q } })
+    return data
+  },
+
+  async listRpaArchive(q?: string): Promise<{ rows: LibraryRow[]; total: number }> {
+    const { data } = await apiClient.get('/library/rpa', { params: { q } })
+    return data
+  },
+
+  /** 从预产品库移进 RPA 档案库：人工给新编号（覆盖旧编号，GLS 号不再复用） */
+  async archiveToRpa(entries: Array<{ productId: string; code: string }>): Promise<{
+    moved: number
+    failed: Array<{ productId: string; error: string }>
+  }> {
+    const { data } = await apiClient.post('/library/rpa/archive', { entries })
+    return data
+  },
+
+  async listEvaluations(params?: { q?: string; status?: string }): Promise<{
+    rows: EvaluationRow[]
+    counts: { all: number; pending: number; approved: number; rejected: number; none: number }
+    total: number
+  }> {
+    const { data } = await apiClient.get('/library/evaluations', { params })
+    return data
+  },
+
+  /** 批量评估（后台跑：AI 评估 + 看图找同款，跑完自动存评估库） */
+  async evaluateProducts(payload: { productIds: string[]; clientKey?: string }): Promise<{
+    job: ProductionJob
+    deduped: boolean
+    skipped: Array<{ productId: string; reason: string }>
+  }> {
+    const { data } = await apiClient.post('/library/evaluate', payload)
+    return data
+  },
+
+  /** 评估人工审核：通过会自动排队生成英文链接，不通过进待定 */
+  async evalReview(payload: {
+    ids: string[]
+    decision: 'approve' | 'reject'
+    note?: string
+  }): Promise<{ changed: number; job: ProductionJob | null }> {
+    const { data } = await apiClient.post('/library/eval-review', payload)
+    return data
+  },
+
+  async toPreLibrary(ids: string[]): Promise<{ moved: Array<{ id: string; code: string; assigned: boolean }> }> {
+    const { data } = await apiClient.post('/library/to-pre', { ids })
+    return data
+  },
+
+  async numberingPreview(): Promise<{
+    rows: Array<{ productId: string; title: string; oldCode: string; newCode: string; createdAt: string }>
+    total: number
+  }> {
+    const { data } = await apiClient.get('/library/numbering-preview')
+    return data
+  },
+
+  // ---------- 一次性数据管理（备份 / 重编号 / 删除） ----------
+  async adminMigrationStatus(): Promise<{
+    done: string | null
+    total: number
+    listed: number
+    willDelete: number
+    counts: Record<string, number>
+    glsSeq: number
+  }> {
+    const { data } = await apiClient.get('/admin/migration-status')
+    return data
+  },
+
+  async adminRenumberPreview(): Promise<{
+    total: number
+    rows: Array<{ productId: string; title: string; oldCode: string; newCode: string; createdAt: string }>
+  }> {
+    const { data } = await apiClient.get('/admin/renumber-preview')
+    return data
+  },
+
+  async adminMigrateGls(confirm: string): Promise<{
+    ok: boolean
+    alreadyDone?: boolean
+    deleted?: number
+    renumbered?: number
+    nextGls?: string
+    doneAt?: string
+  }> {
+    const { data } = await apiClient.post('/admin/migrate-gls', { confirm })
+    return data
+  },
+
+  adminBackupUrl(): string {
+    return `${apiClient.defaults.baseURL}/admin/backup`
   },
 
   /** 批量审核：只取待审核（审核中心默认视图） */

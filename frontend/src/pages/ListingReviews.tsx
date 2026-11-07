@@ -8,6 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { SectionCard, VerdictBadge } from '@/components/ui/primitives'
 import { api, getErrorMessage } from '@/lib/api'
 import type { FlowRow } from '@/types'
+import { ReviewCenterPanel } from './ReviewCenter'
 
 type Tab = 'pending' | 'rejected'
 
@@ -27,6 +28,8 @@ export default function ListingReviews() {
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [counts, setCounts] = useState({ pending: 0, rejected: 0 })
+  /** flow=流水线里待审核的文案；drafts=批量生成的草稿（两个原来分开的页面，现在合一页两个视图） */
+  const [mode, setMode] = useState<'flow' | 'drafts'>('flow')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -108,6 +111,28 @@ export default function ListingReviews() {
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {([
+          { key: 'flow', label: '流水线待审核文案' },
+          { key: 'drafts', label: '批量生成草稿（含质检）' },
+        ] as const).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setMode(t.key)}
+            className={
+              mode === t.key
+                ? 'rounded-full border border-blue-300 bg-blue-50 px-3 py-1 text-[12px] font-semibold text-blue-700'
+                : 'rounded-full border border-slate-200 bg-white px-3 py-1 text-[12px] text-slate-500 hover:border-slate-300'
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'drafts' ? (
+        <ReviewCenterPanel />
+      ) : (
       <SectionCard
         title="英文链接待审核"
         hint="待审核 = 产品档案里「文案已生成、还没确认」的那些。点「打开」进完整编辑页，文案/图片/报价都能改；通过就进正式产品库。"
@@ -302,6 +327,7 @@ export default function ListingReviews() {
           )}
         </div>
       </SectionCard>
+      )}
     </div>
   )
 }

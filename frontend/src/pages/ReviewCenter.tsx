@@ -61,7 +61,7 @@ function qcBadge(qc: ListingQcReport | null | undefined) {
  * 批量生成的草稿都堆在这里：一行一个产品，能看质检、能直接改、能单字段重生成、
  * 能单条/批量通过。通过前**不会**动产品库里现有的 Listing —— 这是这一页存在的意义。
  */
-export default function ReviewCenter() {
+export function ReviewCenterPanel() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [tab, setTab] = useState<Tab>('pending')

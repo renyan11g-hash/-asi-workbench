@@ -21,6 +21,7 @@ import { mergeAiQc, runListingQc } from '../services/listing-qc'
 import { runAiListingQc } from '../services/listing-qc-ai'
 import { SPEC_FIELDS, getSpecRecord, isKnown } from '../services/product-specs'
 import { regenerateListingFields } from '../services/workbench'
+import { enterPreLibrary } from '../services/library'
 import { loadSettings } from './settings'
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected'
@@ -695,6 +696,12 @@ listingReviewsRouter.post('/approve', (req: Request, res: Response) => {
         db.prepare(
           "UPDATE products SET status='listed', review_state='approved', updated_at=? WHERE id=?"
         ).run(now, productId)
+      }
+      // 进预产品库：发 GLS 编号（已发过就不重发），编号规则见 services/numbering.ts
+      try {
+        enterPreLibrary(productId)
+      } catch {
+        /* 发号失败不让审核本身失败，下次通过或补录时会再补 */
       }
       db.prepare(
         "UPDATE listing_reviews SET status='approved', product_id=?, updated_at=? WHERE id=?"

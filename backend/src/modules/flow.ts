@@ -19,6 +19,7 @@ import { z } from 'zod'
 import Jimp from 'jimp'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
+import { enterPreLibrary } from '../services/library'
 
 export const flowRouter: Router = Router()
 
@@ -47,6 +48,10 @@ interface LiteRow {
   status: string
   review_note: string | null
   updated_at: string
+  eval_review: string | null
+  library_state: string | null
+  gls_code: string | null
+  prev_code: string | null
 }
 
 /** 评估前必须齐的字段（与批量层 missingFields 同一套口径，标签也是同一批中文） */
@@ -64,7 +69,18 @@ function specsMissing(r: LiteRow): string[] {
 }
 
 /** 下一步该做什么：前端按这个给「一键到下一步」的按钮 */
-type NextStep = 'specs' | 'evaluate' | 'listing' | 'review' | 'confirm' | 'done' | 'rejected' | 'trashed'
+type NextStep =
+  | 'specs'
+  | 'evaluate'
+  | 'evalReview'
+  | 'parked'
+  | 'listing'
+  | 'review'
+  | 'confirm'
+  | 'done'
+  | 'rejected'
+  | 'trashed'
+
 
 function nextStepOf(r: LiteRow, missing: string[]): NextStep {
   if (r.status === 'trashed') return 'trashed'
@@ -73,6 +89,9 @@ function nextStepOf(r: LiteRow, missing: string[]): NextStep {
   if (r.status === 'archived') return 'rejected'
   // status='sourced'：档案在流水线中
   if (!r.has_eval) return missing.length ? 'specs' : 'evaluate'
+  // 评估跑完了：等人工决定「通过」（通过会自动去生成文案）还是「待定」
+  if (r.eval_review === 'pending') return 'evalReview'
+  if (r.eval_review === 'rejected') return 'parked'
   if (!r.has_listing) return 'listing'
   // 有文案但还没确认（老数据：以前生成完直接就是 sourced）
   return 'confirm'
@@ -86,7 +105,7 @@ function liteRows(): LiteRow[] {
               price_cny, material_cn, colors_cn, score, verdict,
               CASE WHEN evaluation IS NULL THEN 0 ELSE 1 END AS has_eval,
               CASE WHEN listing IS NULL THEN 0 ELSE 1 END AS has_listing,
-              listing_title, status, review_note, updated_at,
+              listing_title, status, review_note, updated_at, eval_review, library_state, gls_code, prev_code,
               CASE WHEN images NOT IN ('', '[]') THEN 1 ELSE 0 END AS has_src_images
        FROM products
        WHERE status != 'trashed'
@@ -132,6 +151,12 @@ function toFlowRow(r: LiteRow, imgs: { count: Map<string, number>; first: Map<st
     verdict: r.verdict ?? null,
     reviewNote: r.review_note ?? '',
     updatedAt: r.updated_at,
+    /** 评估人工审核结果（产品评估这一站） */
+    evalReview: r.eval_review ?? null,
+    /** pipeline / pre（预产品库）/ rpa（RPA 档案库） */
+    libraryState: r.library_state ?? 'pipeline',
+    glsCode: r.gls_code ?? null,
+    prevCode: r.prev_code ?? null,
     specs: {
       missing,
       complete: missing.length === 0,
@@ -170,14 +195,22 @@ flowRouter.get('/overview', (_req: Request, res: Response) => {
     needSpecs: count((r) => noEval(r) && missingOf(r).length > 0),
     /** 待评估：资料齐了，还没跑 AI 评估 */
     needEval: count((r) => noEval(r) && missingOf(r).length === 0),
-    /** 待生成文案：已评估，还没英文链接 */
+    /** 评估跑完、等人工定通过/待定 */
+    needEvalReview: count((r) => sourced(r) && Boolean(r.has_eval) && r.eval_review === 'pending'),
+    /** 评估没通过（待定） */
+    parked: count((r) => sourced(r) && r.eval_review === 'rejected'),
+    /** 待生成文案：评估已通过、还没英文链接 */
     needListing: count((r) => sourced(r) && Boolean(r.has_eval) && !r.has_listing),
     /** 待审核 */
     pendingReview: count((r) => r.status === 'pending_review'),
     /** 已生成文案但还没确认保存（老数据） */
     needConfirm: count((r) => sourced(r) && Boolean(r.has_listing)),
-    /** 正式产品库 */
+    /** 已上架（预产品库 + RPA 档案库） */
     listed: count((r) => r.status === 'listed'),
+    /** 预产品库（已发 GLS 号） */
+    inPreLibrary: count((r) => r.status === 'listed' && (r.library_state ?? 'pre') !== 'rpa'),
+    /** RPA 档案库 */
+    inRpaArchive: count((r) => r.library_state === 'rpa'),
     archived: count((r) => r.status === 'archived'),
     /** 有 AI 生成图的档案数 */
     withImages,
@@ -254,6 +287,12 @@ flowRouter.post('/reviews/approve', (req: Request, res: Response) => {
       db.prepare(
         "UPDATE products SET status='listed', review_state='approved', reviewed_at=?, updated_at=? WHERE id=?"
       ).run(now, now, id)
+      // 进预产品库即发 GLS 号（已有号不重发）
+      try {
+        enterPreLibrary(id)
+      } catch {
+        /* 发号失败不影响审核本身 */
+      }
       // 批量任务靠 listing_reviews 判断这条审核结果，这里同步（没有对应记录也不影响）
       db.prepare(
         "UPDATE listing_reviews SET status='approved', updated_at=? WHERE product_id=? AND status='pending'"

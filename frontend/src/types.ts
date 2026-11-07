@@ -674,6 +674,10 @@ export interface MasterProduct {
   colorsCn: string
   createdAt: string
   updatedAt: string
+  /** 已建进产品流水线时的产品档案信息（导入即建档） */
+  productId?: string | null
+  productCode?: string | null
+  productStatus?: string | null
 }
 
 // ---------------- 英文链接待审核库（批量生成的 listing 先在这里审核，通过才进产品库） ----------------
@@ -722,6 +726,10 @@ export interface ListingReview extends ListingReviewSummary {
 export type FlowNextStep =
   | 'specs'
   | 'evaluate'
+  /** 评估跑完，等人工定通过/待定 */
+  | 'evalReview'
+  /** 评估没通过（待定） */
+  | 'parked'
   | 'listing'
   | 'review'
   | 'confirm'
@@ -753,6 +761,12 @@ export interface FlowRow {
   hasListing: boolean
   images: { ai: number; source: boolean; thumb: string; thumbFallback: string }
   nextStep: FlowNextStep
+  /** 评估人工审核结果：pending 待审 / approved 通过 / rejected 待定 */
+  evalReview?: 'pending' | 'approved' | 'rejected' | null
+  /** pipeline=流水线 / pre=预产品库 / rpa=RPA 档案库 */
+  libraryState?: string
+  glsCode?: string | null
+  prevCode?: string | null
 }
 
 /** 总览漏斗计数 */
@@ -760,13 +774,49 @@ export interface FlowOverview {
   total: number
   needSpecs: number
   needEval: number
+  /** 评估跑完等人工定通过/待定 */
+  needEvalReview?: number
+  /** 评估没通过（待定） */
+  parked?: number
   needListing: number
   pendingReview: number
   needConfirm: number
   listed: number
+  /** 预产品库（已发 GLS 号） */
+  inPreLibrary?: number
+  /** RPA 档案库 */
+  inRpaArchive?: number
   archived: number
   withImages: number
   updatedAt: string
+}
+
+// ---------------- 预产品库 / RPA 档案库 / 评估库（2026-11-07 流程合并） ----------------
+
+export interface LibraryRow {
+  id: string
+  code: string
+  glsCode: string | null
+  prevCode: string | null
+  libraryState: string
+  status: string
+  title: string
+  sourceUrl: string
+  score: number | null
+  verdict: string | null
+  evalReview: 'pending' | 'approved' | 'rejected' | null
+  reviewState: string | null
+  hasListing: boolean
+  updatedAt: string
+  rpaArchivedAt: string | null
+}
+
+export interface EvaluationRow extends LibraryRow {
+  evalSummary: string
+  evalScore: number | null
+  evalVerdict: string | null
+  evalReviewedAt: string | null
+  draftId: string | null
 }
 
 // ---------------- 批量生产系统 V1：产品结构化资料 ----------------

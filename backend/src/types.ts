@@ -604,7 +604,7 @@ export interface ProductSpecRecord {
 
 // ========== 批量生产任务（Listing 批量生成 / 结构化批量提取） ==========
 
-export type ProductionJobKind = 'listing' | 'spec'
+export type ProductionJobKind = 'listing' | 'spec' | 'evaluate'
 
 export type ProductionJobStatus =
   | 'queued'

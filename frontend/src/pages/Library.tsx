@@ -10,9 +10,10 @@ import { StatusBadge, VerdictBadge } from '@/components/ui/primitives'
 import { api, getErrorMessage } from '@/lib/api'
 import { formatMarketHits } from '@/lib/market-format'
 import { useProducts } from '@/hooks/use-data'
+import type { Product } from '@/types'
 
 const FILTERS = [
-  { value: 'listed', label: '正式产品' },
+  { value: 'listed', label: '预产品库' },
   { value: 'all', label: '全部' },
   { value: 'sourced', label: '未上架档案' },
   { value: 'archived', label: '已归档' },
@@ -49,8 +50,34 @@ export default function Library() {
     }
   }
 
-  const restore = async (id: string) => {
+  /**
+   * 移入 RPA 档案库：新编号由人手动输入（覆盖旧编号）。
+   * 旧 GLS 号留在 prev_code 里可追溯，而且计数器只增不减 —— 这个号不会再发给别的产品。
+   */
+  const toRpa = async (p: Product) => {
+    const code = window.prompt(
+      `给「${p.code} ${p.source.sourceTitle || ''}」输入 RPA 档案库的新编号：\n\n（会覆盖当前编号；旧编号 ${p.code} 留存、不再复用）`,
+      ''
+    )
+    if (code === null) return
+    const next = code.trim()
+    if (!next) {
+      toast.error('新编号不能为空')
+      return
+    }
     try {
+      const r = await api.archiveToRpa([{ productId: p.id, code: next }])
+      if (r.failed.length) toast.error(r.failed[0].error)
+      else {
+        toast.success(`已移入 RPA 档案库，新编号 ${next}`)
+        qc.invalidateQueries({ queryKey: ['products'] })
+      }
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  const restore = async (id: string) => {    try {
       await api.restoreProduct(id)
       qc.invalidateQueries({ queryKey: ['products'] })
       toast.success('已从回收站恢复')
@@ -260,6 +287,15 @@ export default function Library() {
                           >
                             <Wand2 className="mr-1 h-3 w-3" />
                             {p.listing ? '编辑链接' : '生成链接'}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-indigo-600 hover:text-indigo-700"
+                            title="给这条产品换一个新编号，并移到 RPA 档案库（旧 GLS 号留存、不再复用）"
+                            onClick={() => void toRpa(p)}
+                          >
+                            <Archive className="mr-1 h-3 w-3" /> 移入 RPA
                           </Button>
                           <Button
                             variant="ghost"

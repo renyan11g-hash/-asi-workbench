@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PageTransition } from "@/components/PageTransition";
@@ -15,9 +15,8 @@ import Evaluations from "./pages/Evaluations";
 import Library from "./pages/Library";
 import ListingEditor from "./pages/ListingEditor";
 import ListingReviews from "./pages/ListingReviews";
-import ProductSpecsPage from "./pages/ProductSpecs";
 import Production from "./pages/Production";
-import ReviewCenter from "./pages/ReviewCenter";
+import RpaArchive from "./pages/RpaArchive";
 import SettingsPage from "./pages/SettingsPage";
 import NotFound from "./pages/NotFound";
 
@@ -92,20 +91,18 @@ function App() {
               <Route
                 path="production"
                 data-genie-key="Production"
-                data-genie-title="批量生产中心"
+                data-genie-title="批次进度"
                 element={<PageTransition transition="fade"><Production /></PageTransition>}
               />
+              {/* 产品资料卡已并入「产品资料库」，旧地址重定向过去，避免收藏夹失效 */}
+              <Route path="specs" element={<Navigate to="/master-data" replace />} />
+              {/* Listing 审核中心已并入「listing 待审核中心」 */}
+              <Route path="review-center" element={<Navigate to="/listing-reviews" replace />} />
               <Route
-                path="specs"
-                data-genie-key="ProductSpecs"
-                data-genie-title="产品资料卡"
-                element={<PageTransition transition="fade"><ProductSpecsPage /></PageTransition>}
-              />
-              <Route
-                path="review-center"
-                data-genie-key="ReviewCenter"
-                data-genie-title="Listing 审核中心"
-                element={<PageTransition transition="fade"><ReviewCenter /></PageTransition>}
+                path="rpa"
+                data-genie-key="RpaArchive"
+                data-genie-title="RPA 档案库"
+                element={<PageTransition transition="fade"><RpaArchive /></PageTransition>}
               />
               <Route
                 path="evaluations"

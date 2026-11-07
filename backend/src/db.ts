@@ -497,6 +497,20 @@ ensureColumn('market_list_high', 'market_list_high REAL')
 ensureColumn('market_source', "market_source TEXT")
 ensureColumn('market_checked_at', 'market_checked_at TEXT')
 
+// ---- 编号体系（2026-11-07）：预产品库用 GLS0001…，RPA 档案库用手工新编号 ----
+// gls_code 一旦发放不再变、也不再复用（即使产品被移进 RPA 档案库或删除）；
+// prev_code 记录上一次的编号，方便追溯「GLS0031 → RPA670」这种改号。
+ensureColumn('gls_code', 'gls_code TEXT')
+ensureColumn('prev_code', 'prev_code TEXT')
+// 产品现在在哪个库：pipeline=流水线/评估阶段，pre=预产品库，rpa=RPA 档案库
+ensureColumn('library_state', "library_state TEXT NOT NULL DEFAULT 'pipeline'")
+ensureColumn('rpa_archived_at', 'rpa_archived_at TEXT')
+// 评估人工审核：null 未评估完 / pending 待审核 / approved 通过（自动去生成文案）/ rejected 不通过（待定）
+ensureColumn('eval_review', 'eval_review TEXT')
+ensureColumn('eval_reviewed_at', 'eval_reviewed_at TEXT')
+// 产品资料库（master_products）导入后自动生成的产品档案，记下来源主数据 id，避免重复建档
+ensureColumn('master_id', 'master_id TEXT')
+
 // 批量任务：记住上一次跑的是哪个阶段，暂停/中断后能一键接着跑
 ensureTableColumn('batch_jobs', 'last_stage', "last_stage TEXT NOT NULL DEFAULT ''")
 

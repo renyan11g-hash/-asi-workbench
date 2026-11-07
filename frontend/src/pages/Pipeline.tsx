@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  Trash2,
   TriangleAlert,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -26,6 +27,8 @@ import type { FlowNextStep, FlowRow } from '@/types'
 const NEXT_TEXT: Record<FlowNextStep, { label: string; action: string }> = {
   specs: { label: '待补资料', action: '补资料' },
   evaluate: { label: '待评估', action: '去评估' },
+  evalReview: { label: '待定评估结论', action: '审核评估' },
+  parked: { label: '待定', action: '看评估' },
   listing: { label: '待生成文案', action: '生成英文链接' },
   confirm: { label: '待确认保存', action: '核对保存' },
   review: { label: '待审核', action: '审核' },
@@ -37,6 +40,8 @@ const NEXT_TEXT: Record<FlowNextStep, { label: string; action: string }> = {
 const NEXT_STYLE: Record<FlowNextStep, string> = {
   specs: 'bg-amber-100 text-amber-800 border-amber-200',
   evaluate: 'bg-sky-100 text-sky-800 border-sky-200',
+  evalReview: 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200',
+  parked: 'bg-slate-200 text-slate-600 border-slate-300',
   listing: 'bg-violet-100 text-violet-800 border-violet-200',
   confirm: 'bg-indigo-100 text-indigo-800 border-indigo-200',
   review: 'bg-rose-100 text-rose-800 border-rose-200',
@@ -49,6 +54,8 @@ const FILTERS: Array<{ value: string; label: string }> = [
   { value: 'all', label: '全部' },
   { value: 'specs', label: '待补资料' },
   { value: 'evaluate', label: '待评估' },
+  { value: 'evalReview', label: '待定评估结论' },
+  { value: 'parked', label: '待定' },
   { value: 'listing', label: '待生成文案' },
   { value: 'review', label: '待审核' },
   { value: 'done', label: '已完成' },
@@ -160,9 +167,82 @@ export default function Pipeline() {
     }
   }
 
+  /** 批量评估：资料齐了的产品，一次排队跑完 AI 评估（含看图找同款） */
+  const runBatchEvaluate = async () => {
+    const ids = selectedRows.filter((r) => r.nextStep === 'evaluate' || r.nextStep === 'specs').map((r) => r.id)
+    if (!ids.length) {
+      toast.error('选中的产品里没有「待评估」的条目')
+      return
+    }
+    setWorking(true)
+    try {
+      const { job, skipped } = await api.evaluateProducts({
+        productIds: ids.slice(0, 20),
+        clientKey: `eval-${Date.now()}`,
+      })
+      localStorage.setItem('asi-production:jobId', job.id)
+      qc.invalidateQueries({ queryKey: ['flow-overview'] })
+      qc.invalidateQueries({ queryKey: ['flow-products'] })
+      if (skipped.length) toast.warning(`已提交 ${job.items.length} 条，跳过 ${skipped.length} 条`)
+      else toast.success(`已开始评估 ${job.items.length} 个产品（含看图找同款），跑完在评估库等你审`)
+      navigate('/production')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  /** 评估审核：通过 → 自动排队生成英文链接；不通过 → 待定 */
+  const reviewEvaluation = async (ids: string[], decision: 'approve' | 'reject') => {
+    if (!ids.length) return
+    if (decision === 'reject' && !window.confirm(`把选中的 ${ids.length} 个产品标成「待定」？（评估结果保留在评估库，可随时改判）`)) return
+    setWorking(true)
+    try {
+      const r = await api.evalReview({ ids, decision })
+      qc.invalidateQueries({ queryKey: ['flow-overview'] })
+      qc.invalidateQueries({ queryKey: ['flow-products'] })
+      if (decision === 'approve') {
+        toast.success(`已通过 ${r.changed} 条，正在自动生成英文链接`)
+        navigate('/production')
+      } else {
+        toast.success(`已标为待定 ${r.changed} 条`)
+      }
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  /** 删除：先移回收站（可恢复），回收站里的再点一次就是永久删除 */
+  const removeRow = async (row: FlowRow) => {
+    const trashed = row.status === 'trashed'
+    if (trashed) {
+      if (!window.confirm(`永久删除「${row.code || row.title}」？此操作不可恢复。`)) return
+    } else if (!window.confirm(`把「${row.code || row.title}」移进回收站？可在回收站恢复。`)) return
+    try {
+      const r = await api.deleteProduct(row.id)
+      toast.success(trashed || r.action === 'purged' ? '已永久删除' : '已移到回收站')
+      setSelected((cur) => cur.filter((x) => x !== row.id))
+      qc.invalidateQueries({ queryKey: ['flow-overview'] })
+      qc.invalidateQueries({ queryKey: ['flow-products'] })
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
   const goNext = (row: FlowRow) => {
-    if (row.nextStep === 'evaluate') {
+    if (row.nextStep === 'evaluate' || row.nextStep === 'specs') {
       void evaluateOne(row)
+      return
+    }
+    if (row.nextStep === 'evalReview' || row.nextStep === 'parked') {
+      navigate('/evaluations')
+      return
+    }
+    if (row.nextStep === 'review') {
+      navigate('/listing-reviews')
       return
     }
     navigate(`/listing/${row.id}`)
@@ -172,13 +252,14 @@ export default function Pipeline() {
   return (
     <div className="space-y-4">
       {/* 漏斗：一眼看出今天该干什么 */}
-      <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
+      <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-7">
         {[
           { key: 'needSpecs', label: '待补资料', value: counts?.needSpecs ?? 0, filter: 'specs', icon: TriangleAlert, tone: 'text-amber-600' },
           { key: 'needEval', label: '待评估', value: counts?.needEval ?? 0, filter: 'evaluate', icon: Sparkles, tone: 'text-sky-600' },
+          { key: 'needEvalReview', label: '待定评估结论', value: counts?.needEvalReview ?? 0, filter: 'evalReview', icon: ClipboardCheck, tone: 'text-fuchsia-600' },
           { key: 'needListing', label: '待生成文案', value: (counts?.needListing ?? 0) + (counts?.needConfirm ?? 0), filter: 'listing', icon: FileText, tone: 'text-violet-600' },
           { key: 'pendingReview', label: '待审核', value: counts?.pendingReview ?? 0, filter: 'review', icon: ClipboardCheck, tone: 'text-rose-600' },
-          { key: 'listed', label: '正式产品', value: counts?.listed ?? 0, filter: 'done', icon: CheckCircle2, tone: 'text-emerald-600' },
+          { key: 'listed', label: '预产品库', value: counts?.inPreLibrary ?? counts?.listed ?? 0, filter: 'done', icon: CheckCircle2, tone: 'text-emerald-600' },
           { key: 'total', label: '产品档案', value: counts?.total ?? 0, filter: 'all', icon: Boxes, tone: 'text-slate-600' },
         ].map((c) => (
           <button
@@ -212,6 +293,39 @@ export default function Pipeline() {
               }}
             >
               <RefreshCw className="mr-1 h-3.5 w-3.5" /> 刷新
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={working || !selectedRows.some((r) => r.nextStep === 'evaluate' || r.nextStep === 'specs')}
+              onClick={() => void runBatchEvaluate()}
+            >
+              <Sparkles className="mr-1 h-3.5 w-3.5" /> 批量评估
+            </Button>
+            <Button
+              size="sm"
+              disabled={working || !selectedRows.some((r) => r.nextStep === 'evalReview')}
+              onClick={() =>
+                void reviewEvaluation(
+                  selectedRows.filter((r) => r.nextStep === 'evalReview').map((r) => r.id),
+                  'approve'
+                )
+              }
+            >
+              <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> 评估通过（自动生成文案）
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={working || !selectedRows.some((r) => r.nextStep === 'evalReview')}
+              onClick={() =>
+                void reviewEvaluation(
+                  selectedRows.filter((r) => r.nextStep === 'evalReview').map((r) => r.id),
+                  'reject'
+                )
+              }
+            >
+              标为待定
             </Button>
             <Button size="sm" disabled={working || batchable.length === 0} onClick={() => void runBatchListing()}>
               {working ? (
@@ -307,9 +421,14 @@ export default function Pipeline() {
                         />
                       </td>
                       <td className="border-y border-slate-200 bg-white py-3">
-                        <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[11px] text-white">
-                          {r.code || '—'}
-                        </span>
+                        <div className="flex flex-col gap-0.5">
+                          <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[11px] text-white">
+                            {r.code || '—'}
+                          </span>
+                          {r.libraryState === 'rpa' && (
+                            <span className="rounded bg-indigo-100 px-1 text-[10px] text-indigo-700">RPA 档案库</span>
+                          )}
+                        </div>
                       </td>
                       <td className="border-y border-slate-200 bg-white py-3 pr-3">
                         <div className="flex items-start gap-2.5">
@@ -419,6 +538,15 @@ export default function Pipeline() {
                             title="打开完整编辑页（资料 / 评估 / 文案 / 出图）"
                           >
                             打开
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className={r.status === 'trashed' ? 'text-rose-600' : 'text-slate-400'}
+                            onClick={() => void removeRow(r)}
+                            title={r.status === 'trashed' ? '永久删除' : '移到回收站'}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                         <div className="mt-1 flex gap-1">
