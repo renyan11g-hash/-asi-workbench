@@ -11,7 +11,7 @@ import { api, getErrorMessage } from '@/lib/api'
 import type { FlowRow } from '@/types'
 import { ReviewCenterPanel } from './ReviewCenter'
 
-type Tab = 'pending' | 'rejected'
+type Tab = 'pending' | 'approved' | 'rejected'
 
 /**
  * 英文链接待审核。
@@ -28,7 +28,7 @@ export default function ListingReviews() {
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
-  const [counts, setCounts] = useState({ pending: 0, rejected: 0 })
+  const [counts, setCounts] = useState({ pending: 0, approved: 0, rejected: 0 })
   /** flow=流水线里待审核的文案；drafts=批量生成的草稿（两个原来分开的页面，现在合一页两个视图） */
   const [mode, setMode] = useState<'flow' | 'drafts'>('flow')
 
@@ -36,14 +36,17 @@ export default function ListingReviews() {
     setLoading(true)
     try {
       if (tab === 'pending') {
-        const r = await api.listFlowReviews(q || undefined)
+        const r = await api.listFlowReviews(q || undefined, 'pending')
+        setRows(r.reviews)
+      } else if (tab === 'approved') {
+        const r = await api.listFlowReviews(q || undefined, 'approved')
         setRows(r.reviews)
       } else {
         const r = await api.listFlowProducts({ need: 'rejected', limit: 200, q: q || undefined })
         setRows(r.rows)
       }
       const o = await api.getFlowOverview()
-      setCounts({ pending: o.pendingReview, rejected: o.archived })
+      setCounts({ pending: o.pendingReview, approved: o.inPreLibrary ?? o.listed, rejected: o.archived })
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
@@ -68,6 +71,29 @@ export default function ListingReviews() {
       } else {
         toast.success(`已通过 ${r.approved.length} 条，已进正式产品库`)
       }
+      setSelected([])
+      void load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * 驳回「已经通过」的：产品从预产品库下架、标成已驳回，文案保留可以改完重新生成再审。
+   */
+  const unapprove = async (ids: string[]) => {
+    if (!ids.length) return
+    const note = window.prompt(
+      `驳回这 ${ids.length} 条已经通过的产品？\n\n产品会从预产品库下架并标为已驳回；文案保留，可改完重新生成再审。\n\n驳回原因（可留空）：`,
+      ''
+    )
+    if (note === null) return
+    setBusy(true)
+    try {
+      const r = await api.unapproveFlowReviews(ids, note)
+      toast.success(`已驳回 ${r.reverted} 条，已从预产品库下架`)
       setSelected([])
       void load()
     } catch (err) {
@@ -155,7 +181,7 @@ export default function ListingReviews() {
         }
       >
         <div className="flex flex-wrap items-center gap-2">
-          {(['pending', 'rejected'] as Tab[]).map((t) => (
+          {(['pending', 'approved', 'rejected'] as Tab[]).map((t) => (
             <button
               key={t}
               type="button"
@@ -170,7 +196,11 @@ export default function ListingReviews() {
                   : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300',
               ].join(' ')}
             >
-              {t === 'pending' ? '待审核' : '已驳回'}
+              {t === 'pending'
+                ? `待审核（${counts.pending}）`
+                : t === 'approved'
+                  ? `已通过（${counts.approved}）`
+                  : `已驳回（${counts.rejected}）`}
             </button>
           ))}
           <div className="relative ml-1">
@@ -196,6 +226,11 @@ export default function ListingReviews() {
                   <XCircle className="mr-1 h-3.5 w-3.5" /> 驳回
                 </Button>
               </>
+            )}
+            {selected.length > 0 && tab === 'approved' && (
+              <Button size="sm" variant="outline" className="text-rose-600" disabled={busy} onClick={() => void unapprove(selected)}>
+                <XCircle className="mr-1 h-3.5 w-3.5" /> 驳回已通过（{selected.length}）
+              </Button>
             )}
             {selected.length > 0 && tab === 'rejected' && (
               <Button size="sm" variant="outline" disabled={busy} onClick={() => void reopen(selected)}>
@@ -308,6 +343,15 @@ export default function ListingReviews() {
                               驳回
                             </Button>
                           </>
+                        ) : tab === 'approved' ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-[11px] text-rose-600"
+                            onClick={() => void unapprove([r.id])}
+                          >
+                            驳回（下架）
+                          </Button>
                         ) : (
                           <Button
                             size="sm"

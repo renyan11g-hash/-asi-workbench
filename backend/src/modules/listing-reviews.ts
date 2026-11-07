@@ -775,6 +775,45 @@ listingReviewsRouter.post('/reject', (req: Request, res: Response) => {
   res.json({ ok: true, rejected: n })
 })
 
+/**
+ * 驳回「已经通过」的文案（通过之后反悔）。
+ *
+ * 效果：这条审核记录标成已驳回，产品从预产品库下架（status=archived、library_state=pipeline），
+ * 文案内容保留 —— 可以改完重新生成、再走一次审核。GLS 号留在产品上（下次通过继续用，不重号）。
+ */
+listingReviewsRouter.post('/unapprove', (req: Request, res: Response) => {
+  const body = z
+    .object({ ids: z.array(z.string().min(1)).min(1).max(200), note: z.string().max(500).optional() })
+    .parse(req.body ?? {})
+  const now = new Date().toISOString()
+  const reverted: string[] = []
+  const skipped: Array<{ id: string; error: string }> = []
+
+  for (const id of body.ids) {
+    const row = db.prepare('SELECT * FROM listing_reviews WHERE id = ?').get(id) as unknown as RawRow | undefined
+    if (!row) {
+      skipped.push({ id, error: '记录不存在' })
+      continue
+    }
+    if (row.status !== 'approved') {
+      skipped.push({ id, error: '只有「已通过」的才能驳回' })
+      continue
+    }
+    db.prepare("UPDATE listing_reviews SET status='rejected', review_note=?, updated_at=? WHERE id=?").run(
+      body.note ?? '',
+      now,
+      id
+    )
+    if (row.product_id) {
+      db.prepare(
+        "UPDATE products SET status='archived', review_state='rejected', review_note=?, library_state='pipeline', reviewed_at=?, updated_at=? WHERE id=?"
+      ).run(body.note ?? '', now, now, row.product_id)
+    }
+    reverted.push(id)
+  }
+  res.json({ ok: true, reverted: reverted.length, skipped })
+})
+
 /** 删除（不留档）：**产品档案不删**，只把待审核的那条记录删掉并把档案退回「文案待生成」 */
 listingReviewsRouter.post('/bulk-delete', (req: Request, res: Response) => {
   const body = z.object({ ids: z.array(z.string().min(1)).min(1).max(200) }).parse(req.body ?? {})

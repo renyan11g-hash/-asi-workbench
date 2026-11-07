@@ -754,10 +754,19 @@ export const api = {
   },
 
   /** 待审核 = 档案里 status='pending_review' 的那些（同一份数据，不是另开的库） */
-  async listFlowReviews(q?: string): Promise<{ reviews: FlowRow[]; total: number }> {
+  async listFlowReviews(
+    q?: string,
+    status: 'pending' | 'approved' = 'pending'
+  ): Promise<{ reviews: FlowRow[]; total: number }> {
     const { data } = await apiClient.get<{ reviews: FlowRow[]; total: number }>('/flow/reviews', {
-      params: { q },
+      params: { q, status },
     })
+    return data
+  },
+
+  /** 驳回「已经通过」的：下架并标记驳回，文案保留，可改后重新生成再审 */
+  async unapproveFlowReviews(ids: string[], note?: string): Promise<{ reverted: number }> {
+    const { data } = await apiClient.post<{ reverted: number }>('/flow/reviews/unapprove', { ids, note })
     return data
   },
 
@@ -1348,6 +1357,18 @@ export const api = {
     results: Array<{ id: string; ok: boolean; findings: string[]; error?: string }>
   }> {
     const { data } = await apiClient.post('/listing-reviews/ai-qc', { ids }, LONG_TIMEOUT)
+    return data
+  },
+
+  /** 驳回「已经通过」的文案（通过之后反悔） */
+  async unapproveReviews(ids: string[], note?: string): Promise<{
+    reverted: number
+    skipped: Array<{ id: string; error: string }>
+  }> {
+    const { data } = await apiClient.post<{ reverted: number; skipped: Array<{ id: string; error: string }> }>(
+      '/listing-reviews/unapprove',
+      { ids, note }
+    )
     return data
   },
 

@@ -108,8 +108,29 @@ export function ReviewCenterPanel() {
     }
   }
 
-  const reject = async (ids: string[]) => {
+  /** 驳回「已经通过」的草稿：产品从预产品库下架并标驳回，文案保留 */
+  const unapprove = async (ids: string[]) => {
     if (!ids.length) return
+    const note = window.prompt(
+      `驳回这 ${ids.length} 条已经通过的？\n\n产品会从预产品库下架并标为已驳回，文案保留（可改完重新生成再审）。\n\n驳回原因（可留空）：`,
+      ''
+    )
+    if (note === null) return
+    setBusy(true)
+    try {
+      const r = await api.unapproveReviews(ids, note)
+      if (r.skipped.length) toast.warning(`驳回 ${r.reverted} 条，${r.skipped.length} 条跳过：${r.skipped[0].error}`)
+      else toast.success(`已驳回 ${r.reverted} 条，已从预产品库下架`)
+      setSelected([])
+      refresh()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const reject = async (ids: string[]) => {    if (!ids.length) return
     const note = window.prompt('驳回原因（会记在这条草稿上，产品库里的现有 Listing 不受影响）', '')
     if (note === null) return
     setBusy(true)
@@ -241,6 +262,11 @@ export function ReviewCenterPanel() {
                 </Button>
               </>
             )}
+            {tab === 'approved' && selected.length > 0 && (
+              <Button size="sm" variant="outline" className="text-rose-600" disabled={busy} onClick={() => void unapprove(selected)}>
+                <XCircle className="mr-1 h-3.5 w-3.5" /> 驳回已通过（{selected.length}）
+              </Button>
+            )}
             {selected.length > 0 && (
               <>
                 <Button size="sm" disabled={busy} onClick={() => void approve(selected)}>
@@ -320,6 +346,18 @@ export function ReviewCenterPanel() {
                       <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setOpenId(r.id)}>
                         <Eye className="mr-1 h-3 w-3" /> 查看/改
                       </Button>
+                      {r.status === 'approved' && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-[11px] text-rose-600"
+                          disabled={busy}
+                          title="通过之后反悔：驳回会把产品从预产品库下架，文案保留"
+                          onClick={() => void unapprove([r.id])}
+                        >
+                          驳回（下架）
+                        </Button>
+                      )}
                       {r.status === 'pending' && (
                         <>
                           <Button

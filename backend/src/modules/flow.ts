@@ -49,6 +49,7 @@ interface LiteRow {
   review_note: string | null
   updated_at: string
   eval_review: string | null
+  review_state: string | null
   library_state: string | null
   gls_code: string | null
   prev_code: string | null
@@ -105,7 +106,7 @@ function liteRows(): LiteRow[] {
               price_cny, material_cn, colors_cn, score, verdict,
               CASE WHEN evaluation IS NULL THEN 0 ELSE 1 END AS has_eval,
               CASE WHEN listing IS NULL THEN 0 ELSE 1 END AS has_listing,
-              listing_title, status, review_note, updated_at, eval_review, library_state, gls_code, prev_code,
+              listing_title, status, review_note, updated_at, eval_review, review_state, library_state, gls_code, prev_code,
               CASE WHEN images NOT IN ('', '[]') THEN 1 ELSE 0 END AS has_src_images
        FROM products
        WHERE status != 'trashed'
@@ -267,16 +268,49 @@ flowRouter.get('/products', (req: Request, res: Response) => {
   res.json({ rows: mapped.slice(0, limit), total: mapped.length })
 })
 
-/** 待审核列表：就是档案里 status='pending_review' 的那些（不再是一份独立的数据） */
+/**
+ * 待审核列表：status='pending_review' 的那些。
+ * ?status=approved 时给「已通过」列表（审核通过后反悔要能驳回，所以这一页也要能列出已通过的）。
+ */
 flowRouter.get('/reviews', (req: Request, res: Response) => {
   const q = String(req.query.q ?? '').trim().toLowerCase()
-  const rows = liteRows().filter((r) => r.status === 'pending_review')
+  const status = String(req.query.status ?? 'pending')
+  const rows =
+    status === 'approved'
+      ? liteRows().filter((r) => r.status === 'listed' && r.review_state === 'approved')
+      : liteRows().filter((r) => r.status === 'pending_review')
   const imgs = imageIndex()
   const mapped = rows
     .map((r) => toFlowRow(r, imgs))
     .filter((r) => !q || r.title.toLowerCase().includes(q) || r.titleEn.toLowerCase().includes(q) || r.code.toLowerCase().includes(q))
   res.json({ reviews: mapped, total: mapped.length })
 })
+
+/**
+ * 驳回「已经通过」的文案（通过之后反悔）。
+ * 产品从预产品库下架（archived），文案保留，可改完重新生成再走审核；GLS 号留在产品上不重发。
+ */
+flowRouter.post('/reviews/unapprove', (req: Request, res: Response) => {
+  const body = z
+    .object({ ids: z.array(z.string().min(1)).min(1).max(200), note: z.string().max(500).optional() })
+    .parse(req.body ?? {})
+  const now = new Date().toISOString()
+  let n = 0
+  for (const id of body.ids) {
+    const row = db.prepare('SELECT status FROM products WHERE id = ?').get(id) as { status: string } | undefined
+    if (!row || row.status !== 'listed') continue
+    db.prepare(
+      "UPDATE products SET status='archived', review_state='rejected', review_note=?, library_state='pipeline', reviewed_at=?, updated_at=? WHERE id=?"
+    ).run(body.note ?? '', now, now, id)
+    db.prepare(
+      "UPDATE listing_reviews SET status='rejected', review_note=?, updated_at=? WHERE product_id=? AND status='approved'"
+    ).run(body.note ?? '', now, id)
+    n += 1
+  }
+  res.json({ ok: true, reverted: n })
+})
+
+/** 批量审核通过 / 驳回：改的就是这条档案的状态，没有第二份数据要同步 */
 
 /** 批量审核通过 / 驳回：改的就是这条档案的状态，没有第二份数据要同步 */
 flowRouter.post('/reviews/approve', (req: Request, res: Response) => {
