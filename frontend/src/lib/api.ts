@@ -1186,6 +1186,30 @@ export const api = {
     return data
   },
 
+  /**
+   * 已通过评估、文案还没生成的产品（含后台任务状态）。
+   * listing 待审核中心用它显示「AI 正在跑哪一个」，不用等生成完才出现。
+   */
+  async getPendingGeneration(): Promise<{
+    rows: Array<{
+      productId: string
+      code: string
+      title: string
+      sourceUrl: string
+      updatedAt: string
+      jobId: string | null
+      itemIdx: number | null
+      status: 'queued' | 'running' | 'failed' | 'unknown' | string
+      stage: string
+      error: string | null
+      startedAt: string | null
+    }>
+    total: number
+  }> {
+    const { data } = await apiClient.get('/library/pending-generation')
+    return data
+  },
+
   /** 老草稿的评估详情（还没关联产品时，评估库点「详情」用） */
   async getEvaluationDraft(draftId: string): Promise<{
     id: string

@@ -42,6 +42,7 @@ export function ProductSpecCards() {
   const cardsQuery = useQuery({
     queryKey: ['product-spec-cards', q, category, filter],
     queryFn: () => api.listProductSpecCards({ q: q || undefined, category: category || undefined, filter }),
+    refetchInterval: 20_000,
   })
 
   const cards = cardsQuery.data?.cards ?? []

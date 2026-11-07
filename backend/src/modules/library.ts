@@ -99,6 +99,84 @@ libraryRouter.get('/evaluations', (req: Request, res: Response) => {
 })
 
 /**
+ * 「已通过评估、文案还没生成」的产品 —— 让 listing 待审核中心立刻能看到它们。
+ *
+ * 为什么要这个接口：评估通过到文案生成之间有几秒到几分钟的时差（AI 在跑），
+ * 如果只显示「已经生成好的草稿」，这段时间页面上什么都没有，用户不知道 AI 在干嘛。
+ * 这里把这段空窗期里的产品连同后台任务的状态（排队/生成中/失败原因）一起给出来。
+ */
+libraryRouter.get('/pending-generation', (_req: Request, res: Response) => {
+  const products = db
+    .prepare(
+      `SELECT id, code, source_title, source_url, updated_at
+       FROM products
+       WHERE eval_review = 'approved' AND listing IS NULL AND status = 'sourced'
+       ORDER BY updated_at DESC`
+    )
+    .all() as unknown as Array<{
+    id: string
+    code: string
+    source_title: string
+    source_url: string
+    updated_at: string
+  }>
+
+  // 后台任务里的最新状态（排队 / 生成中 / 失败），按产品取最近一次
+  const jobs = db
+    .prepare(
+      "SELECT id, status, items, created_at FROM production_jobs WHERE kind = 'listing' ORDER BY created_at DESC LIMIT 8"
+    )
+    .all() as unknown as Array<{ id: string; status: string; items: string; created_at: string }>
+
+  const itemMap = new Map<
+    string,
+    { jobId: string; jobStatus: string; idx: number; status: string; stage: string; error?: string; startedAt?: string }
+  >()
+  for (const j of jobs) {
+    let items: Array<Record<string, unknown>> = []
+    try {
+      items = JSON.parse(j.items) as Array<Record<string, unknown>>
+    } catch {
+      continue
+    }
+    for (const it of items) {
+      const pid = String(it.productId ?? '')
+      if (!pid || itemMap.has(pid)) continue
+      itemMap.set(pid, {
+        jobId: j.id,
+        jobStatus: j.status,
+        idx: Number(it.idx ?? 0),
+        status: String(it.status ?? 'queued'),
+        stage: String(it.stage ?? ''),
+        error: it.error ? String(it.error) : undefined,
+        startedAt: it.startedAt ? String(it.startedAt) : undefined,
+      })
+    }
+  }
+
+  res.json({
+    rows: products.map((p) => {
+      const item = itemMap.get(p.id)
+      return {
+        productId: p.id,
+        code: p.code,
+        title: p.source_title,
+        sourceUrl: p.source_url,
+        updatedAt: p.updated_at,
+        jobId: item?.jobId ?? null,
+        itemIdx: item?.idx ?? null,
+        /** queued 排队 / running 生成中 / failed 失败 / unknown 还没进队列 */
+        status: item?.status ?? 'unknown',
+        stage: item?.stage ?? '等待进入生成队列',
+        error: item?.error ?? null,
+        startedAt: item?.startedAt ?? null,
+      }
+    }),
+    total: products.length,
+  })
+})
+
+/**
  * 老草稿的评估详情（那条还没进产品档案时，点「详情」走这里）。
  * 返回完整的评估对象，前端按和产品评估一样的版式渲染。
  */

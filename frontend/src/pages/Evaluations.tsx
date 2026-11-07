@@ -50,6 +50,8 @@ export default function Evaluations() {
   const listQuery = useQuery({
     queryKey: ['evaluations', tab, q],
     queryFn: () => api.listEvaluations({ status: tab, q: q || undefined }),
+    // 评估跑完/审核状态变化时自动出现，不用手动刷新
+    refetchInterval: 15_000,
   })
 
   const rows = useMemo(() => listQuery.data?.rows ?? [], [listQuery.data])
@@ -70,6 +72,8 @@ export default function Evaluations() {
   const selectedProductIds = rows
     .filter((r) => selected.includes(r.id) && r.productId)
     .map((r) => r.productId as string)
+
+  const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id))
 
   const decide = async (decision: 'approve' | 'reject') => {
     if (!selectedProductIds.length) {
@@ -218,56 +222,73 @@ export default function Evaluations() {
             </p>
           </div>
         ) : (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="space-y-2">
+            {/* 表头：全选 + 列名 */}
+            <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 px-3 py-1.5 text-[11px] text-slate-500 sm:flex-nowrap">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 shrink-0"
+                checked={allChecked}
+                onChange={(e) => setSelected(e.target.checked ? rows.map((r) => r.id) : [])}
+                title="全选本页"
+              />
+              <span className="w-[44px] shrink-0">全选</span>
+              <span className="w-24 shrink-0">编号</span>
+              <span className="min-w-0 flex-1">产品 / 评估结论</span>
+              <span className="w-24 shrink-0">评级</span>
+              <span className="w-16 shrink-0">审核</span>
+              <span className="w-24 shrink-0">更新</span>
+              <span className="w-[220px] shrink-0">操作</span>
+            </div>
+
             {rows.map((r) => {
               const status = STATUS_TEXT[r.evalReview ?? '']
               return (
                 <div
                   key={r.id}
                   className={cn(
-                    'rounded-xl border bg-white p-3 transition-colors',
-                    selected.includes(r.id) ? 'border-blue-400 ring-1 ring-blue-200' : 'border-slate-200 hover:border-slate-300'
+                    'flex flex-wrap items-center gap-3 rounded-lg border bg-white px-3 py-2 transition-colors sm:flex-nowrap',
+                    selected.includes(r.id)
+                      ? 'border-blue-400 ring-1 ring-blue-200'
+                      : 'border-slate-200 hover:border-slate-300'
                   )}
                 >
-                  <div className="flex items-start gap-2">
-                    <input
-                      type="checkbox"
-                      className="mt-1 h-3.5 w-3.5"
-                      checked={selected.includes(r.id)}
-                      onChange={() => toggle(r.id)}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-1">
-                        {r.code ? (
-                          <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-white">
-                            {r.code}
-                          </span>
-                        ) : (
-                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">历史草稿</span>
-                        )}
-                        {status && (
-                          <Badge variant="outline" className={status.cls}>
-                            {status.label}
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="mt-1 line-clamp-2 text-[13px] font-medium text-slate-800">
-                        {r.title || '(未命名)'}
-                      </div>
-                    </div>
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 shrink-0"
+                    checked={selected.includes(r.id)}
+                    onChange={() => toggle(r.id)}
+                  />
+                  <div className="shrink-0">
+                    <ScoreDot score={r.evalScore ?? 0} />
                   </div>
-
-                  <div className="mt-2 flex items-center gap-3">
-                    <ScoreRing score={r.evalScore ?? 0} />
-                    <div className="min-w-0 flex-1">
-                      <VerdictBadge verdict={(r.evalVerdict as 'GO' | 'MAYBE' | 'NO' | null) ?? null} />
-                      <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-slate-500">
-                        {r.evalSummary || '（这条评估没有摘要）'}
-                      </p>
-                    </div>
+                  <div className="w-24 shrink-0">
+                    {r.code ? (
+                      <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-white">{r.code}</span>
+                    ) : (
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">历史草稿</span>
+                    )}
                   </div>
-
-                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-medium text-slate-800">{r.title || '(未命名)'}</div>
+                    <div className="truncate text-[11px] text-slate-500">{r.evalSummary || '（无摘要）'}</div>
+                  </div>
+                  <div className="w-24 shrink-0">
+                    <VerdictBadge verdict={(r.evalVerdict as 'GO' | 'MAYBE' | 'NO' | null) ?? null} />
+                  </div>
+                  <div className="w-16 shrink-0">
+                    {status ? (
+                      <Badge variant="outline" className={status.cls}>
+                        {status.label}
+                      </Badge>
+                    ) : (
+                      <span className="text-[11px] text-slate-400">—</span>
+                    )}
+                  </div>
+                  <div className="w-24 shrink-0 text-[11px] text-slate-400">
+                    {new Date(r.updatedAt).toLocaleDateString('zh-CN')}
+                  </div>
+                  <div className="flex w-[220px] shrink-0 flex-wrap items-center gap-1">
                     <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setOpenRow(r)}>
                       详情
                     </Button>
@@ -330,6 +351,7 @@ export default function Evaluations() {
           </div>
         )}
       </SectionCard>
+
 
       {openRow && <EvalDetailDrawer row={openRow} onClose={() => setOpenRow(null)} onDecide={decideOne} busy={busy} />}
     </div>
@@ -520,6 +542,36 @@ function EvalDetailDrawer({
             </Button>
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+/** 列表里用的小分数圈：40px，颜色按分数分段，和详情里的大圈同一套口径 */
+function ScoreDot({ score }: { score: number }) {
+  const s = Math.max(0, Math.min(100, Math.round(score)))
+  const color = s >= 75 ? 'text-emerald-500' : s >= 55 ? 'text-amber-500' : 'text-rose-500'
+  const circumference = 2 * Math.PI * 16
+  const offset = circumference - (s / 100) * circumference
+  return (
+    <div className="relative h-10 w-10 shrink-0" title={`评估分 ${s}`}>
+      <svg className="h-full w-full -rotate-90" viewBox="0 0 40 40">
+        <circle cx="20" cy="20" r="16" fill="none" stroke="currentColor" strokeWidth="4" className="text-slate-200" />
+        <circle
+          cx="20"
+          cy="20"
+          r="16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          className={color}
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className={cn('text-[12px] font-bold', color)}>{s}</span>
       </div>
     </div>
   )

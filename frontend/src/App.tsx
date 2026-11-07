@@ -26,16 +26,15 @@ import NotFound from "./pages/NotFound";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // Data considered fresh for 1 minute
-      staleTime: 60 * 1000,
+      // 数据 15 秒后就当作过期：切回页面/定时轮询时会自动重新拉，不用手动刷新
+      staleTime: 15 * 1000,
       // Cache data for 5 minutes
       gcTime: 5 * 60 * 1000,
       // Retry failed requests once
       retry: 1,
-      // Don't refetch on window focus by default
-      refetchOnWindowFocus: false,
-      // Don't refetch on reconnect by default
-      refetchOnReconnect: false,
+      // 切回标签页自动刷新（别的页面改了资料，回来就是最新的）
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
     },
     mutations: {
       // Retry failed mutations once

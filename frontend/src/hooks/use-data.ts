@@ -10,6 +10,8 @@ export function useProducts(params?: { status?: string; q?: string }) {
   return useQuery({
     queryKey: ['products', params?.status ?? '', params?.q ?? ''],
     queryFn: () => api.listProducts(params),
+    // 自动刷新：别的页面改完资料/状态，回到这一页不用手动点
+    refetchInterval: 30_000,
   })
 }
 

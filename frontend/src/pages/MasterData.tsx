@@ -193,6 +193,9 @@ function MasterDataPanel() {
 
   useEffect(() => {
     void load()
+    // 资料/建档状态会变（导入、推进、评估），每 30 秒自动刷新一次
+    const timer = window.setInterval(() => void load(), 30_000)
+    return () => window.clearInterval(timer)
   }, [load])
 
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>

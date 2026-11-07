@@ -98,10 +98,16 @@ export default function Pipeline() {
   const [working, setWorking] = useState(false)
   const [evaluatingId, setEvaluatingId] = useState<string | null>(null)
 
-  const overviewQuery = useQuery({ queryKey: ['flow-overview'], queryFn: api.getFlowOverview })
+  const overviewQuery = useQuery({
+    queryKey: ['flow-overview'],
+    queryFn: api.getFlowOverview,
+    refetchInterval: 15_000,
+  })
   const listQuery = useQuery({
     queryKey: ['flow-products', need],
     queryFn: () => api.listFlowProducts({ need }),
+    // 后台在跑评估/生成时，这一页自己会更新，不用手动刷新
+    refetchInterval: 15_000,
   })
 
   const overview = overviewQuery.data

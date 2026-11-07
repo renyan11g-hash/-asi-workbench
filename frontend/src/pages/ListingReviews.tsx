@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CheckCircle2, ExternalLink, Loader2, RotateCcw, Search, XCircle } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { CheckCircle2, Clock3, ExternalLink, Loader2, RotateCcw, Search, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -52,6 +53,9 @@ export default function ListingReviews() {
 
   useEffect(() => {
     void load()
+    // 后台生成/审核状态会变：每 10 秒自动拉一次，不用手动点刷新
+    const timer = window.setInterval(() => void load(), 10_000)
+    return () => window.clearInterval(timer)
   }, [load])
 
   const approve = async (ids: string[]) => {
@@ -129,6 +133,9 @@ export default function ListingReviews() {
           </button>
         ))}
       </div>
+
+      {/* 已通过评估、文案还没生成的产品：立刻出现在这里，带 AI 进度，不用等生成完 */}
+      <GeneratingPanel onOpenProduct={(id) => navigate(`/listing/${id}`)} />
 
       {mode === 'drafts' ? (
         <ReviewCenterPanel />
@@ -328,6 +335,88 @@ export default function ListingReviews() {
         </div>
       </SectionCard>
       )}
+    </div>
+  )
+}
+
+/**
+ * 「AI 正在生成」面板。
+ *
+ * 评估通过的那一刻起，产品就该出现在待审核中心 —— 哪怕文案还没生成完。
+ * 这里显示后台任务的状态（排队 / 生成中 / 失败原因），每 3 秒自动刷新；
+ * 生成完成后会自动变成正常的待审核卡片（列表另有 10 秒轮询）。
+ */
+function GeneratingPanel({ onOpenProduct }: { onOpenProduct: (productId: string) => void }) {
+  const { data, isFetching } = useQuery({
+    queryKey: ['pending-generation'],
+    queryFn: api.getPendingGeneration,
+    refetchInterval: (query) => {
+      const rows = query.state.data?.rows ?? []
+      // 有在排队/在跑的才高频刷新，全部失败或为空时降频，避免空转
+      return rows.some((r) => r.status === 'running' || r.status === 'queued' || r.status === 'unknown') ? 3000 : 15000
+    },
+  })
+
+  const rows = data?.rows ?? []
+  if (!rows.length) return null
+
+  const running = rows.filter((r) => r.status === 'running').length
+  const queued = rows.filter((r) => r.status === 'queued' || r.status === 'unknown').length
+  const failed = rows.filter((r) => r.status === 'failed').length
+
+  return (
+    <div className="rounded-xl border border-blue-200 bg-blue-50/50 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-blue-800">
+          {(running > 0 || queued > 0) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          AI 正在生成文案（{rows.length}）
+        </span>
+        {queued > 0 && <span className="text-[11px] text-slate-500">排队 {queued}</span>}
+        {running > 0 && <span className="text-[11px] text-blue-600">生成中 {running}</span>}
+        {failed > 0 && <span className="text-[11px] text-rose-600">失败 {failed}</span>}
+        <span className="ml-auto text-[11px] text-slate-400">
+          {isFetching ? '刷新中…' : '自动刷新中，生成完会自动出现在下面'}
+        </span>
+      </div>
+      <div className="mt-2 space-y-1">
+        {rows.map((r) => (
+          <div key={r.productId} className="flex items-center gap-2 rounded-lg bg-white px-2 py-1.5">
+            {r.status === 'running' ? (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-600" />
+            ) : r.status === 'failed' ? (
+              <XCircle className="h-3.5 w-3.5 shrink-0 text-rose-500" />
+            ) : (
+              <Clock3 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+            )}
+            <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-white">{r.code || '—'}</span>
+            <span className="min-w-0 flex-1 truncate text-[12px] text-slate-700">{r.title || '(未命名)'}</span>
+            <span className={r.status === 'failed' ? 'text-[11px] text-rose-600' : 'text-[11px] text-slate-500'}>
+              {r.status === 'failed' ? r.error || '生成失败' : r.stage || '生成中'}
+            </span>
+            {r.status === 'failed' && r.jobId && r.itemIdx != null && (
+              <button
+                className="shrink-0 rounded border border-rose-200 px-1.5 py-0.5 text-[10px] text-rose-600 hover:border-rose-300"
+                onClick={async () => {
+                  try {
+                    await api.retryProductionItem(r.jobId as string, r.itemIdx as number)
+                    toast.success('已重新排队')
+                  } catch (err) {
+                    toast.error(getErrorMessage(err))
+                  }
+                }}
+              >
+                重试
+              </button>
+            )}
+            <button
+              className="shrink-0 rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 hover:border-blue-300"
+              onClick={() => onOpenProduct(r.productId)}
+            >
+              打开
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

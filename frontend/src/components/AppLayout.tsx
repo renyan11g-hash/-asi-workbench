@@ -80,8 +80,8 @@ export function AppLayout() {
   const { data: flow } = useQuery({
     queryKey: ['flow-overview'],
     queryFn: api.getFlowOverview,
-    staleTime: 60_000,
-    refetchInterval: 120_000,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
   })
   const aiReady = Boolean(data?.hasApiKey)
   const meta =
