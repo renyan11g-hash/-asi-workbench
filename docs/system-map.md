@@ -179,3 +179,25 @@ asi-workbench/
 
 新增表：`product_specs`、`production_jobs`、`ai_call_logs`；`listing_reviews` 加
 `job_id / item_idx / mode / qc / prev_listing / edited_at`（全部可空或带默认值，旧数据不受影响）。
+
+## 9. 流程合并与编号体系（2026-11-07 第二次结构改造）
+
+一个产品的完整路径（左侧导航就是按这个顺序排的）：
+
+```
+产品资料库(导入即建档) → 产品流水线 → 批量评估(自动含看图找同款) → 评估库(人工批量审核)
+   ├─ 通过 → 自动生成英文链接 → listing 待审核中心 → 预产品库(GLS0001…)
+   └─ 不通过 → 待定（留在评估库，可改判）
+预产品库 → 挑产品移入 RPA 档案库（人工新编号覆盖旧号，旧号不再复用）
+```
+
+- 合并：产品资料卡并入产品资料库（第二页签）；Listing 审核中心并入 listing 待审核中心（第二视图）。
+  旧地址 `/specs`、`/review-center` 用 `<Navigate>` 重定向，收藏夹不会失效。
+- 编号（`services/numbering.ts`）：`settings['gls-seq']` 计数器只增不减；进预产品库发 GLS，
+  流水线期间用 PIP 临时号；移入 RPA 档案库时人工给新号，旧号写进 `products.prev_code`。
+- 新库/状态：`products.library_state`（pipeline/pre/rpa）、`eval_review`（评估人工审核）、`gls_code`、`prev_code`、`rpa_archived_at`、`master_id`。
+- 接口：`/api/library/*`（pre-products、rpa、rpa/archive、evaluations、evaluate、eval-review、to-pre、numbering-preview）；
+  `/api/master-products/push`（资料库推进系统）；`/api/admin/*`（migration-status、backup、renumber-preview、migrate-gls，需确认串 RENUMBER-75）。
+- 评估任务复用 `production_jobs`（kind='evaluate'）：评估 + 看图找同款一次跑完，写 `evaluation`/`similar`/`drafts`，标 `eval_review='pending'`。
+- 一次性迁移已执行（2026-11-07）：删除 21 条非 listed（含回收站 2 条），75 条重编 GLS0001–GLS0075，
+  备份文件在 `C:\Users\Administrator\Desktop\asi-backup-before-gls-20261107.json`。

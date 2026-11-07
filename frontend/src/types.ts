@@ -817,6 +817,10 @@ export interface EvaluationRow extends LibraryRow {
   evalVerdict: string | null
   evalReviewedAt: string | null
   draftId: string | null
+  evalPros: string[]
+  evalCons: string[]
+  evalSuggestions: string[]
+  evalBuyers: string[]
 }
 
 // ---------------- 批量生产系统 V1：产品结构化资料 ----------------

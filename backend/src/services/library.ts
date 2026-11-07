@@ -167,6 +167,11 @@ export function listEvaluations(): Array<
     evalVerdict: string | null
     evalReviewedAt: string | null
     draftId: string | null
+    /** 优缺点与改善建议：评估库展开时直接看，不用再点进产品 */
+    evalPros: string[]
+    evalCons: string[]
+    evalSuggestions: string[]
+    evalBuyers: string[]
   }
 > {
   const rows = db
@@ -183,8 +188,23 @@ export function listEvaluations(): Array<
   >
   return rows.map((r) => {
     let summary = ''
+    let pros: string[] = []
+    let cons: string[] = []
+    let suggestions: string[] = []
+    let buyers: string[] = []
     try {
-      summary = String((JSON.parse(r.evaluation) as { summary?: string }).summary ?? '').slice(0, 200)
+      const e = JSON.parse(r.evaluation) as {
+        summary?: string
+        pros?: string[]
+        cons?: string[]
+        suggestions?: string[]
+        buyers?: string[]
+      }
+      summary = String(e.summary ?? '').slice(0, 300)
+      pros = (e.pros ?? []).map(String).slice(0, 8)
+      cons = (e.cons ?? []).map(String).slice(0, 8)
+      suggestions = (e.suggestions ?? []).map(String).slice(0, 8)
+      buyers = (e.buyers ?? []).map(String).slice(0, 8)
     } catch {
       summary = ''
     }
@@ -195,6 +215,10 @@ export function listEvaluations(): Array<
       evalVerdict: r.verdict ?? null,
       evalReviewedAt: r.eval_reviewed_at ?? null,
       draftId: r.draft_id ?? null,
+      evalPros: pros,
+      evalCons: cons,
+      evalSuggestions: suggestions,
+      evalBuyers: buyers,
     }
   })
 }

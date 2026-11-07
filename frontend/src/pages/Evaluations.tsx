@@ -365,33 +365,66 @@ function EvalRow({
       {expanded && (
         <tr className="bg-slate-50/60">
           <td colSpan={8} className="px-3 py-2 text-[11px] text-slate-600">
-            <div className="grid gap-2 md:grid-cols-2">
+            <div className="grid gap-3 md:grid-cols-2">
               <div>
                 <div className="font-medium text-slate-700">评估结论</div>
                 <p className="mt-0.5 whitespace-pre-wrap">{row.evalSummary || '—'}</p>
-              </div>
-              <div>
-                <div className="font-medium text-slate-700">下一步</div>
-                <p className="mt-0.5">
-                  {row.evalReview === 'approved'
-                    ? row.hasListing
-                      ? '评估已通过、文案已生成，去「listing 待审核中心」审核'
-                      : '评估已通过，正在生成英文链接（可到产品流水线看进度）'
-                    : row.evalReview === 'rejected'
-                      ? '已标待定：不进入生成流程，随时可以改判'
-                      : '等人工决定：通过就自动生成英文链接，不通过就待定'}
-                </p>
-                {row.sourceUrl && (
-                  <a
-                    href={row.sourceUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-1 inline-flex items-center gap-0.5 text-blue-600 hover:underline"
-                  >
-                    <ExternalLink className="h-3 w-3" /> 1688 来源
-                  </a>
+                {row.evalBuyers.length > 0 && (
+                  <p className="mt-1 text-slate-500">目标买家：{row.evalBuyers.join('、')}</p>
                 )}
               </div>
+              <div className="space-y-1.5">
+                {row.evalPros.length > 0 && (
+                  <div>
+                    <span className="font-medium text-emerald-700">优点</span>
+                    <ul className="mt-0.5 list-disc pl-4">
+                      {row.evalPros.map((x, i) => (
+                        <li key={i}>{x}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {row.evalCons.length > 0 && (
+                  <div>
+                    <span className="font-medium text-rose-700">缺点</span>
+                    <ul className="mt-0.5 list-disc pl-4">
+                      {row.evalCons.map((x, i) => (
+                        <li key={i}>{x}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {row.evalSuggestions.length > 0 && (
+                  <div>
+                    <span className="font-medium text-blue-700">改善建议</span>
+                    <ul className="mt-0.5 list-disc pl-4">
+                      {row.evalSuggestions.map((x, i) => (
+                        <li key={i}>{x}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="mt-2 border-t border-slate-200 pt-1.5">
+              <span className="font-medium text-slate-700">下一步：</span>
+              {row.evalReview === 'approved'
+                ? row.hasListing
+                  ? '评估已通过、文案已生成，去「listing 待审核中心」审核'
+                  : '评估已通过，正在生成英文链接（可到产品流水线看进度）'
+                : row.evalReview === 'rejected'
+                  ? '已标待定：不进入生成流程，随时可以改判'
+                  : '等人工决定：通过就自动生成英文链接，不通过就待定'}
+              {row.sourceUrl && (
+                <a
+                  href={row.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="ml-2 inline-flex items-center gap-0.5 text-blue-600 hover:underline"
+                >
+                  <ExternalLink className="h-3 w-3" /> 1688 来源
+                </a>
+              )}
             </div>
           </td>
         </tr>
