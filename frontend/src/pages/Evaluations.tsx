@@ -38,7 +38,7 @@ const STATUS_TEXT: Record<string, { label: string; cls: string }> = {
 export default function Evaluations() {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const [tab, setTab] = useState<Tab>('all')
+  const [tab, setTab] = useState<Tab>('pending')
   const [q, setQ] = useState('')
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState(false)

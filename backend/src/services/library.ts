@@ -210,6 +210,9 @@ export function listEvaluations(): Array<
     }
     return {
       ...toRow(r),
+      // 已经在预产品库里的产品，本来就是「评估通过才能上架」，
+      // 老数据没有 eval_review 字段，这里按 listed 反推成 approved，避免评估库把历史产品全显示成「未审核」
+      evalReview: r.eval_review ?? (r.status === 'listed' ? 'approved' : null),
       evalSummary: summary,
       evalScore: r.score ?? null,
       evalVerdict: r.verdict ?? null,
