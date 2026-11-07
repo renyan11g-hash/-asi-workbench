@@ -193,6 +193,46 @@ libraryRouter.get('/evaluations/:draftId', (req: Request, res: Response) => {
 })
 
 /**
+ * 撤回审核：把误通过的产品退回「文案已生成、等审核」的状态。
+ *
+ * 为什么需要：审核通过是不可逆的（会进预产品库、发 GLS 号），手滑点错就只能靠这个退回来。
+ * 退回后：产品回到待审核、文案内容保留在草稿里（不丢），GLS 号留在产品上（下次通过继续用，不会重号）。
+ */
+libraryRouter.post('/revert-to-review', (req: Request, res: Response) => {
+  const body = z.object({ ids: z.array(z.string().min(1)).min(1).max(50) }).parse(req.body ?? {})
+  const now = new Date().toISOString()
+  const reverted: string[] = []
+  const skipped: Array<{ id: string; reason: string }> = []
+
+  for (const id of body.ids) {
+    const row = db.prepare('SELECT id, status FROM products WHERE id = ?').get(id) as
+      | { id: string; status: string }
+      | undefined
+    if (!row) {
+      skipped.push({ id, reason: '产品不存在' })
+      continue
+    }
+    const review = db
+      .prepare(
+        "SELECT id, status FROM listing_reviews WHERE product_id = ? AND mode = 'staged' ORDER BY created_at DESC LIMIT 1"
+      )
+      .get(id) as { id: string; status: string } | undefined
+    if (!review) {
+      skipped.push({ id, reason: '这条没有批量生成的文案草稿，撤回会让它变成没有文案的档案' })
+      continue
+    }
+    // 草稿退回待审；产品退回待审核，产品上的 listing 清空（内容还在草稿里，不会丢）
+    db.prepare("UPDATE listing_reviews SET status='pending', updated_at=? WHERE id=?").run(now, review.id)
+    db.prepare(
+      "UPDATE products SET status='pending_review', review_state='pending', listing=NULL, listing_title='', reviewed_at=NULL, library_state='pipeline', updated_at=? WHERE id=?"
+    ).run(now, id)
+    reverted.push(id)
+  }
+
+  res.json({ ok: true, reverted: reverted.length, skipped })
+})
+
+/**
  * 批量评估：一条产品一次 AI 评估 + 一次看图找同款，跑完自动存进评估库并标「待人工审核」。
  * 用后台任务跑（每个约 1~2 分钟），可以暂停/继续/取消，失败一条不影响其他条。
  */

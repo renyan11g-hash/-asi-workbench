@@ -681,6 +681,19 @@ listingReviewsRouter.post('/approve', (req: Request, res: Response) => {
         failed.push({ id, error: '记录不存在' })
         continue
       }
+
+      // 硬规矩：没生成英文链接（标题/摘要/描述全空）就不能通过审核
+      try {
+        const parsed = parseJson<{ title?: string; summary?: string; description?: string }>(row.listing, {})
+        if (!parsed.title && !parsed.summary && !parsed.description) {
+          failed.push({ id, error: '还没生成英文链接，不能通过审核' })
+          continue
+        }
+      } catch {
+        failed.push({ id, error: '英文文案解析失败，先重新生成再审核' })
+        continue
+      }
+
       const now = new Date().toISOString()
       let productId = row.product_id
 

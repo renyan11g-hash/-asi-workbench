@@ -128,7 +128,7 @@ export default function Evaluations() {
     setBusy(true)
     try {
       await api.evalReview({ ids: [row.productId], decision })
-      toast.success(decision === 'approve' ? '已通过，正在生成英文链接' : '已标为待定')
+      toast.success(decision === 'approve' ? '已通过评估，正在生成英文链接；生成后去 listing 待审核中心做最终审核' : '已标为待定')
       qc.invalidateQueries({ queryKey: ['evaluations'] })
       qc.invalidateQueries({ queryKey: ['flow-overview'] })
       setOpenRow(null)
@@ -151,7 +151,7 @@ export default function Evaluations() {
     <div className="space-y-4">
       <SectionCard
         title="评估库"
-        hint="每条评估一张卡：圆圈是评估分，点「详情」看优缺点、改善建议、市场同款。通过会自动去生成英文链接，不通过只是标待定"
+        hint="这里只是「评估通过」——通过后自动去生成英文链接，最终审核在 listing 待审核中心。没生成英文链接的不能通过审核（点错了可以「撤回审核」）"
         right={
           <div className="flex flex-wrap items-center gap-1.5">
             <Button variant="outline" size="sm" onClick={() => void listQuery.refetch()}>
@@ -198,7 +198,7 @@ export default function Evaluations() {
               共 {rows.length} 条{selected.length ? `，已选 ${selected.length}` : ''}
             </span>
             <Button size="sm" disabled={busy || !selected.length} onClick={() => void decide('approve')}>
-              <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> 通过（自动生成文案）
+              <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> 通过评估并生成文案
             </Button>
             <Button size="sm" variant="outline" disabled={busy || !selected.length} onClick={() => void decide('reject')}>
               <XCircle className="mr-1 h-3.5 w-3.5" /> 标为待定
@@ -310,7 +310,30 @@ export default function Evaluations() {
                         disabled={busy}
                         onClick={() => void decideOne(r, 'approve')}
                       >
-                        通过
+                        通过评估
+                      </Button>
+                    )}
+                    {r.productId && r.evalReview === 'approved' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px] text-rose-600"
+                        disabled={busy}
+                        title="误点了通过？点这里退回「等审核」，文案不会丢"
+                        onClick={async () => {
+                          if (!window.confirm('把这条撤回「等审核」？产品会退回 listing 待审核中心重新审，已生成的文案不会丢。')) return
+                          try {
+                            const rr = await api.revertToReview([r.productId as string])
+                            if (rr.skipped.length) toast.error(rr.skipped[0].reason)
+                            else toast.success('已撤回，去「listing 待审核中心」重新审核')
+                            qc.invalidateQueries({ queryKey: ['evaluations'] })
+                            qc.invalidateQueries({ queryKey: ['flow-overview'] })
+                          } catch (err) {
+                            toast.error(getErrorMessage(err))
+                          }
+                        }}
+                      >
+                        撤回审核
                       </Button>
                     )}
                     {r.productId && r.evalReview !== 'rejected' && (
@@ -516,7 +539,7 @@ function EvalDetailDrawer({
           {row.productId && (
             <>
               <Button size="sm" disabled={busy || row.evalReview === 'approved'} onClick={() => onDecide(row, 'approve')}>
-                <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> 通过（自动生成文案）
+                <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> 通过评估并生成文案
               </Button>
               <Button size="sm" variant="outline" disabled={busy || row.evalReview === 'rejected'} onClick={() => onDecide(row, 'reject')}>
                 标为待定

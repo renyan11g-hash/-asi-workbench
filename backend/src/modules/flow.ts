@@ -295,9 +295,35 @@ flowRouter.post('/reviews/approve', (req: Request, res: Response) => {
         failed.push({ id, error: '这条不在待审核状态（可能已通过或已驳回）' })
         continue
       }
+
+      // 关键：通过审核必须把「生成好的英文文案」写进产品档案。
+      // 优先取还没审的那份草稿（批量生成走的是暂存模式）；没有草稿就看产品自己有没有文案。
+      const review = db
+        .prepare(
+          "SELECT id, listing FROM listing_reviews WHERE product_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1"
+        )
+        .get(id) as { id: string; listing: string } | undefined
+      const current = db.prepare('SELECT listing FROM products WHERE id = ?').get(id) as
+        | { listing: string | null }
+        | undefined
+      const listingJson = review?.listing || current?.listing || ''
+      let listingTitle = ''
+      try {
+        const parsed = JSON.parse(listingJson || '{}') as { title?: string; summary?: string; description?: string }
+        listingTitle = String(parsed.title ?? '')
+        // 没生成英文链接就不许通过审核（用户明确要求的硬规矩）
+        if (!parsed.title && !parsed.summary && !parsed.description) {
+          failed.push({ id, error: '还没生成英文链接，不能通过审核' })
+          continue
+        }
+      } catch {
+        failed.push({ id, error: '英文文案解析失败，先重新生成再审核' })
+        continue
+      }
+
       db.prepare(
-        "UPDATE products SET status='listed', review_state='approved', reviewed_at=?, updated_at=? WHERE id=?"
-      ).run(now, now, id)
+        "UPDATE products SET status='listed', review_state='approved', listing=?, listing_title=?, reviewed_at=?, updated_at=? WHERE id=?"
+      ).run(listingJson, listingTitle, now, now, id)
       // 进预产品库即发 GLS 号（已有号不重发）
       try {
         enterPreLibrary(id)

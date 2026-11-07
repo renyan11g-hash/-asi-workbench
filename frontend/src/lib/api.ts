@@ -1210,6 +1210,12 @@ export const api = {
     return data
   },
 
+  /** 撤回审核：把误通过的产品退回「等审核」状态（文案保留在草稿里） */
+  async revertToReview(ids: string[]): Promise<{ reverted: number; skipped: Array<{ id: string; reason: string }> }> {
+    const { data } = await apiClient.post('/library/revert-to-review', { ids })
+    return data
+  },
+
   /** 老草稿的评估详情（还没关联产品时，评估库点「详情」用） */
   async getEvaluationDraft(draftId: string): Promise<{
     id: string
