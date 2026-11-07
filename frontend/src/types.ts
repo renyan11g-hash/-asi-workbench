@@ -252,6 +252,8 @@ export interface ProductImage {
 
 export interface Product {
   id: string
+  /** 对外产品编号（RPA0001）：一个产品从录入到上架始终同一个编号 */
+  code: string
   /** 关联的选品评估草稿 id（评估库 ↔ 产品库 同步） */
   draftId: string | null
   source: SourceInfo
@@ -592,6 +594,8 @@ export interface BatchItem {
   productId?: string | null
   /** 英文链接待审核记录的 id（审核通过后才有 productId） */
   reviewId?: string | null
+  /** 从产品档案载入的条目：指向产品库里那条已有档案（生成链接不新建产品） */
+  recordId?: string | null
   fetchedFields?: string[]
   updatedAt?: string
 }
@@ -695,4 +699,57 @@ export interface ListingReview extends ListingReviewSummary {
   evaluation: Evaluation | null
   listing: Listing
   priceGrid: PriceRow[]
+}
+
+// ---------------- 产品流水线（统一产品档案） ----------------
+
+/** 下一步该做什么（流水线上每行的「一键到下一步」按钮） */
+export type FlowNextStep =
+  | 'specs'
+  | 'evaluate'
+  | 'listing'
+  | 'review'
+  | 'confirm'
+  | 'done'
+  | 'rejected'
+  | 'trashed'
+
+/** 流水线一行：一个产品一条档案，每一步做到哪都在这 */
+export interface FlowRow {
+  id: string
+  code: string
+  /** 中文原名（1688 抓到的） */
+  title: string
+  /** 英文标题（已生成文案才有） */
+  titleEn: string
+  sourceUrl: string
+  status: ProductStatus
+  score: number | null
+  verdict: string | null
+  reviewNote: string
+  updatedAt: string
+  specs: {
+    missing: string[]
+    complete: boolean
+    /** 会影响评分可信度的关键字段 */
+    criticalMissing: string[]
+  }
+  hasEval: boolean
+  hasListing: boolean
+  images: { ai: number; source: boolean; thumb: string; thumbFallback: string }
+  nextStep: FlowNextStep
+}
+
+/** 总览漏斗计数 */
+export interface FlowOverview {
+  total: number
+  needSpecs: number
+  needEval: number
+  needListing: number
+  pendingReview: number
+  needConfirm: number
+  listed: number
+  archived: number
+  withImages: number
+  updatedAt: string
 }

@@ -47,6 +47,7 @@ import {
 } from '../services/batch-jobs'
 import {
   fetch1688Page,
+  findProduct,
   GrabbedFetched,
   insertProduct,
   runAi,
@@ -415,6 +416,8 @@ async function makeListing(job: BatchJob, item: BatchItem, settings: ReturnType<
     listing,
     priceGrid,
     draftId: item.draftId ?? null,
+    // 从产品档案载入的条目：复用那条档案，不新建产品
+    productId: item.recordId ?? null,
   })
   item.reviewId = review.id
   item.status = 'review'
@@ -429,6 +432,13 @@ async function makeListing(job: BatchJob, item: BatchItem, settings: ReturnType<
  *   - 没生成链接的：直接按评估结果入库（老路径，保持兼容）
  */
 async function saveItem(job: BatchJob, item: BatchItem, settings: ReturnType<typeof loadSettings>) {
+  // 产品档案载入的条目：档案已经在库里了，不能再「入库」一次（会插出重复产品）
+  if (item.recordId && !item.reviewId) {
+    item.status = 'evaluated'
+    item.stage = '这条来自产品档案，点「生成英文链接」，审核通过后原地变正式产品'
+    saveBatchJob(job)
+    return
+  }
   if (item.reviewId) {
     const review = getListingReview(item.reviewId)
     if (!review) {
@@ -560,6 +570,9 @@ function listingTargets(item: BatchItem): boolean {
  */
 function saveTargets(item: BatchItem): boolean {
   if (item.productId) return false
+  // 产品档案载入的条目不需要「入库」这一步：档案本来就在库里，
+  // 生成链接 + 审核通过后原地转正式产品。别让它再插一条新产品。
+  if (item.recordId && !item.reviewId) return false
   if (item.reviewId) return true
   return Boolean(item.evaluated)
 }
@@ -704,6 +717,83 @@ batchRouter.post('/jobs', (req: Request, res: Response) => {
   })
 })
 
+/**
+ * 从「产品档案」批量出文案：不再重新粘链接、不再重新补资料。
+ *
+ * 这是批量处理真正该有的入口 —— 产品在选品流程里已经录过资料、做过评估，
+ * 批量只是把「生成英文链接」这一步排队跑。条目直接引用产品库里那条档案
+ * （recordId），生成出来的链接仍走待审核，审核通过原地变成正式产品，
+ * 所以全流程始终只有一份产品档案，不会再出现「评估库一份、批量一份、产品库一份」。
+ */
+batchRouter.post('/from-products', (req: Request, res: Response) => {
+  const body = z
+    .object({ ids: z.array(z.string().min(1)).min(1).max(MAX_BATCH_ITEMS) })
+    .parse(req.body ?? {})
+
+  const items: BatchItem[] = []
+  const skipped: Array<{ id: string; reason: string }> = []
+  const evaluations: Array<{ idx: number; evaluation: Evaluation }> = []
+
+  for (const id of body.ids) {
+    let p
+    try {
+      p = findProduct(id)
+    } catch {
+      skipped.push({ id, reason: '产品档案不存在' })
+      continue
+    }
+    if (p.status === 'trashed') {
+      skipped.push({ id, reason: `${p.code || id} 在回收站里` })
+      continue
+    }
+    if (!p.evaluation) {
+      skipped.push({ id, reason: `${p.code || p.source.sourceTitle} 还没做 AI 评估` })
+      continue
+    }
+    if (!(p.source.sourceTitle ?? '').trim()) {
+      skipped.push({ id, reason: `${p.code} 没有产品名称` })
+      continue
+    }
+    const idx = items.length + 1
+    items.push({
+      idx,
+      url: p.source.sourceUrl ?? '',
+      input: {},
+      status: 'evaluated',
+      stage: '从产品档案载入（已评估），待生成英文链接',
+      title: p.source.sourceTitle,
+      source: p.source,
+      missing: missingFields(p.source),
+      evaluated: true,
+      score: p.evaluation.score ?? null,
+      verdict: p.evaluation.verdict ?? null,
+      recordId: p.id,
+      draftId: p.draftId ?? null,
+      fetchedFields: [],
+      updatedAt: new Date().toISOString(),
+    })
+    evaluations.push({ idx, evaluation: p.evaluation })
+  }
+
+  if (!items.length) {
+    throw new AppError(
+      400,
+      `没有可生成文案的产品档案：${
+        skipped.map((s) => s.reason).slice(0, 5).join('；') || '请先在流水线里完成 AI 评估'
+      }`
+    )
+  }
+
+  const options = normalizeOptions({ fetch: false, evaluate: false, save: true, listing: true })
+  const job = createBatchJob(options, items, `从产品档案载入 ${items.length} 条（只跑生成英文链接）`)
+  job.phase = 'evaluated'
+  saveBatchJob(job)
+  // 评估结果单独存表（条目本身只留分数/结论），生成链接时按同一份评估走
+  for (const e of evaluations) saveItemEvaluation(job.id, e.idx, e.evaluation)
+
+  res.status(201).json({ ok: true, job: getBatchJob(job.id) ?? job, skipped })
+})
+
 /** 任务列表（最近 10 个） */
 batchRouter.get('/jobs', (_req: Request, res: Response) => {
   const jobs = listBatchJobs(10).map((j) => ({
@@ -729,6 +819,21 @@ batchRouter.get('/jobs', (_req: Request, res: Response) => {
 batchRouter.get('/jobs/:id', (req: Request, res: Response) => {
   const job = getBatchJob(String(req.params.id))
   if (!job) throw new AppError(404, '任务不存在或已删除')
+  // 待审核的条目：审核已经通过了就顺手标完成 —— 产品已经原地变成正式产品，
+  // 不需要用户再回批量页点一次「⑥ 入库」。
+  let synced = false
+  for (const it of job.items) {
+    if (!it.reviewId || it.productId) continue
+    const review = getListingReview(it.reviewId)
+    if (review?.status === 'approved' && review.productId) {
+      it.productId = review.productId
+      it.status = 'done'
+      it.stage = '完成（审核通过，已进正式产品库）'
+      it.updatedAt = new Date().toISOString()
+      synced = true
+    }
+  }
+  if (synced) saveBatchJob(job)
   // 老批次（拆分阶段之前建的）phase 是空的，读的时候按条目重算一次，避免显示错阶段
   job.phase = computePhase(job)
   res.json({ job })

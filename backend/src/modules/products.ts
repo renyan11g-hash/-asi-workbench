@@ -92,6 +92,7 @@ export function toSourceInfo(s: SourceInput): SourceInfo {
 
 interface Row {
   id: string
+  code: string
   draft_id: string | null
   source_title: string
   source_url: string
@@ -152,6 +153,7 @@ const parseJson = <T>(v: string | null, fallback: T): T => {
 function rowToProduct(r: Row): Product {
   return {
     id: r.id,
+    code: r.code ?? '',
     draftId: r.draft_id ?? null,
     source: {
       sourceTitle: r.source_title,
@@ -1147,7 +1149,7 @@ function updateProductRow(
     `UPDATE products SET source_title=?, source_url=?, description=?, source_keywords=?, amazon_title=?,
       price_cny=?, price_max_cny=?, moq=?, supplier=?, material_cn=?, colors_cn=?, size_cn=?, weight_g=?,
       carton_l_cm=?, carton_w_cm=?, carton_h_cm=?, pcs_per_carton=?, carton_gw_kg=?,
-      images=?, category=?, notes=?, score=?, verdict=?, evaluation=?, listing=?, status=?, updated_at=? WHERE id=?`
+      images=?, category=?, notes=?, score=?, verdict=?, evaluation=?, listing=?, listing_title=?, status=?, updated_at=? WHERE id=?`
   ).run(
     source.sourceTitle,
     source.sourceUrl,
@@ -1174,6 +1176,7 @@ function updateProductRow(
     evaluation?.verdict ?? null,
     evaluation ? JSON.stringify(evaluation) : null,
     listing ? JSON.stringify(listing) : null,
+    listing?.title ?? '',
     status,
     now,
     id
@@ -1260,6 +1263,70 @@ productsRouter.post('/', async (req: Request, res: Response) => {
   res.status(201).json({ product: findProduct(id) })
 })
 
+/** 现有最大产品编号数字（RPA0007 → 7）；没有则 0 */
+function maxCodeNumber(): number {
+  try {
+    const row = db
+      .prepare("SELECT code FROM products WHERE code LIKE 'RPA%' ORDER BY code DESC LIMIT 1")
+      .get() as { code: string } | undefined
+    if (!row?.code) return 0
+    const n = Number.parseInt(row.code.slice(3), 10)
+    return Number.isFinite(n) ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * 产品编号（对外）：RPA0001、RPA0002…
+ * 一个产品从「资料录入 → 评估 → 英文文案 → 审核 → 正式产品库」始终是同一个编号，
+ * 所以编号只在这里发一次，之后全流程都按编号认产品。删掉的号不回收。
+ */
+function nextProductCode(): string {
+  return `RPA${String(maxCodeNumber() + 1).padStart(4, '0')}`
+}
+
+/**
+ * 把生成的英文 listing 写回「同一条产品档案」。
+ *
+ * 统一档案的关键：生成链接不再另建一条产品，而是把档案本身推到「待审核」，
+ * 审核通过再把同一条改成正式产品。这样编号、资料、评估、文案、图片始终在一行上。
+ */
+export function applyListingToExistingProduct(
+  id: string,
+  input: { source: SourceInfo; evaluation: Evaluation | null; listing: Listing; status: ProductStatus }
+): void {
+  const now = new Date().toISOString()
+  updateProductRow(id, input.source, input.evaluation, input.listing, input.status, now)
+  db.prepare("UPDATE products SET review_state='pending', review_note='', updated_at=? WHERE id=?").run(now, id)
+}
+
+/**
+ * 老数据补编号：列是新加的，历史产品 code 都是空串。
+ * 按创建顺序补，编号顺序就等于产品实际录入顺序。
+ */
+export function backfillProductCodes(): number {
+  try {
+    const rows = db
+      .prepare("SELECT id FROM products WHERE code IS NULL OR code = '' ORDER BY created_at ASC")
+      .all() as unknown as Array<{ id: string }>
+    if (!rows.length) return 0
+    let n = maxCodeNumber()
+    const stmt = db.prepare('UPDATE products SET code = ? WHERE id = ?')
+    for (const r of rows) {
+      n += 1
+      stmt.run(`RPA${String(n).padStart(4, '0')}`, r.id)
+    }
+    return rows.length
+  } catch (err) {
+    console.warn('[products] 补产品编号失败（不影响使用）:', err instanceof Error ? err.message : err)
+    return 0
+  }
+}
+
+// 服务启动时补一次历史产品编号（列是新加的，老数据全空）
+backfillProductCodes()
+
 /**
  * 插入一条产品（单品「保存到产品库」与批量处理共用同一段 SQL，避免两边字段不一致）。
  * 行为与原先内联的 INSERT 完全一致，只是抽成函数供批量任务复用。
@@ -1280,13 +1347,14 @@ export function insertProduct(input: {
   const now = input.now ?? new Date().toISOString()
   const id = randomUUID()
   db.prepare(
-    `INSERT INTO products (id, draft_id, source_title, source_url, description, source_keywords, amazon_title,
+    `INSERT INTO products (id, code, draft_id, source_title, source_url, description, source_keywords, amazon_title,
       price_cny, price_max_cny, moq, supplier, material_cn, colors_cn, size_cn, weight_g,
       carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg,
-      images, category, notes, score, verdict, evaluation, listing, similar, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      images, category, notes, score, verdict, evaluation, listing, listing_title, similar, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
+    nextProductCode(),
     input.draftId ?? null,
     s.sourceTitle,
     s.sourceUrl,
@@ -1313,6 +1381,7 @@ export function insertProduct(input: {
     evaluation?.verdict ?? null,
     evaluation ? JSON.stringify(evaluation) : null,
     listing ? JSON.stringify(listing) : null,
+    listing?.title ?? '',
     // 该列迁移时为 TEXT NOT NULL DEFAULT '{}'，写 null 会触发 NOT NULL constraint failed（500）
     similar ? JSON.stringify(similar) : '{}',
     input.status ?? (listing ? 'listed' : 'sourced'),
@@ -1345,7 +1414,24 @@ productsRouter.patch('/:id', async (req: Request, res: Response) => {
         : null
   const status = patch.status ?? current.status
 
-  updateProductRow(id, source, evaluation, listing, status, new Date().toISOString())
+  // 待审核的档案在链接生成页核对后保存 = 人工确认通过 → 原地转正式产品。
+  // 这一步就是「所有信息确认好后保存到产品库」，不需要再回待审核点一次通过。
+  let nextStatus = status
+  if (!patch.status && current.status === 'pending_review' && patch.listing) {
+    nextStatus = 'listed'
+  }
+  const nowIso = new Date().toISOString()
+
+  updateProductRow(id, source, evaluation, listing, nextStatus, nowIso)
+  if (nextStatus === 'listed' && current.status === 'pending_review') {
+    db.prepare(
+      "UPDATE products SET review_state='approved', reviewed_at=? WHERE id=?"
+    ).run(nowIso, id)
+    // 批量任务靠 listing_reviews 记录判断这条审核结果，这里同步一下，避免批次里一直显示"待审核"
+    db.prepare(
+      "UPDATE listing_reviews SET status='approved', updated_at=? WHERE product_id=? AND status='pending'"
+    ).run(nowIso, id)
+  }
   res.json({ product: findProduct(id) })
 })
 
@@ -1565,12 +1651,14 @@ productsRouter.post('/:id/listing', async (req: Request, res: Response) => {
     const listing = await runAi(() =>
       generateListing(current.source, settings, body.answers as ListingAnswer[] | undefined, current.similar, current.evaluation ?? null)
     )
-    db.prepare('UPDATE products SET listing=?, status=?, updated_at=? WHERE id=?').run(
-      JSON.stringify(listing),
-      'listed',
-      new Date().toISOString(),
-      id
-    )
+    // 生成后先把档案推进「待审核」，**不直接当正式产品**：
+    // 无论是单品页还是批量，没人工核对过的英文链接都不该直接进产品库。
+    applyListingToExistingProduct(id, {
+      source: current.source,
+      evaluation: current.evaluation,
+      listing,
+      status: 'pending_review',
+    })
     return { productId: id }
   })
 

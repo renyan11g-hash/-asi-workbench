@@ -117,6 +117,32 @@ asi-workbench/
 
 `products`（产品库）、`drafts`（评估库）、`master_products`（产品资料库）、`batch_jobs` / `batch_item_evals` / `batch_item_images`（批量）、`listing_reviews`（英文链接待审核）、`sourcing_history`（抓取历史）、`server_errors`（500 现场留档）、订单中心的 `customers/inquiries/orders/...`。
 
+## 7. 统一产品档案（2026-11-07 结构调整）
+
+以前一个产品要在「选品预估 → 产品信息预填 → 评估库 → 生成链接 → 待审核 → 产品库」之间手动接力，
+而且各模块各存一份（`drafts` 一份、`batch_jobs` 一份、`products` 一份、`listing_reviews` 一份）。
+现在收敛成**一个产品一条档案**：
+
+| 环节 | 落在哪 | 说明 |
+|---|---|---|
+| 产品编号 | `products.code`（`RPA0001`） | 录入时发一次，全流程同一个编号；老数据启动时自动回填 |
+| 资料 + 评估 + 英文文案 | 同一条 `products` 行 | 不再新建第二份数据 |
+| 待审核 | `products.status='pending_review'` | 「英文链接待审核」页直接读状态，不是另一个库 |
+| 正式产品 | `products.status='listed'` | 在链接生成页核对后「保存修改」即原地转正式；也可在待审核页批量通过 |
+| 驳回 | `products.status='archived'` + `review_note` | 资料/评估/图片全保留，可「退回待生成」重做 |
+| 批量出文案 | `modules/batch.ts` `POST /batch/from-products` | 从档案载入（`item.recordId`），只跑生成链接，不重新粘链接/补资料 |
+
+新增文件：
+
+- `backend/src/modules/flow.ts` —— 流水线接口：`/flow/overview`（漏斗计数）、`/flow/products`（每条进度+下一步）、
+  `/flow/reviews`（待审核）、`/flow/reviews/approve|reject|reopen`、`/flow/thumb/:id`（原始图缩略图）
+- `frontend/src/pages/Pipeline.tsx` —— 产品流水线页（每步进度、下一步直达、勾选批量出文案）
+- `products.code` / `products.listing_title` 两列（`db.ts` `ensureColumn`，`products.ts` 回填与写入）
+
+状态口径（`flow.ts` `nextStepOf`）：
+`sourced` 且缺关键字段→补资料；`sourced` 有资料无评估→评估；`sourced` 已评估无文案→生成文案；
+`pending_review`→审核；`listed`→完成；`archived`→驳回。
+
 ## 6. 改动后的发布流程
 
 1. `cd backend && npx tsc --noEmit`；`cd frontend && npx tsc -b --force`

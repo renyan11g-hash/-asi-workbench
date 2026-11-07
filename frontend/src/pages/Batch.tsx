@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
+  ArrowRight,
   Check,
   ClipboardCheck,
   ClipboardPaste,
@@ -314,8 +315,8 @@ export default function Batch() {
     let alive = true
     const load = async () => {
       try {
-        const r = await api.listListingReviews({ status: 'pending', limit: 1 })
-        if (alive) setReviewPending(r.counts?.pending ?? 0)
+        const o = await api.getFlowOverview()
+        if (alive) setReviewPending(o.pendingReview)
       } catch {
         /* 拿不到不影响批量处理 */
       }
@@ -327,6 +328,14 @@ export default function Batch() {
       window.clearInterval(t)
     }
   }, [nonce, job?.status])
+
+  // 从流水线点「批量生成英文文案」跳过来时带着 ?job=xxx：直接打开那一批
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get('job')
+    if (!fromUrl) return
+    localStorage.setItem(JOB_KEY, fromUrl)
+    setJobId(fromUrl)
+  }, [])
 
   // 轮询：只要任务还在跑就每 2.5 秒刷新一次进度（顺手把服务端保活，避免免费层休眠）
   useEffect(() => {
@@ -394,7 +403,10 @@ export default function Batch() {
       (i) => !i.evaluated && !i.productId && !i.reviewId && (i.missing?.length ?? 0) === 0 && Boolean(i.source?.sourceTitle)
     ).length
     const listing = live.filter((i) => i.evaluated && !i.productId && !i.reviewId).length
-    const save = live.filter((i) => !i.productId && (Boolean(i.reviewId) || Boolean(i.evaluated))).length
+    // 来自产品档案的条目不需要「入库」这一步（档案本来就在库里），审核通过原地变正式产品
+    const save = live.filter(
+      (i) => !i.productId && (Boolean(i.reviewId) || (Boolean(i.evaluated) && !i.recordId))
+    ).length
     return { fetch, quick, evaluate, listing, save }
   }, [items])
 
@@ -636,6 +648,20 @@ export default function Batch() {
 
   return (
     <div className="space-y-4">
+      {/* 入口说明：已经录过资料的产品不用在这里重新粘链接 */}
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-blue-200 bg-blue-50/70 px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-slate-800">已经录过资料 / 评估过的产品，别在这里重来一遍</div>
+          <p className="mt-0.5 text-[12px] leading-relaxed text-slate-600">
+            这一页是给「一批新链接」用的：抓取 → 人工补全 → 评估 → 出文案。
+            如果产品已经在产品库里，直接去「产品流水线」勾选，一次性批量生成英文文案 —— 读的就是同一份档案。
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => navigate('/pipeline')}>
+          <ArrowRight className="mr-1 h-3.5 w-3.5" /> 去流水线批量出文案
+        </Button>
+      </div>
+
       {/* ① 输入 */}
       <SectionCard
         title="① 批量输入产品"

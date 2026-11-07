@@ -10,6 +10,8 @@ import {
   DashboardOverview,
   EmailDraft,
   Evaluation,
+  FlowOverview,
+  FlowRow,
   ImprintRecommendResult,
   Inquiry,
   InquiryStatus,
@@ -711,6 +713,76 @@ export const api = {
   productImageUrl(productId: string, file: string): string {
     const baseURL = import.meta.env.VITE_API_URL || '/api'
     return `${baseURL}/product-images/${productId}/${file}`
+  },
+
+  /** 评估库草稿 → 产品档案（有了档案才能生成英文链接） */
+  async createProductFromDraft(draftId: string): Promise<{ productId: string; created: boolean }> {
+    const { data } = await apiClient.post<{ productId: string; created: boolean }>(
+      `/drafts/${draftId}/product`
+    )
+    return data
+  },
+
+  // ---------------- 产品流水线（统一产品档案） ----------------
+  /** 总览漏斗：待补资料 / 待评估 / 待生成文案 / 待审核 / 正式产品 */
+  async getFlowOverview(): Promise<FlowOverview> {
+    const { data } = await apiClient.get<FlowOverview>('/flow/overview')
+    return data
+  },
+
+  /** 流水线列表：每条档案每一步做到哪 + 下一步该干什么 */
+  async listFlowProducts(params?: { need?: string; q?: string; limit?: number }): Promise<{
+    rows: FlowRow[]
+    total: number
+  }> {
+    const { data } = await apiClient.get<{ rows: FlowRow[]; total: number }>('/flow/products', {
+      params,
+    })
+    return data
+  },
+
+  /** 待审核 = 档案里 status='pending_review' 的那些（同一份数据，不是另开的库） */
+  async listFlowReviews(q?: string): Promise<{ reviews: FlowRow[]; total: number }> {
+    const { data } = await apiClient.get<{ reviews: FlowRow[]; total: number }>('/flow/reviews', {
+      params: { q },
+    })
+    return data
+  },
+
+  /** 审核通过：这条档案原地变成正式产品 */
+  async approveFlowReviews(ids: string[]): Promise<{ approved: string[]; failed: unknown[] }> {
+    const { data } = await apiClient.post<{ approved: string[]; failed: unknown[] }>(
+      '/flow/reviews/approve',
+      { ids }
+    )
+    return data
+  },
+
+  /** 驳回：档案标 archived，保留资料/评估，可改后重生成 */
+  async rejectFlowReviews(ids: string[], note?: string): Promise<{ rejected: number }> {
+    const { data } = await apiClient.post<{ rejected: number }>('/flow/reviews/reject', { ids, note })
+    return data
+  },
+
+  /** 退回「待生成文案」：清掉文案、保留档案 */
+  async reopenFlowReviews(ids: string[]): Promise<{ reopened: number }> {
+    const { data } = await apiClient.post<{ reopened: number }>('/flow/reviews/reopen', { ids })
+    return data
+  },
+
+  /**
+   * 从产品档案批量出文案：不再重新粘链接、不再重新补资料，
+   * 直接把选中的档案载入批量任务，只跑「生成英文链接」这一站。
+   */
+  async createBatchFromProducts(
+    ids: string[]
+  ): Promise<{ job: BatchJob; skipped: Array<{ id: string; reason: string }> }> {
+    const { data } = await apiClient.post<{
+      ok: boolean
+      job: BatchJob
+      skipped: Array<{ id: string; reason: string }>
+    }>('/batch/from-products', { ids })
+    return { job: data.job, skipped: data.skipped ?? [] }
   },
 
   // ---------- 批量处理（粘贴多条链接 → 抓取 → 补全 → 评估 → 入库） ----------

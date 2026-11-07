@@ -14,7 +14,7 @@ import { z } from 'zod'
 import { randomUUID } from 'crypto'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
-import { insertProduct, sourceSchema, toSourceInfo } from './products'
+import { insertProduct, applyListingToExistingProduct, sourceSchema, toSourceInfo } from './products'
 import type { Evaluation, Listing, PriceRow, SourceInfo } from '../types'
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected'
@@ -99,6 +99,12 @@ export function createListingReview(input: {
   listing: Listing
   priceGrid: PriceRow[]
   draftId?: string | null
+  /**
+   * 已经存在的产品档案：传入时**不另建产品**，直接把这条档案推到 pending_review。
+   * 这是「同一份产品档案贯穿全流程」的关键 —— 从产品档案批量出文案时走这条路，
+   * 编号/资料/评估/图片都还是原来那条，审核通过后原地变成正式产品。
+   */
+  productId?: string | null
 }): { id: string; productId: string } {
   const id = randomUUID()
   const now = new Date().toISOString()
@@ -106,16 +112,25 @@ export function createListingReview(input: {
   // 产品先建出来（status=pending_review）：这样审核页可以直接用单品那套
   // 「英文链接生成」页面打开、编辑、看 QC —— 和单个生成时完全一样。
   // 产品库列表默认不含 pending_review，所以没审过的不会混进正式产品。
-  let productId = ''
+  let productId = input.productId ?? ''
   try {
-    productId = insertProduct({
-      source: input.source,
-      evaluation: input.evaluation,
-      listing: input.listing,
-      similar: null,
-      status: 'pending_review',
-      draftId: input.draftId ?? null,
-    })
+    if (productId) {
+      applyListingToExistingProduct(productId, {
+        source: input.source,
+        evaluation: input.evaluation,
+        listing: input.listing,
+        status: 'pending_review',
+      })
+    } else {
+      productId = insertProduct({
+        source: input.source,
+        evaluation: input.evaluation,
+        listing: input.listing,
+        similar: null,
+        status: 'pending_review',
+        draftId: input.draftId ?? null,
+      })
+    }
   } catch (err) {
     throw new Error(`建立待审核产品失败：${err instanceof Error ? err.message : String(err)}`)
   }
@@ -387,16 +402,20 @@ listingReviewsRouter.post('/reject', (req: Request, res: Response) => {
   res.json({ ok: true, rejected: n })
 })
 
-/** 删除（真正删掉，不留档）：待审核产品一并清掉 */
+/** 删除（不留档）：**产品档案不删**，只把待审核的那条记录删掉并把档案退回「文案待生成」 */
 listingReviewsRouter.post('/bulk-delete', (req: Request, res: Response) => {
   const body = z.object({ ids: z.array(z.string().min(1)).min(1).max(200) }).parse(req.body ?? {})
+  const now = new Date().toISOString()
   let n = 0
   for (const id of body.ids) {
     const row = db.prepare('SELECT product_id, status FROM listing_reviews WHERE id = ?').get(id) as
       | { product_id: string | null; status: string }
       | undefined
     if (row?.product_id && row.status !== 'approved') {
-      db.prepare("DELETE FROM products WHERE id = ? AND status = 'pending_review'").run(row.product_id)
+      // 待审核的档案退回「已评估、未生成文案」：不丢资料、不丢评估，随时可以重新生成
+      db.prepare(
+        "UPDATE products SET status='sourced', listing=NULL, review_state=NULL, updated_at=? WHERE id=? AND status='pending_review'"
+      ).run(now, row.product_id)
     }
     n += Number(db.prepare('DELETE FROM listing_reviews WHERE id = ?').run(id).changes ?? 0)
   }
@@ -410,7 +429,9 @@ listingReviewsRouter.delete('/:id', (req: Request, res: Response) => {
     | undefined
   if (!row) throw new AppError(404, '记录不存在')
   if (row.product_id && row.status !== 'approved') {
-    db.prepare("DELETE FROM products WHERE id = ? AND status = 'pending_review'").run(row.product_id)
+    db.prepare(
+      "UPDATE products SET status='sourced', listing=NULL, review_state=NULL, updated_at=? WHERE id=? AND status='pending_review'"
+    ).run(new Date().toISOString(), row.product_id)
   }
   db.prepare('DELETE FROM listing_reviews WHERE id = ?').run(id)
   res.json({ ok: true })

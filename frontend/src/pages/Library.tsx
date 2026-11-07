@@ -12,9 +12,9 @@ import { formatMarketHits } from '@/lib/market-format'
 import { useProducts } from '@/hooks/use-data'
 
 const FILTERS = [
-  { value: '', label: '全部' },
-  { value: 'sourced', label: '待生成链接' },
-  { value: 'listed', label: '已生成链接' },
+  { value: 'listed', label: '正式产品' },
+  { value: 'all', label: '全部' },
+  { value: 'sourced', label: '未上架档案' },
   { value: 'archived', label: '已归档' },
   { value: 'trashed', label: '回收站' },
 ]
@@ -23,12 +23,13 @@ export default function Library() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [keyword, setKeyword] = useState('')
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState('listed')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const deferredKeyword = useDeferredValue(keyword)
   const { data: products, isLoading } = useProducts({
     q: deferredKeyword || undefined,
-    status: status || undefined,
+    // 'all' = 不传 status（后端默认排除回收站和待审核），否则会把 'all' 当状态值查空
+    status: status && status !== 'all' ? status : undefined,
   })
 
   const list = products ?? []

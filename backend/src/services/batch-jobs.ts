@@ -94,6 +94,11 @@ export interface BatchItem {
   productId?: string | null
   /** 英文链接（待审核库）的 id；审核通过并入库后才有 productId */
   reviewId?: string | null
+  /**
+   * 从「产品档案」载入的条目：指向产品库里那条已有档案（RPA 编号那条）。
+   * 有它时生成链接不再新建产品，而是把这条档案推到待审核 —— 档案只有一份。
+   */
+  recordId?: string | null
   /** 评估时写进「评估库」的那条草稿 id（入库时复用，避免重复） */
   draftId?: string | null
   /** 抓到哪些字段，前端展示「抓取 5 项」 */

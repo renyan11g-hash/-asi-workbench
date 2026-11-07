@@ -3,7 +3,8 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
-import { syncProductFromDraft } from './products'
+import { syncProductFromDraft, insertProduct, sourceSchema, toSourceInfo } from './products'
+import type { Evaluation } from '../types'
 
 /**
  * 选品评估草稿：
@@ -114,6 +115,42 @@ draftsRouter.post('/', async (req: Request, res: Response) => {
     }
   }
   res.json({ draft: rowToDraft(row), syncedProductId })
+})
+
+/**
+ * 评估库草稿 → 产品档案：一条草稿变成（或复用）一条带 RPA 编号的产品档案，
+ * 前端拿到 productId 就能直接进「英文链接生成」页。这是「评估库 → 生成英文链接」
+ * 之前缺的那一步衔接：以前只能把草稿载回选品页再手动保存一次。
+ */
+draftsRouter.post('/:id/product', async (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const row = findDraft(id)
+  if (!row) throw new AppError(404, '草稿不存在')
+  const draft = rowToDraft(row)
+
+  // 已经有关联产品（保存过）就直接复用，避免同一条草稿建出两条档案
+  const linked = db.prepare('SELECT id FROM products WHERE draft_id = ?').get(id) as
+    | { id: string }
+    | undefined
+  if (linked) {
+    res.json({ productId: linked.id, created: false })
+    return
+  }
+
+  const source = (draft.content as { source?: unknown }).source
+  if (!source || typeof source !== 'object') {
+    throw new AppError(400, '这条草稿里没有选品资料（source），先在「产品信息预填」里补一次再存入评估库')
+  }
+  const evaluated = ((draft.content as { evaluation?: unknown }).evaluation ?? null) as Evaluation | null
+  const productId = insertProduct({
+    source: toSourceInfo(sourceSchema.parse(source)),
+    evaluation: evaluated,
+    listing: null,
+    similar: null,
+    status: 'sourced',
+    draftId: id,
+  })
+  res.status(201).json({ productId, created: true })
 })
 
 /** 删除草稿 */

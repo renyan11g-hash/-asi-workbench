@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { FolderOpen, Loader2, RefreshCw, SearchCheck, Trash2 } from 'lucide-react'
+import { FileText, FolderOpen, Loader2, RefreshCw, SearchCheck, Trash2 } from 'lucide-react'
 import ProductThumb from '@/components/ProductThumb'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -28,6 +28,7 @@ interface EvalDraft {
 export default function Evaluations() {
   const navigate = useNavigate()
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [openingId, setOpeningId] = useState<string | null>(null)
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['eval-drafts'],
@@ -60,6 +61,19 @@ export default function Evaluations() {
       toast.error(getErrorMessage(err))
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  /** 直接从这条评估去生成英文链接：草稿 → 产品档案（RPA 编号）→ 打开链接生成页 */
+  const toListing = async (id: string) => {
+    setOpeningId(id)
+    try {
+      const r = await api.createProductFromDraft(id)
+      navigate(`/listing/${r.productId}`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setOpeningId(null)
     }
   }
 
@@ -137,6 +151,19 @@ export default function Evaluations() {
                     <div className="flex shrink-0 items-center gap-1.5">
                       <Button
                         size="sm"
+                        disabled={openingId === d.id}
+                        onClick={() => void toListing(d.id)}
+                      >
+                        {openingId === d.id ? (
+                          <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                        ) : (
+                          <FileText className="mr-1 h-4 w-4" />
+                        )}
+                        生成英文链接
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
                         onClick={() => navigate('/sourcing', { state: { loadDraftId: d.id } })}
                       >
                         载入到选品评估

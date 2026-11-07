@@ -237,6 +237,8 @@ export type ProductStatus = 'sourced' | 'listed' | 'archived' | 'trashed' | 'pen
 
 export interface Product {
   id: string
+  /** 对外产品编号（RPA0001）：一个产品从录入到上架始终同一个编号 */
+  code: string
   /** 关联的选品评估草稿 id（评估库 ↔ 产品库 同步） */
   draftId: string | null
   source: SourceInfo

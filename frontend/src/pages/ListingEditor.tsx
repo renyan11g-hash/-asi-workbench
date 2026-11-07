@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   CheckCircle2,
+  ClipboardCheck,
   Copy,
   Download,
   ExternalLink,
@@ -1073,6 +1074,17 @@ export default function ListingEditor() {
 
   return (
     <div className="space-y-5">
+      {product.status === 'pending_review' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs text-rose-800">
+          <div className="flex items-center gap-2">
+            <ClipboardCheck className="h-3.5 w-3.5" />
+            <span>
+              这条档案现在处于 <b>待审核</b>：核对完文案和图片后点上方「保存修改」，就会<b>原地变成正式产品</b>并进产品库。
+              也可以回<a href="/listing-reviews" className="mx-1 underline">英文链接待审核</a>批量通过。
+            </span>
+          </div>
+        </div>
+      )}
       {hasDraft && draftMeta && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800">
           <div className="flex items-center gap-2">

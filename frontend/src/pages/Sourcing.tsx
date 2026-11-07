@@ -497,9 +497,15 @@ export default function Sourcing() {
       )
       setDraftBanner(null)
       qc.invalidateQueries({ queryKey: ['products'] })
-      toast.success(product.draftId ? '已同步更新产品库中的关联产品' : '已保存到产品库')
+      qc.invalidateQueries({ queryKey: ['flow-overview'] })
+      qc.invalidateQueries({ queryKey: ['flow-products'] })
+      toast.success(
+        product.draftId
+          ? `已更新产品档案 ${product.code || ''}（同一条档案，不会重复建品）`
+          : `已保存到产品档案 ${product.code || ''}`
+      )
       if (then === 'listing') navigate(`/listing/${product.id}`)
-      else navigate('/library')
+      else navigate('/pipeline')
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {

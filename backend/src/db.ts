@@ -434,6 +434,14 @@ ensureColumn('reviewed_at', 'reviewed_at TEXT')
 ensureColumn('origin', "origin TEXT NOT NULL DEFAULT 'manual'")
 ensureColumn('selection_reason', 'selection_reason TEXT')
 
+// 产品编号（RPA0001 这样的对外编号）：一个产品从录入到上架始终是同一个编号，
+// 流水线上认编号比认 UUID 方便，也方便和 Excel / ASI ESP 里的记录对上。
+ensureColumn('code', "code TEXT NOT NULL DEFAULT ''")
+
+// 英文标题单独存一列：流水线列表要显示「英文文案写到哪了」，
+// 但要显示英文标题就得把整条 listing JSON 都读出来（一条几 KB、几百条就是几 MB）。
+ensureColumn('listing_title', "listing_title TEXT NOT NULL DEFAULT ''")
+
 // 市场参考价（人工在 ESP / ASI 目录查到的同款 list 价）：优先级高于 AI 估价
 ensureColumn('market_list_low', 'market_list_low REAL')
 ensureColumn('market_list_high', 'market_list_high REAL')

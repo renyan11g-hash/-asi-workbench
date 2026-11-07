@@ -23,6 +23,7 @@ import { productImagesRouter } from './modules/product-images'
 import { batchRouter } from './modules/batch'
 import { listingReviewsRouter } from './modules/listing-reviews'
 import { masterProductsRouter } from './modules/master-products'
+import { flowRouter } from './modules/flow'
 
 export const createApp = (): Application => {
   const app = express()
@@ -68,6 +69,8 @@ export const createApp = (): Application => {
   // 批量处理：粘贴多条链接，后台逐条跑单品同款流程
   app.use(`${env.API_PREFIX}/batch`, batchRouter)
   app.use(`${env.API_PREFIX}/listing-reviews`, listingReviewsRouter)
+  // 产品流水线：统一产品档案（一个产品一条档案、一个 RPA 编号贯穿全流程）
+  app.use(`${env.API_PREFIX}/flow`, flowRouter)
   // 产品资料库：自建主数据，抓取时优先命中，避免重复补箱规和图片
   app.use(`${env.API_PREFIX}/master-products`, masterProductsRouter)
 
