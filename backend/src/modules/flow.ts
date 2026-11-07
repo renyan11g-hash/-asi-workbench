@@ -277,7 +277,8 @@ flowRouter.get('/reviews', (req: Request, res: Response) => {
   const status = String(req.query.status ?? 'pending')
   const rows =
     status === 'approved'
-      ? liteRows().filter((r) => r.status === 'listed' && r.review_state === 'approved')
+      ? // 已通过 = 预产品库里的那些（老数据 review_state 可能是空的，不能只按 review_state 过滤）
+        liteRows().filter((r) => r.status === 'listed' && (r.library_state ?? 'pre') !== 'rpa')
       : liteRows().filter((r) => r.status === 'pending_review')
   const imgs = imageIndex()
   const mapped = rows
