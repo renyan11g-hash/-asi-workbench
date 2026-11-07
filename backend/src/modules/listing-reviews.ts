@@ -251,9 +251,17 @@ export function createStagedListingReview(input: {
     now,
     now
   )
+  // 产品档案跟着翻成「待审核」，产品流水线才不会显示成「还没生成文案」。
+  // 只翻 sourced 的：已经在预产品库里的产品重生成时不能被拉回流水线。
+  try {
+    db.prepare(
+      "UPDATE products SET status='pending_review', updated_at=? WHERE id=? AND status='sourced'"
+    ).run(now, input.productId)
+  } catch {
+    /* ignore */
+  }
   return { id, productId: input.productId }
 }
-
 /** 通过 staged 记录时，把草稿写回产品档案（只有这一步会改 products.listing） */
 function applyStagedListing(row: RawRow): void {
   if (!row.product_id) return
@@ -739,7 +747,12 @@ listingReviewsRouter.post('/reject', (req: Request, res: Response) => {
     db.prepare(
       "UPDATE listing_reviews SET status='rejected', review_note=?, updated_at=? WHERE id=?"
     ).run(body.note ?? '', now, id)
-    if (row.product_id && row.mode !== 'staged') {
+    if (row.product_id && row.mode === 'staged') {
+      // 暂存草稿被驳回：产品退回「已评估、待生成文案」，资料和评估都不动
+      db.prepare(
+        "UPDATE products SET status='sourced', review_note=?, updated_at=? WHERE id=? AND status='pending_review'"
+      ).run(body.note ?? '', now, row.product_id)
+    } else if (row.product_id) {
       db.prepare(
         "UPDATE products SET status='archived', review_state='rejected', review_note=?, updated_at=? WHERE id=?"
       ).run(body.note ?? '', now, row.product_id)
@@ -759,7 +772,11 @@ listingReviewsRouter.post('/bulk-delete', (req: Request, res: Response) => {
       | { product_id: string | null; status: string; mode: string | null }
       | undefined
     // staged 草稿删掉即可：产品上的 listing 从来没被动过，不需要回退
-    if (row?.product_id && row.status !== 'approved' && row.mode !== 'staged') {
+    if (row?.product_id && row.status !== 'approved' && row.mode === 'staged') {
+      db.prepare(
+        "UPDATE products SET status='sourced', updated_at=? WHERE id=? AND status='pending_review'"
+      ).run(now, row.product_id)
+    } else if (row?.product_id && row.status !== 'approved') {
       // 待审核的档案退回「已评估、未生成文案」：不丢资料、不丢评估，随时可以重新生成
       db.prepare(
         "UPDATE products SET status='sourced', listing=NULL, review_state=NULL, updated_at=? WHERE id=? AND status='pending_review'"
@@ -776,7 +793,11 @@ listingReviewsRouter.delete('/:id', (req: Request, res: Response) => {
     | { product_id: string | null; status: string; mode: string | null }
     | undefined
   if (!row) throw new AppError(404, '记录不存在')
-  if (row.product_id && row.status !== 'approved' && row.mode !== 'staged') {
+  if (row.product_id && row.status !== 'approved' && row.mode === 'staged') {
+    db.prepare(
+      "UPDATE products SET status='sourced', updated_at=? WHERE id=? AND status='pending_review'"
+    ).run(new Date().toISOString(), row.product_id)
+  } else if (row.product_id && row.status !== 'approved') {
     db.prepare(
       "UPDATE products SET status='sourced', listing=NULL, review_state=NULL, updated_at=? WHERE id=? AND status='pending_review'"
     ).run(new Date().toISOString(), row.product_id)
