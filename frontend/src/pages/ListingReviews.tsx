@@ -384,9 +384,14 @@ export default function ListingReviews() {
                           size="sm"
                           variant="outline"
                           className="h-7 px-2 text-[11px]"
-                          onClick={() => navigate(`/listing/${r.id}`)}
+                          onClick={() => {
+                            // 有审核记录就打开完整英文链接抽屉（全部字段都能看/改）；没有才去产品页
+                            const hit = reviewByProduct.get(r.id)
+                            if (hit) setReviewId(hit.id)
+                            else navigate(`/listing/${r.id}`)
+                          }}
                         >
-                          打开完整编辑页
+                          {reviewByProduct.has(r.id) ? '查看/改完整文案' : '打开完整编辑页'}
                         </Button>
                         {tab === 'pending' ? (
                           <>
