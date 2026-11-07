@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { CheckCircle2, Clock3, ExternalLink, Loader2, RotateCcw, Search, XCircle } from 'lucide-react'
+import { CheckCircle2, Clock3, ExternalLink, Loader2, RotateCcw, Search, Sparkles, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,7 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { SectionCard, VerdictBadge } from '@/components/ui/primitives'
 import { api, getErrorMessage } from '@/lib/api'
 import type { FlowRow } from '@/types'
-import { ReviewCenterPanel } from './ReviewCenter'
+import { ReviewCenterPanel, ReviewDrawer } from './ReviewCenter'
 
 type Tab = 'pending' | 'approved' | 'rejected'
 
@@ -31,6 +31,8 @@ export default function ListingReviews() {
   const [counts, setCounts] = useState({ pending: 0, approved: 0, rejected: 0 })
   /** flow=流水线里待审核的文案；drafts=批量生成的草稿（两个原来分开的页面，现在合一页两个视图） */
   const [mode, setMode] = useState<'flow' | 'drafts'>('flow')
+  /** 点「打开」时用：产品 id → 对应的审核记录 id（有记录就打开完整英文链接抽屉） */
+  const [reviewId, setReviewId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -83,6 +85,39 @@ export default function ListingReviews() {
   /**
    * 驳回「已经通过」的：产品从预产品库下架、标成已驳回，文案保留可以改完重新生成再审。
    */
+  /**
+   * 批量生成英文链接：把选中的（或当前列表全部）产品丢进后台队列，一条一条生成。
+   * 生成完会自动变成上面的待审核卡片；进度在最上面的「AI 正在生成」面板里看。
+   */
+  const generateListings = async (ids: string[]) => {
+    const productIds = ids.filter(Boolean)
+    if (!productIds.length) return
+    const withDraft = productIds.filter((pid) => reviewByProduct.has(pid))
+    const msg =
+      `为这 ${productIds.length} 个产品生成英文链接？\n\n` +
+      (withDraft.length
+        ? `其中 ${withDraft.length} 个已经有文案草稿，重新生成会替换掉旧草稿（人工改过的地方会丢）。\n\n`
+        : '') +
+      '生成是后台排队跑的，进度在页面顶部「AI 正在生成」面板里看，完成后自动变成待审核卡片。'
+    if (!window.confirm(msg)) return
+    setBusy(true)
+    try {
+      const { job } = await api.createProductionJob({
+        kind: 'listing',
+        productIds: productIds.slice(0, 20),
+        clientKey: `gen-${Date.now()}`,
+      })
+      localStorage.setItem('asi-production:jobId', job.id)
+      toast.success(`已开始为 ${job.items.length} 个产品生成英文链接`)
+      setSelected([])
+      void load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const unapprove = async (ids: string[]) => {
     if (!ids.length) return
     const note = window.prompt(
@@ -138,6 +173,25 @@ export default function ListingReviews() {
   }
 
   const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id))
+
+  // 产品 → 审核记录：流水线视图点「打开」时，直接打开完整英文链接抽屉
+  // （正文四段 + 分类/主题/材质/印刷/包装/箱规/阶梯报价/中文对照，不用再跳产品页找）
+  const queueQuery = useQuery({
+    queryKey: ['listing-review-map'],
+    queryFn: () => api.listReviewQueue({ status: 'all', limit: 300 }),
+    refetchInterval: 15_000,
+  })
+  const reviewByProduct = useMemo(() => {
+    const map = new Map<string, { id: string; status: string }>()
+    for (const item of queueQuery.data?.reviews ?? []) {
+      if (!item.productId) continue
+      const prev = map.get(item.productId)
+      if (!prev || (item.status === 'pending' && prev.status !== 'pending')) {
+        map.set(item.productId, { id: item.id, status: item.status })
+      }
+    }
+    return map
+  }, [queueQuery.data])
 
   return (
     <div className="space-y-4">
@@ -217,6 +271,16 @@ export default function ListingReviews() {
           </Button>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <span className="text-[11px] text-slate-400">共 {rows.length} 条</span>
+            {(tab === 'pending' || tab === 'approved') && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || !(selected.length || rows.length)}
+                onClick={() => void generateListings(selected.length ? selected : rows.map((r) => r.id))}
+              >
+                <Sparkles className="mr-1 h-3.5 w-3.5" /> 批量生成英文链接（{selected.length || rows.length}）
+              </Button>
+            )}
             {selected.length > 0 && tab === 'pending' && (
               <>
                 <Button size="sm" disabled={busy} onClick={() => void approve(selected)}>
@@ -378,6 +442,17 @@ export default function ListingReviews() {
           )}
         </div>
       </SectionCard>
+      )}
+      {reviewId && (
+        <ReviewDrawer
+          id={reviewId}
+          onClose={() => setReviewId(null)}
+          onChanged={() => void load()}
+          onApproved={() => {
+            setSelected([])
+            void load()
+          }}
+        />
       )}
     </div>
   )

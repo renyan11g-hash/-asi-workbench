@@ -154,6 +154,30 @@ libraryRouter.get('/pending-generation', (_req: Request, res: Response) => {
     }
   }
 
+  // 正在跑的批次里的产品也要显示（重新生成已有草稿的产品时，它已经不是 sourced 了，
+  // 只按上面那条 SQL 会漏掉，用户就看不到「AI 在跑哪一个」）
+  const productRowIds = new Set(products.map((p) => p.id))
+  const activeItemProductIds = Array.from(itemMap.entries())
+    .filter(([, it]) => it.status === 'running' || it.status === 'queued')
+    .map(([pid]) => pid)
+    .filter((pid) => !productRowIds.has(pid))
+
+  if (activeItemProductIds.length) {
+    const extra = db
+      .prepare(
+        `SELECT id, code, source_title, source_url, updated_at FROM products
+         WHERE id IN (${activeItemProductIds.map(() => '?').join(',')}) AND status != 'trashed'`
+      )
+      .all(...activeItemProductIds) as unknown as Array<{
+      id: string
+      code: string
+      source_title: string
+      source_url: string
+      updated_at: string
+    }>
+    products.push(...extra)
+  }
+
   res.json({
     rows: products.map((p) => {
       const item = itemMap.get(p.id)

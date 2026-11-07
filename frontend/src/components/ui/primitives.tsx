@@ -22,6 +22,7 @@ export function VerdictBadge({ verdict, score }: { verdict?: Verdict | null; sco
 export function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; cls: string }> = {
     sourced: { label: '待生成链接', cls: 'bg-slate-100 text-slate-600 border-slate-200' },
+    pending_review: { label: '待审核', cls: 'bg-orange-100 text-orange-700 border-orange-200' },
     listed: { label: '已生成链接', cls: 'bg-blue-100 text-blue-700 border-blue-200' },
     archived: { label: '已归档', cls: 'bg-slate-100 text-slate-400 border-slate-200' },
     trashed: { label: '回收站', cls: 'bg-rose-50 text-rose-600 border-rose-200' },

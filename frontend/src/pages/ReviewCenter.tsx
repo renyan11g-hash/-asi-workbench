@@ -412,7 +412,7 @@ function RotateIcon() {
 }
 
 /** 右侧抽屉：完整 Listing + 质检明细 + 编辑/重生成/通过/驳回 */
-function ReviewDrawer({
+export function ReviewDrawer({
   id,
   onClose,
   onChanged,
