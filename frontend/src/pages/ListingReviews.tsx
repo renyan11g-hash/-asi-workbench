@@ -8,10 +8,11 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { SectionCard, VerdictBadge } from '@/components/ui/primitives'
 import { api, getErrorMessage } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import type { FlowRow } from '@/types'
 import { ReviewCenterPanel, ReviewDrawer } from './ReviewCenter'
 
-type Tab = 'pending' | 'approved' | 'rejected'
+type Tab = 'ungenerated' | 'pending' | 'approved' | 'rejected'
 
 /**
  * 英文链接待审核。
@@ -193,6 +194,13 @@ export default function ListingReviews() {
     return map
   }, [queueQuery.data])
 
+  // 未生成英文链接的产品（评估已通过、文案还没出来）：单独一栏，不和待审核混在一起
+  const ungQuery = useQuery({
+    queryKey: ['pending-generation'],
+    queryFn: api.getPendingGeneration,
+    refetchInterval: 5000,
+  })
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -215,10 +223,72 @@ export default function ListingReviews() {
       </div>
 
       {/* 已通过评估、文案还没生成的产品：立刻出现在这里，带 AI 进度，不用等生成完 */}
-      <GeneratingPanel onOpenProduct={(id) => navigate(`/listing/${id}`)} />
+      {mode === 'flow' && tab !== 'ungenerated' && <GeneratingPanel onOpenProduct={(id) => navigate(`/listing/${id}`)} />}
 
       {mode === 'drafts' ? (
         <ReviewCenterPanel />
+      ) : tab === 'ungenerated' ? (
+        <SectionCard
+          title="未生成英文链接"
+          hint="评估已通过、文案还没出来的产品。生成完会自动进「待审核」，这里就空了"
+          right={
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
+                共 {ungQuery.data?.rows.length ?? 0} 条
+              </Badge>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || !(ungQuery.data?.rows.length ?? 0)}
+                onClick={() => void generateListings((ungQuery.data?.rows ?? []).map((r) => r.productId))}
+              >
+                <Sparkles className="mr-1 h-3.5 w-3.5" /> 全部生成
+              </Button>
+            </div>
+          }
+        >
+          {(ungQuery.data?.rows.length ?? 0) === 0 ? (
+            <div className="py-12 text-center text-[12px] text-slate-400">
+              没有待生成的产品。评估通过后会先出现在这里，生成完再进「待审核」。
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {(ungQuery.data?.rows ?? []).map((r) => (
+                <div key={r.productId} className="flex flex-wrap items-center gap-2 py-2">
+                  {r.status === 'running' ? (
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-600" />
+                  ) : r.status === 'failed' ? (
+                    <XCircle className="h-3.5 w-3.5 shrink-0 text-rose-500" />
+                  ) : (
+                    <Clock3 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  )}
+                  <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-white">{r.code || '—'}</span>
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-slate-800">{r.title}</span>
+                  <span className={cn('text-[11px]', r.status === 'failed' ? 'text-rose-600' : 'text-slate-500')}>
+                    {r.status === 'failed' ? r.error || '生成失败' : r.stage || '等待生成'}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-[11px]"
+                    disabled={busy || r.status === 'running'}
+                    onClick={() => void generateListings([r.productId])}
+                  >
+                    生成英文链接
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-[11px]"
+                    onClick={() => navigate(`/listing/${r.productId}`)}
+                  >
+                    打开
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </SectionCard>
       ) : (
       <SectionCard
         title="英文链接待审核"
@@ -235,7 +305,7 @@ export default function ListingReviews() {
         }
       >
         <div className="flex flex-wrap items-center gap-2">
-          {(['pending', 'approved', 'rejected'] as Tab[]).map((t) => (
+          {(['ungenerated', 'pending', 'approved', 'rejected'] as Tab[]).map((t) => (
             <button
               key={t}
               type="button"
@@ -250,11 +320,13 @@ export default function ListingReviews() {
                   : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300',
               ].join(' ')}
             >
-              {t === 'pending'
-                ? `待审核（${counts.pending}）`
-                : t === 'approved'
-                  ? `已通过（${counts.approved}）`
-                  : `已驳回（${counts.rejected}）`}
+              {t === 'ungenerated'
+                ? `未生成（${ungQuery.data?.rows.length ?? 0}）`
+                : t === 'pending'
+                  ? `待审核（${counts.pending}）`
+                  : t === 'approved'
+                    ? `已通过（${counts.approved}）`
+                    : `已驳回（${counts.rejected}）`}
             </button>
           ))}
           <div className="relative ml-1">

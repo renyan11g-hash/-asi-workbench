@@ -702,11 +702,45 @@ export default function ListingEditor() {
     toast.success('已丢弃未保存的草稿')
   }
 
+  // 产品没有自己的文案、但有待审核草稿时：把草稿加载进来（同一份文案，不用重新生成）
+  useEffect(() => {
+    if (!product) return
+    if (product.listing) {
+      setReviewDraft(null)
+      return
+    }
+    let cancelled = false
+    api
+      .getReviewByProduct(product.id)
+      .then((r) => {
+        if (cancelled || !r.review) return
+        setReviewDraft({ id: r.review.id, status: r.review.status })
+        if (r.review.listing) {
+          setListing(r.review.listing)
+          setImprintFaces(parseImprintFaces(r.review.listing.imprintArea ?? ''))
+        }
+      })
+      .catch(() => {
+        /* 没有审核记录就照常显示「还没生成」 */
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product])
+
   const save = async () => {
     if (!product || !listing) return
     setSaving(true)
     try {
-      await api.updateProduct(product.id, { listing })
+      if (reviewDraft) {
+        // 保存到待审核记录（审核通过后才写回产品库），避免文案进产品库又没审
+        await api.patchReviewListing(reviewDraft.id, listing)
+        toast.success('已保存到「待审核」文案（通过审核后才进产品库）')
+      } else {
+        await api.updateProduct(product.id, { listing })
+        toast.success('已保存')
+      }
       setDirty(false)
       setHasDraft(false)
       setDraftMeta(null)
@@ -715,7 +749,7 @@ export default function ListingEditor() {
       }
       qc.invalidateQueries({ queryKey: ['products'] })
       qc.invalidateQueries({ queryKey: ['product', id] })
-      toast.success('已保存')
+      qc.invalidateQueries({ queryKey: ['review-queue'] })
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
@@ -817,6 +851,11 @@ export default function ListingEditor() {
   const [chatImage, setChatImage] = useState<ProductImage | null>(null)
   /** 对话改完图后让图片工作台重新挂载、重新拉列表 */
   const [imgVersion, setImgVersion] = useState(0)
+  /**
+   * 产品自己还没有文案、但审核库里有待审的那份时，用这里的 id 显示并保存到审核记录。
+   * 这样「生成完 → 待审核 → 点开产品页」看到的是同一份文案，不会又让你生成一次。
+   */
+  const [reviewDraft, setReviewDraft] = useState<{ id: string; status: string } | null>(null)
 
   // 按行索引更新，避免数量可编辑后出现重复 qty 匹配错行
   const setPrice = (idx: number, price: number) => {
@@ -1194,6 +1233,18 @@ export default function ListingEditor() {
       />
 
       {product.similar && <SimilarCard similar={product.similar} />}
+
+      {/* 产品自己还没有文案、但审核库里有待审的那份：明确告诉用户这是同一份，不用重新生成 */}
+      {reviewDraft && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] text-amber-900">
+          <span className="font-medium">当前显示的是「待审核」的英文链接</span>
+          <span>（{reviewDraft.status === 'pending' ? '还没审核，也还没进产品库' : '审核状态：' + reviewDraft.status}）</span>
+          <span className="text-amber-800">在这里改了保存，会存回这条待审核记录。</span>
+          <Button size="sm" variant="outline" className="ml-auto h-7 text-[11px]" onClick={() => navigate('/listing-reviews')}>
+            去审核中心
+          </Button>
+        </div>
+      )}
 
       {!listing && (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">

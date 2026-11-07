@@ -255,6 +255,18 @@ export function formatEvaluationAdvice(evaluation?: Evaluation | null): string {
     )
   }
   if (evaluation.summary) lines.push(`- Why it scored this way: ${evaluation.summary}`)
+  if (evaluation.pros?.length) {
+    lines.push(
+      `- VERIFIED STRENGTHS from the screening step (these are real, product-supported advantages — make them the backbone of the selling points):`
+    )
+    for (const s of evaluation.pros.slice(0, 8)) lines.push(`  • ${s}`)
+  }
+  if (evaluation.cons?.length) {
+    lines.push(
+      `- KNOWN WEAKNESSES (never state them as claims, never "prove them wrong"; simply do not build copy on them):`
+    )
+    for (const s of evaluation.cons.slice(0, 8)) lines.push(`  • ${s}`)
+  }
   if (evaluation.suggestions?.length) {
     lines.push(
       `- ACTIONABLE IMPROVEMENTS from the screening step (Chinese; convert the *intent* into English copy — positioning, selling points, packaging or production wording — but only where it is factually true for this product):`
@@ -310,10 +322,12 @@ ${lines.join('\n')}
 
 HOW TO USE THE SCREENING ADVICE (mandatory):
 1. The advice is written in Chinese. Express it in natural US promo English — never translate it word-for-word and never paste Chinese into English fields.
-2. It tells you WHAT TO EMPHASIZE (buyers, occasions, hooks, positioning) — follow it when choosing the traffic words, the selling point in the title, and the angle of the description.
-3. It also tells you WHAT TO AVOID (weaknesses that scored low). Do not restate those as features, do not "prove them wrong" with invented specs.
-4. Facts still come ONLY from the 1688 source and the salesperson's answers. If an improvement suggestion would require a fact we do not have (a certification, a material, a capacity), leave it out instead of inventing it.
-5. If the advice conflicts with any rule above (title length, no colors in title, no imprint method in copy, mandatory themes, ASI enums), the rule wins.`
+2. USE THE VERIFIED STRENGTHS: at least TWO of the "VERIFIED STRENGTHS" bullet points must show up as concrete, buyer-facing benefits in the summary or description (not as vague adjectives — say what the buyer gets).
+3. APPLY THE IMPROVEMENTS: pick the 1-2 "ACTIONABLE IMPROVEMENTS" that are factually supported by the source data and let them shape the POSITIONING (who it is for, which occasion, what makes it the safe choice). Do not invent facts to satisfy a suggestion.
+4. AVOID THE WEAKNESSES: nothing in the copy may state, imply or "answer" a KNOWN WEAKNESS or flagged issue. Do not claim what the product cannot prove.
+5. Make it read like a human ASI copywriter wrote it for THIS product — concrete nouns and use cases, no generic filler ("high quality", "great gift", "perfect for everyone"), no sentence that could apply to any product in the category.
+6. Facts still come ONLY from the 1688 source and the salesperson's answers. If an improvement suggestion would require a fact we do not have (a certification, a material, a capacity), leave it out instead of inventing it.
+7. If the advice conflicts with any rule above (title length, no colors in title, no imprint method in copy, mandatory themes, ASI enums), the rule wins.`
 }
 
 export function buildListingPrompt(

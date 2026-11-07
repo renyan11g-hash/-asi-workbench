@@ -616,6 +616,37 @@ listingReviewsRouter.post('/:id/ai-qc', async (req: Request, res: Response) => {
   res.json({ qc, findings: ai.findings })
 })
 
+/**
+ * 按产品取最新一条审核记录（含待审/已通过/已驳回）。
+ * 用途：产品编辑页在「产品自己还没有文案」时，把待审核的那份草稿显示出来 ——
+ * 否则会出现「明明生成过了，点开产品页还显示让我生成」的断层。
+ */
+listingReviewsRouter.get('/by-product/:productId', (req: Request, res: Response) => {
+  const productId = String(req.params.productId)
+  const row = db
+    .prepare(
+      `SELECT * FROM listing_reviews WHERE product_id = ?
+       ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT 1`
+    )
+    .get(productId) as unknown as RawRow | undefined
+  if (!row) {
+    res.json({ review: null })
+    return
+  }
+  const review = toReview(row)
+  res.json({
+    review: {
+      id: review.id,
+      status: review.status,
+      mode: review.mode,
+      listing: review.listing,
+      qc: review.qc,
+      editedAt: review.editedAt,
+      createdAt: review.createdAt,
+    },
+  })
+})
+
 /** 详情：审核时看的全量内容（source + 评估 + listing + 报价表） */
 listingReviewsRouter.get('/:id', (req: Request, res: Response) => {
   const row = db.prepare('SELECT * FROM listing_reviews WHERE id = ?').get(String(req.params.id)) as

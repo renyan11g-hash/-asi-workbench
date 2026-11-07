@@ -1386,6 +1386,22 @@ export const api = {
     return data
   },
 
+  /** 按产品取最新一条审核记录（产品页在「还没写回产品」时用它显示待审核的文案） */
+  async getReviewByProduct(productId: string): Promise<{
+    review: {
+      id: string
+      status: 'pending' | 'approved' | 'rejected'
+      mode: 'inline' | 'staged'
+      listing: Listing
+      qc?: ListingQcReport | null
+      editedAt?: string | null
+      createdAt: string
+    } | null
+  }> {
+    const { data } = await apiClient.get(`/listing-reviews/by-product/${productId}`)
+    return data
+  },
+
   async patchReviewListing(id: string, listing: Partial<Listing>): Promise<{ review: ListingReview }> {
     const { data } = await apiClient.patch<{ review: ListingReview }>(`/listing-reviews/${id}`, { listing })
     return data
