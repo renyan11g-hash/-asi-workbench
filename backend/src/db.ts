@@ -239,6 +239,55 @@ CREATE TABLE IF NOT EXISTS listing_reviews (
 CREATE INDEX IF NOT EXISTS idx_listing_reviews_status ON listing_reviews(status);
 CREATE INDEX IF NOT EXISTS idx_listing_reviews_batch ON listing_reviews(batch_job_id);
 
+-- 产品结构化资料（14 个标准字段）：单个录入和批量录入的产品都会有一条。
+-- data 存字段 JSON；原始资料仍然留在 products 表里，这里只存「整理后的结果」，
+-- 所以结构化失败/字段标 Unknown 都不会影响原始数据。
+CREATE TABLE IF NOT EXISTS product_specs (
+  product_id TEXT PRIMARY KEY,
+  data TEXT NOT NULL DEFAULT '{}',
+  unknown_fields TEXT NOT NULL DEFAULT '[]',
+  source_hash TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  extracted_at TEXT,
+  edited_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- 批量生产任务（Listing 批量生成 / 结构化资料批量提取）。
+-- 与 batch_jobs（1688 链接批量抓取）是两回事：那个从链接起跑，这个从已有产品档案起跑。
+-- items 只存「每条产品的进度与结果引用」，成品 listing 落在 listing_reviews 里，不塞进这一行。
+CREATE TABLE IF NOT EXISTS production_jobs (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT 'listing',
+  status TEXT NOT NULL DEFAULT 'queued',
+  options TEXT NOT NULL DEFAULT '{}',
+  items TEXT NOT NULL DEFAULT '[]',
+  note TEXT NOT NULL DEFAULT '',
+  client_key TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_production_jobs_created ON production_jobs(created_at);
+
+-- 模型调用台账：哪个任务、哪个模型、多久、多少 token、成功还是失败。
+-- 只追加不更新，用来回答「这次批量到底花了多少、哪一步慢、哪一步老失败」。
+CREATE TABLE IF NOT EXISTS ai_call_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task TEXT NOT NULL DEFAULT '',
+  product_id TEXT,
+  model TEXT NOT NULL DEFAULT '',
+  base_url TEXT NOT NULL DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  ok INTEGER NOT NULL DEFAULT 1,
+  error TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_call_logs_created ON ai_call_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_call_logs_task ON ai_call_logs(task);
+
 -- 服务器异常留档：这台跑在 Render 上，用户看不到日志、我也拿不到，
 -- 所以 500 现场直接写库，用 GET /api/health/errors 就能查到真正原因。
 CREATE TABLE IF NOT EXISTS server_errors (
@@ -472,6 +521,20 @@ ensureTableColumn('batch_jobs', 'phase', "phase TEXT NOT NULL DEFAULT 'draft'")
 
 // 产品图片表：老库补 with_logo 列（主图是否融合 Logo，0/1）
 ensureTableColumn('product_images', 'with_logo', 'with_logo INTEGER NOT NULL DEFAULT 1')
+
+// 待审核库：批量生产走「暂存草稿」模式后，需要知道这条审核记录
+//   ① 是不是批量任务产出的（job_id）；
+//   ② 通过时要不要把 listing 写回产品（mode='staged' 才写，'inline' 是旧的生成即写回）；
+//   ③ 这条草稿的质量检查结果、人工编辑时间、被替换前的旧 listing（可回溯）。
+ensureTableColumn('listing_reviews', 'job_id', 'job_id TEXT')
+ensureTableColumn('listing_reviews', 'item_idx', 'item_idx INTEGER')
+ensureTableColumn('listing_reviews', 'mode', "mode TEXT NOT NULL DEFAULT 'inline'")
+ensureTableColumn('listing_reviews', 'qc', 'qc TEXT')
+ensureTableColumn('listing_reviews', 'prev_listing', 'prev_listing TEXT')
+ensureTableColumn('listing_reviews', 'edited_at', 'edited_at TEXT')
+
+// 批量生产任务：client_key 用来挡住「手抖连点两次」造成的重复批次
+ensureTableColumn('production_jobs', 'client_key', 'client_key TEXT')
 
 /**
  * libsql 的 get() 结果可能带 _metadata 字段（查询耗时元数据），剥离后返回纯数据行

@@ -14,15 +14,35 @@ import { z } from 'zod'
 import { randomUUID } from 'crypto'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
-import { insertProduct, applyListingToExistingProduct, sourceSchema, toSourceInfo } from './products'
+import { insertProduct, applyListingToExistingProduct, sourceSchema, toSourceInfo, findProduct } from './products'
 import type { Evaluation, Listing, PriceRow, SourceInfo } from '../types'
+import type { ListingQcReport } from '../services/listing-qc'
+import { mergeAiQc, runListingQc } from '../services/listing-qc'
+import { runAiListingQc } from '../services/listing-qc-ai'
+import { SPEC_FIELDS, getSpecRecord, isKnown } from '../services/product-specs'
+import { regenerateListingFields } from '../services/workbench'
+import { loadSettings } from './settings'
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected'
+
+/**
+ * 两种写入模式：
+ *  inline  旧流程 —— 生成时就把 listing 写进产品档案（状态 pending_review），审核只改状态
+ *  staged  批量生产 —— 生成结果只存在这张审核记录里，**审核通过才写回产品**，
+ *          所以批量重新生成不会覆盖产品库里现有的 Listing（用户明确要求的硬约束）
+ */
+export type ReviewMode = 'inline' | 'staged'
 
 export interface ListingReviewRow {
   id: string
   batchJobId: string | null
   batchIdx: number | null
+  /** 批量生产任务 id / 条目序号（staged 模式才有） */
+  jobId: string | null
+  itemIdx: number | null
+  mode: ReviewMode
+  /** 质量检查报告（程序规则 + 可选 AI 复检） */
+  qc: ListingQcReport | null
   title: string
   sourceUrl: string
   image: string
@@ -31,10 +51,13 @@ export interface ListingReviewRow {
   source: SourceInfo
   evaluation: Evaluation | null
   listing: Listing
+  /** 生成草稿时产品上原有的 listing（通过后会被替换，留一份可回溯） */
+  prevListing: Listing | null
   priceGrid: PriceRow[]
   status: ReviewStatus
   productId: string | null
   reviewNote: string
+  editedAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -43,6 +66,10 @@ interface RawRow {
   id: string
   batch_job_id: string | null
   batch_idx: number | null
+  job_id?: string | null
+  item_idx?: number | null
+  mode?: string | null
+  qc?: string | null
   title: string
   source_url: string
   image: string | null
@@ -51,10 +78,12 @@ interface RawRow {
   source: string
   evaluation: string | null
   listing: string
+  prev_listing?: string | null
   price_grid: string
   status: string
   product_id: string | null
   review_note: string | null
+  edited_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -73,6 +102,10 @@ function toReview(r: RawRow): ListingReviewRow {
     id: r.id,
     batchJobId: r.batch_job_id,
     batchIdx: r.batch_idx,
+    jobId: r.job_id ?? null,
+    itemIdx: r.item_idx ?? null,
+    mode: (r.mode as ReviewMode) ?? 'inline',
+    qc: parseJson<ListingQcReport | null>(r.qc ?? null, null),
     title: r.title,
     sourceUrl: r.source_url,
     image: r.image ?? '',
@@ -81,10 +114,12 @@ function toReview(r: RawRow): ListingReviewRow {
     source: toSourceInfo(sourceSchema.parse(parseJson(r.source, {}))),
     evaluation: parseJson<Evaluation | null>(r.evaluation, null),
     listing: parseJson<Listing>(r.listing, {} as Listing),
+    prevListing: parseJson<Listing | null>(r.prev_listing ?? null, null),
     priceGrid: parseJson<PriceRow[]>(r.price_grid, []),
     status: (r.status as ReviewStatus) ?? 'pending',
     productId: r.product_id,
     reviewNote: r.review_note ?? '',
+    editedAt: r.edited_at ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -157,6 +192,81 @@ export function createListingReview(input: {
     now
   )
   return { id, productId }
+}
+
+/**
+ * 批量生产专用：把生成结果**暂存**成一条待审核记录，产品档案一个字都不动。
+ *
+ * 为什么必须这样：批量重新生成时如果沿用旧流程（生成即写 products），
+ * 一次误点就会把产品库里已经审核通过的 Listing 覆盖掉，而且没有撤销入口。
+ * 暂存模式下产品上的旧 listing 原样保留（同时抄一份到 prev_listing 备查），
+ * 只有人工点「通过」才写回。
+ */
+export function createStagedListingReview(input: {
+  productId: string
+  listing: Listing
+  qc?: ListingQcReport | null
+  jobId?: string | null
+  itemIdx?: number | null
+  source: SourceInfo
+  evaluation: Evaluation | null
+}): { id: string; productId: string } {
+  const id = randomUUID()
+  const now = new Date().toISOString()
+
+  // 同一个产品只允许有一份「还没审的暂存草稿」：
+  // 不管是同一次任务重试、还是从审核中心再生成一次，都替换掉旧的，
+  // 否则列表里会出现两条同产品的草稿，审核的人会分不清哪条是新的。
+  db.prepare(
+    "DELETE FROM listing_reviews WHERE product_id = ? AND mode = 'staged' AND status = 'pending'"
+  ).run(input.productId)
+
+  const current = db.prepare('SELECT listing FROM products WHERE id = ?').get(input.productId) as
+    | { listing: string | null }
+    | undefined
+  const prevListingRaw = current?.listing ?? null
+
+  db.prepare(
+    `INSERT INTO listing_reviews
+      (id, batch_job_id, batch_idx, job_id, item_idx, mode, qc, title, source_url, image, score, verdict,
+       source, evaluation, listing, prev_listing, price_grid, status, product_id, review_note, created_at, updated_at)
+     VALUES (?, NULL, NULL, ?, ?, 'staged', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, ?)`
+  ).run(
+    id,
+    input.jobId ?? null,
+    input.itemIdx ?? null,
+    input.qc ? JSON.stringify(input.qc) : null,
+    (input.source.sourceTitle || input.listing?.title || '（未命名）').slice(0, 200),
+    input.source.sourceUrl ?? '',
+    (input.source.images ?? [])[0] ?? '',
+    input.evaluation?.score ?? null,
+    input.evaluation?.verdict ?? null,
+    JSON.stringify(input.source),
+    input.evaluation ? JSON.stringify(input.evaluation) : null,
+    JSON.stringify(input.listing ?? {}),
+    prevListingRaw,
+    JSON.stringify(input.listing?.priceGrid ?? []),
+    input.productId,
+    now,
+    now
+  )
+  return { id, productId: input.productId }
+}
+
+/** 通过 staged 记录时，把草稿写回产品档案（只有这一步会改 products.listing） */
+function applyStagedListing(row: RawRow): void {
+  if (!row.product_id) return
+  const now = new Date().toISOString()
+  const listing = parseJson<Partial<Listing>>(row.listing, {})
+  db.prepare(
+    "UPDATE products SET listing=?, listing_title=?, status='listed', review_state='approved', review_note='', reviewed_at=?, updated_at=? WHERE id=?"
+  ).run(
+    JSON.stringify(listing),
+    String(listing.title ?? ''),
+    now,
+    now,
+    row.product_id
+  )
 }
 
 /**
@@ -248,8 +358,8 @@ listingReviewsRouter.get('/', (req: Request, res: Response) => {
 
   const rows = db
     .prepare(
-      `SELECT id, batch_job_id, batch_idx, title, source_url, image, score, verdict, status, product_id,
-              review_note, created_at, updated_at
+      `SELECT id, batch_job_id, batch_idx, job_id, item_idx, mode, qc, title, source_url, image, score, verdict,
+              status, product_id, review_note, edited_at, created_at, updated_at
        FROM listing_reviews ${clause} ORDER BY created_at DESC LIMIT ? OFFSET ?`
     )
     .all(...(args as never[]), limit, offset) as unknown as Array<Record<string, unknown>>
@@ -263,6 +373,10 @@ listingReviewsRouter.get('/', (req: Request, res: Response) => {
       id: r.id,
       batchJobId: r.batch_job_id,
       batchIdx: r.batch_idx,
+      jobId: r.job_id ?? null,
+      itemIdx: r.item_idx ?? null,
+      mode: r.mode ?? 'inline',
+      qc: parseJson<ListingQcReport | null>((r.qc as string | null) ?? null, null),
       title: r.title,
       sourceUrl: r.source_url,
       image: r.image,
@@ -271,6 +385,7 @@ listingReviewsRouter.get('/', (req: Request, res: Response) => {
       status: r.status,
       productId: r.product_id,
       reviewNote: r.review_note,
+      editedAt: r.edited_at ?? null,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     })),
@@ -282,6 +397,214 @@ listingReviewsRouter.get('/', (req: Request, res: Response) => {
     limit,
     offset,
   })
+})
+
+/**
+ * 导出批量生成结果（Excel）。
+ * 只导出当前筛选出来的这些记录，字段与审核中心一致，方便直接发给同事或存档。
+ * 注意：必须注册在 GET /:id 之前，否则 'export' 会被当成 id。
+ */
+listingReviewsRouter.get('/export', async (req: Request, res: Response) => {
+  const ExcelJS = (await import('exceljs')).default
+  const idsParam = String(req.query.ids ?? '').trim()
+  const status = String(req.query.status ?? 'all')
+  const ids = idsParam ? idsParam.split(',').map((s) => s.trim()).filter(Boolean) : []
+
+  let rows: RawRow[]
+  if (ids.length) {
+    const placeholders = ids.map(() => '?').join(',')
+    rows = db
+      .prepare(`SELECT * FROM listing_reviews WHERE id IN (${placeholders})`)
+      .all(...ids) as unknown as RawRow[]
+  } else {
+    rows =
+      status === 'all'
+        ? (db.prepare('SELECT * FROM listing_reviews ORDER BY created_at DESC LIMIT 500').all() as unknown as RawRow[])
+        : (db
+            .prepare('SELECT * FROM listing_reviews WHERE status = ? ORDER BY created_at DESC LIMIT 500')
+            .all(status) as unknown as RawRow[])
+  }
+
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('批量生成结果')
+  ws.columns = [
+    { header: '产品编号', key: 'code', width: 12 },
+    { header: '产品名称', key: 'product', width: 30 },
+    { header: 'Title', key: 'title', width: 50 },
+    { header: 'Summary', key: 'summary', width: 50 },
+    { header: 'Description', key: 'description', width: 60 },
+    { header: 'Keywords', key: 'keywords', width: 60 },
+    { header: '质检', key: 'qc', width: 30 },
+    { header: '审核状态', key: 'status', width: 12 },
+    { header: '驳回原因', key: 'note', width: 24 },
+    { header: '生成时间', key: 'createdAt', width: 20 },
+  ]
+  ws.getRow(1).font = { bold: true }
+
+  const statusText: Record<string, string> = { pending: '待审核', approved: '已通过', rejected: '已驳回' }
+
+  for (const r of rows) {
+    const listing = parseJson<Partial<Listing>>(r.listing, {})
+    const qc = parseJson<ListingQcReport | null>(r.qc ?? null, null)
+    const code = r.product_id
+      ? ((db.prepare('SELECT code FROM products WHERE id = ?').get(r.product_id) as { code: string } | undefined)
+          ?.code ?? '')
+      : ''
+    ws.addRow({
+      code,
+      product: r.title,
+      title: listing.title ?? '',
+      summary: listing.summary ?? '',
+      description: listing.description ?? '',
+      keywords: (listing.keywords ?? []).join(', '),
+      qc: qc
+        ? qc.ok
+          ? qc.aiChecked
+            ? '通过（含 AI 复检）'
+            : '通过（程序规则）'
+          : qc.checks
+              .filter((c) => !c.ok)
+              .map((c) => c.label)
+              .join('；')
+        : '未检查',
+      status: statusText[r.status] ?? r.status,
+      note: r.review_note ?? '',
+      createdAt: r.created_at,
+    })
+  }
+
+  const buf = await wb.xlsx.writeBuffer()
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  )
+  res.setHeader('Content-Disposition', 'attachment; filename="listing-batch-result.xlsx"')
+  res.send(Buffer.from(buf as ArrayBuffer))
+})
+
+/**
+ * 批量 AI 复检：对选中的待审核记录逐条跑「语法 / 美国英语 / 无依据说法」检查。
+ * 单独一个动作，不默认跟着生成跑 —— 一条一次模型调用，批量时成本会翻倍。
+ */
+listingReviewsRouter.post('/ai-qc', async (req: Request, res: Response) => {
+  const body = z
+    .object({ ids: z.array(z.string().min(1)).min(1).max(20).optional() })
+    .parse(req.body ?? {})
+  const settings = loadSettings()
+  if (!settings.aiApiKey?.trim()) throw new AppError(400, '还没配置 AI Key，无法复检')
+
+  const ids =
+    body.ids ??
+    (db
+      .prepare("SELECT id FROM listing_reviews WHERE status = 'pending' ORDER BY created_at DESC LIMIT 10")
+      .all() as unknown as Array<{ id: string }>).map((r) => r.id)
+
+  const results: Array<{ id: string; ok: boolean; findings: string[]; error?: string }> = []
+  for (const id of ids) {
+    try {
+      const row = db.prepare('SELECT * FROM listing_reviews WHERE id = ?').get(id) as unknown as RawRow | undefined
+      if (!row) {
+        results.push({ id, ok: false, findings: [], error: '记录不存在' })
+        continue
+      }
+      const review = toReview(row)
+      const specRecord = row.product_id ? getSpecRecord(row.product_id) : null
+      const base = runListingQc({ listing: review.listing, source: review.source, specs: specRecord?.specs ?? null })
+      const ai = await runAiListingQc(
+        review.listing,
+        review.source,
+        specRecord?.specs ?? null,
+        settings,
+        row.product_id
+      )
+      const qc = mergeAiQc(base, ai.findings)
+      db.prepare('UPDATE listing_reviews SET qc=?, updated_at=? WHERE id=?').run(
+        JSON.stringify(qc),
+        new Date().toISOString(),
+        id
+      )
+      results.push({ id, ok: qc.ok, findings: ai.findings })
+    } catch (err) {
+      // 单条复检失败不影响其他条
+      results.push({ id, ok: false, findings: [], error: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  res.json({ ok: true, results })
+})
+
+/**
+ * 只重生成指定字段（标题/摘要/描述/关键词），结果并回这条草稿。
+ * 不重跑整条 Listing —— 用户往往只对某一段不满意，没必要为改一句标题再等一分钟。
+ */
+listingReviewsRouter.post('/:id/regenerate-fields', async (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const row = db.prepare('SELECT * FROM listing_reviews WHERE id = ?').get(id) as unknown as RawRow | undefined
+  if (!row) throw new AppError(404, '这条待审核记录不存在')
+  if (row.status === 'approved') throw new AppError(409, '已经通过的不能再改，请到产品库里改')
+
+  const body = z
+    .object({
+      fields: z.array(z.enum(['title', 'summary', 'description', 'keywords'])).min(1).max(4),
+      instruction: z.string().max(2000).optional(),
+    })
+    .parse(req.body ?? {})
+
+  const settings = loadSettings()
+  if (!settings.aiApiKey?.trim()) throw new AppError(400, '还没配置 AI Key，无法重生成')
+  const review = toReview(row)
+  if (!row.product_id) throw new AppError(400, '这条记录没有关联产品，无法重生成')
+
+  const product = findProduct(row.product_id)
+  const specRecord = getSpecRecord(row.product_id)
+  // 结构化资料作为「事实清单」拼进指令，避免重生成时又编造参数
+  const instruction = [body.instruction, specsInstruction(specRecord?.specs ?? null)].filter(Boolean).join('\n\n')
+
+  const values = await regenerateListingFields(
+    product.source,
+    review.listing as Partial<Listing>,
+    body.fields,
+    instruction || undefined,
+    settings,
+    product.evaluation ?? null
+  )
+  const merged = { ...(review.listing as unknown as Record<string, unknown>), ...values } as unknown as Listing
+  const qc = runListingQc({ listing: merged, source: product.source, specs: specRecord?.specs ?? null })
+  const now = new Date().toISOString()
+  db.prepare('UPDATE listing_reviews SET listing=?, qc=?, edited_at=?, updated_at=? WHERE id=?').run(
+    JSON.stringify(merged),
+    JSON.stringify(qc),
+    now,
+    now,
+    id
+  )
+  res.json({ review: toReview({ ...row, listing: JSON.stringify(merged), qc: JSON.stringify(qc), edited_at: now }), values, qc })
+})
+
+/** 把结构化资料写成「重生成时必须遵守的事实」 */
+function specsInstruction(specs: import('../types').ProductSpecs | null): string {
+  if (!specs) return ''
+  const lines = SPEC_FIELDS.filter((f) => isKnown(specs[f.key])).map(
+    (f) => `- ${f.labelEn}: ${String(specs[f.key]).trim()}`
+  )
+  if (!lines.length) return ''
+  return `产品事实清单（只能使用这些事实，没写的不要编）：\n${lines.join('\n')}`
+}
+
+/** 单条 AI 复检 */
+listingReviewsRouter.post('/:id/ai-qc', async (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const row = db.prepare('SELECT * FROM listing_reviews WHERE id = ?').get(id) as unknown as RawRow | undefined
+  if (!row) throw new AppError(404, '这条待审核记录不存在')
+  const settings = loadSettings()
+  if (!settings.aiApiKey?.trim()) throw new AppError(400, '还没配置 AI Key，无法复检')
+
+  const review = toReview(row)
+  const specRecord = row.product_id ? getSpecRecord(row.product_id) : null
+  const base = runListingQc({ listing: review.listing, source: review.source, specs: specRecord?.specs ?? null })
+  const ai = await runAiListingQc(review.listing, review.source, specRecord?.specs ?? null, settings, row.product_id)
+  const qc = mergeAiQc(base, ai.findings)
+  db.prepare('UPDATE listing_reviews SET qc=?, updated_at=? WHERE id=?').run(JSON.stringify(qc), new Date().toISOString(), id)
+  res.json({ qc, findings: ai.findings })
 })
 
 /** 详情：审核时看的全量内容（source + 评估 + listing + 报价表） */
@@ -316,9 +639,11 @@ listingReviewsRouter.patch('/:id', (req: Request, res: Response) => {
 
   if (body.listing) {
     const merged = { ...parseJson<Record<string, unknown>>(row.listing, {}), ...body.listing }
-    db.prepare('UPDATE listing_reviews SET listing=?, updated_at=? WHERE id=?').run(
+    const now = new Date().toISOString()
+    db.prepare('UPDATE listing_reviews SET listing=?, edited_at=?, updated_at=? WHERE id=?').run(
       JSON.stringify(merged),
-      new Date().toISOString(),
+      now,
+      now,
       id
     )
   }
@@ -326,7 +651,12 @@ listingReviewsRouter.patch('/:id', (req: Request, res: Response) => {
   res.json({ review: toReview(fresh) })
 })
 
-/** 通过 → 把已建好的产品从 pending_review 改成正式状态 */
+/**
+ * 通过。
+ *  - inline 模式（旧流程）：产品已经是 pending_review，只把状态翻成 listed
+ *  - staged 模式（批量生产）：把这条草稿写回产品档案（listing + listing_title），再翻状态
+ * 两种模式都不会重建产品、不会动资料/评估/图片。
+ */
 listingReviewsRouter.post('/approve', (req: Request, res: Response) => {
   const body = z
     .object({ ids: z.array(z.string().min(1)).min(1).max(200) })
@@ -358,9 +688,14 @@ listingReviewsRouter.post('/approve', (req: Request, res: Response) => {
         })
       }
 
-      db.prepare(
-        "UPDATE products SET status='listed', review_state='approved', updated_at=? WHERE id=?"
-      ).run(now, productId)
+      if (row.mode === 'staged') {
+        // 只有这一步会写入 products.listing —— 批量生成本身从不覆盖产品库
+        applyStagedListing({ ...row, product_id: productId })
+      } else {
+        db.prepare(
+          "UPDATE products SET status='listed', review_state='approved', updated_at=? WHERE id=?"
+        ).run(now, productId)
+      }
       db.prepare(
         "UPDATE listing_reviews SET status='approved', product_id=?, updated_at=? WHERE id=?"
       ).run(productId, now, id)
@@ -373,7 +708,12 @@ listingReviewsRouter.post('/approve', (req: Request, res: Response) => {
   res.json({ ok: true, approved, failed })
 })
 
-/** 驳回：产品留在库里但标成 archived（不进产品库、不删数据），附一句原因 */
+/**
+ * 驳回，附一句原因。
+ *  - inline：产品还在 pending_review，标成 archived（不进产品库）
+ *  - staged：**产品上的旧 Listing 保持不动**，只把这条草稿标成 rejected。
+ *    批量重新生成被驳回，不能让已经在卖的产品掉出产品库。
+ */
 listingReviewsRouter.post('/reject', (req: Request, res: Response) => {
   const body = z
     .object({
@@ -385,14 +725,14 @@ listingReviewsRouter.post('/reject', (req: Request, res: Response) => {
   const now = new Date().toISOString()
   let n = 0
   for (const id of body.ids) {
-    const row = db.prepare('SELECT product_id, status FROM listing_reviews WHERE id = ?').get(id) as
-      | { product_id: string | null; status: string }
+    const row = db.prepare('SELECT product_id, status, mode FROM listing_reviews WHERE id = ?').get(id) as
+      | { product_id: string | null; status: string; mode: string | null }
       | undefined
     if (!row || row.status === 'approved') continue
     db.prepare(
       "UPDATE listing_reviews SET status='rejected', review_note=?, updated_at=? WHERE id=?"
     ).run(body.note ?? '', now, id)
-    if (row.product_id) {
+    if (row.product_id && row.mode !== 'staged') {
       db.prepare(
         "UPDATE products SET status='archived', review_state='rejected', review_note=?, updated_at=? WHERE id=?"
       ).run(body.note ?? '', now, row.product_id)
@@ -408,10 +748,11 @@ listingReviewsRouter.post('/bulk-delete', (req: Request, res: Response) => {
   const now = new Date().toISOString()
   let n = 0
   for (const id of body.ids) {
-    const row = db.prepare('SELECT product_id, status FROM listing_reviews WHERE id = ?').get(id) as
-      | { product_id: string | null; status: string }
+    const row = db.prepare('SELECT product_id, status, mode FROM listing_reviews WHERE id = ?').get(id) as
+      | { product_id: string | null; status: string; mode: string | null }
       | undefined
-    if (row?.product_id && row.status !== 'approved') {
+    // staged 草稿删掉即可：产品上的 listing 从来没被动过，不需要回退
+    if (row?.product_id && row.status !== 'approved' && row.mode !== 'staged') {
       // 待审核的档案退回「已评估、未生成文案」：不丢资料、不丢评估，随时可以重新生成
       db.prepare(
         "UPDATE products SET status='sourced', listing=NULL, review_state=NULL, updated_at=? WHERE id=? AND status='pending_review'"
@@ -424,11 +765,11 @@ listingReviewsRouter.post('/bulk-delete', (req: Request, res: Response) => {
 
 listingReviewsRouter.delete('/:id', (req: Request, res: Response) => {
   const id = String(req.params.id)
-  const row = db.prepare('SELECT product_id, status FROM listing_reviews WHERE id = ?').get(id) as
-    | { product_id: string | null; status: string }
+  const row = db.prepare('SELECT product_id, status, mode FROM listing_reviews WHERE id = ?').get(id) as
+    | { product_id: string | null; status: string; mode: string | null }
     | undefined
   if (!row) throw new AppError(404, '记录不存在')
-  if (row.product_id && row.status !== 'approved') {
+  if (row.product_id && row.status !== 'approved' && row.mode !== 'staged') {
     db.prepare(
       "UPDATE products SET status='sourced', listing=NULL, review_state=NULL, updated_at=? WHERE id=? AND status='pending_review'"
     ).run(new Date().toISOString(), row.product_id)

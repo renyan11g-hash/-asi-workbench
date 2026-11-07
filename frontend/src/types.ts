@@ -292,6 +292,10 @@ export interface Settings {
   aiBaseUrl: string
   aiApiKey: string
   aiModel: string
+  /** 产品资料结构化专用模型（留空=沿用 aiModel） */
+  aiModelExtract?: string
+  /** Listing 质量检查（AI 复检）专用模型（留空=沿用 aiModel） */
+  aiModelQc?: string
   // 图像生成（火山引擎 Seedream / OpenAI gpt-image-1）
   imageBaseUrl: string
   imageApiKey: string
@@ -681,6 +685,13 @@ export interface ListingReviewSummary {
   id: string
   batchJobId: string | null
   batchIdx: number | null
+  /** 批量生产任务 id / 条目序号（staged 模式才有） */
+  jobId?: string | null
+  itemIdx?: number | null
+  /** inline=旧流程（生成即写产品）；staged=批量生产（通过后才写产品） */
+  mode?: 'inline' | 'staged'
+  /** 程序规则质量检查报告 */
+  qc?: ListingQcReport | null
   title: string
   sourceUrl: string
   image: string | null
@@ -689,6 +700,8 @@ export interface ListingReviewSummary {
   status: ReviewStatus
   productId: string | null
   reviewNote: string | null
+  /** 人工编辑过内容的时间 */
+  editedAt?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -698,6 +711,8 @@ export interface ListingReview extends ListingReviewSummary {
   source: SourceInfo
   evaluation: Evaluation | null
   listing: Listing
+  /** 生成草稿前产品上原来的 Listing（通过后会替换，这里留一份备查） */
+  prevListing?: Listing | null
   priceGrid: PriceRow[]
 }
 
@@ -752,4 +767,175 @@ export interface FlowOverview {
   archived: number
   withImages: number
   updatedAt: string
+}
+
+// ---------------- 批量生产系统 V1：产品结构化资料 ----------------
+
+export interface ProductSpecs {
+  productName: string
+  material: string
+  productSize: string
+  productWeight: string
+  colors: string
+  specifications: string
+  functions: string
+  features: string
+  logoCustomization: string
+  packaging: string
+  cartonDimensions: string
+  unitsPerCarton: string
+  cartonGrossWeight: string
+  application: string
+}
+
+export interface SpecFieldDef {
+  key: keyof ProductSpecs
+  label: string
+  labelEn: string
+  hint: string
+}
+
+export interface ProductSpecRecord {
+  productId: string
+  specs: ProductSpecs
+  unknownFields: string[]
+  filled: number
+  total: number
+  model: string
+  sourceHash?: string
+  extractedAt: string | null
+  editedAt: string | null
+  updatedAt: string
+}
+
+/** 产品信息卡（资料卡页与批量生产中心共用） */
+export interface ProductCard {
+  productId: string
+  code: string
+  title: string
+  category: string
+  status: ProductStatus
+  hasListing: boolean
+  updatedAt: string
+  thumb: string
+  thumbFallback: string
+  specs: {
+    filled: number
+    total: number
+    unknownFields: string[]
+    extractedAt: string | null
+    editedAt: string | null
+    stale: boolean
+  }
+}
+
+export interface ProductSpecDetail {
+  productId: string
+  code: string
+  title: string
+  sourceUrl: string
+  status: ProductStatus
+  category: string
+  hasListing: boolean
+  record: ProductSpecRecord
+  stale: boolean
+  source: {
+    title: string
+    description: string
+    materialCn: string
+    colorsCn: string
+    sizeCn: string
+    weightG: number | null
+    carton: [number | null, number | null, number | null]
+    pcsPerCarton: number | null
+    cartonGwKg: number | null
+    notes: string
+  }
+  fields: SpecFieldDef[]
+}
+
+// ---------------- 批量生产系统 V1：任务与质量检查 ----------------
+
+export type QcLevel = 'error' | 'warn'
+
+export interface QcCheck {
+  key: string
+  label: string
+  ok: boolean
+  level: QcLevel
+  detail: string
+}
+
+export interface ListingQcReport {
+  ok: boolean
+  checks: QcCheck[]
+  unsupported: string[]
+  needsAi: boolean
+  aiChecked: boolean
+  aiFindings: string[]
+  checkedAt: string
+}
+
+export type ProductionJobKind = 'listing' | 'spec'
+export type ProductionJobStatus = 'queued' | 'running' | 'paused' | 'done' | 'cancelled' | 'interrupted'
+export type ProductionItemStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
+
+export interface ProductionItem {
+  idx: number
+  productId: string
+  code: string
+  title: string
+  status: ProductionItemStatus
+  stage: string
+  reviewId?: string | null
+  qcOk?: boolean | null
+  qcIssues?: string[]
+  filled?: number | null
+  error?: string
+  startedAt?: string
+  finishedAt?: string
+  durationMs?: number
+}
+
+export interface ProductionJob {
+  id: string
+  kind: ProductionJobKind
+  status: ProductionJobStatus
+  items: ProductionItem[]
+  note: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ProductionProgress {
+  total: number
+  done: number
+  failed: number
+  cancelled: number
+  pending: number
+  percent: number
+  current: string
+}
+
+export interface AiCallLog {
+  id: number
+  task: string
+  productId: string | null
+  model: string
+  baseUrl: string
+  durationMs: number
+  promptTokens: number | null
+  completionTokens: number | null
+  ok: boolean
+  error: string | null
+  createdAt: string
+}
+
+export interface AiCallSummary {
+  task: string
+  calls: number
+  failed: number
+  avgMs: number
+  promptTokens: number
+  completionTokens: number
 }

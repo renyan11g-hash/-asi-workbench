@@ -15,6 +15,9 @@ import Evaluations from "./pages/Evaluations";
 import Library from "./pages/Library";
 import ListingEditor from "./pages/ListingEditor";
 import ListingReviews from "./pages/ListingReviews";
+import ProductSpecsPage from "./pages/ProductSpecs";
+import Production from "./pages/Production";
+import ReviewCenter from "./pages/ReviewCenter";
 import SettingsPage from "./pages/SettingsPage";
 import NotFound from "./pages/NotFound";
 
@@ -85,6 +88,24 @@ function App() {
                 data-genie-key="Batch"
                 data-genie-title="批量处理"
                 element={<PageTransition transition="fade"><Batch /></PageTransition>}
+              />
+              <Route
+                path="production"
+                data-genie-key="Production"
+                data-genie-title="批量生产中心"
+                element={<PageTransition transition="fade"><Production /></PageTransition>}
+              />
+              <Route
+                path="specs"
+                data-genie-key="ProductSpecs"
+                data-genie-title="产品资料卡"
+                element={<PageTransition transition="fade"><ProductSpecsPage /></PageTransition>}
+              />
+              <Route
+                path="review-center"
+                data-genie-key="ReviewCenter"
+                data-genie-title="Listing 审核中心"
+                element={<PageTransition transition="fade"><ReviewCenter /></PageTransition>}
               />
               <Route
                 path="evaluations"

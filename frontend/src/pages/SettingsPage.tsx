@@ -319,6 +319,30 @@ export default function SettingsPage() {
                 placeholder="deepseek-chat"
               />
             </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field
+                label="资料结构化模型（可选）"
+                hint="留空就用上面的模型。产品资料提取是「只抄不编」的任务，用更快更便宜的模型就够。"
+              >
+                <Input
+                  className="h-9 text-sm"
+                  value={form.aiModelExtract ?? ''}
+                  onChange={(e) => patch({ aiModelExtract: e.target.value })}
+                  placeholder={form.aiModel || '跟随上面的模型'}
+                />
+              </Field>
+              <Field
+                label="质量复检模型（可选）"
+                hint="留空就用上面的模型。只在你点「AI 复检」时调用，不会跟着批量生成自动跑。"
+              >
+                <Input
+                  className="h-9 text-sm"
+                  value={form.aiModelQc ?? ''}
+                  onChange={(e) => patch({ aiModelQc: e.target.value })}
+                  placeholder={form.aiModel || '跟随上面的模型'}
+                />
+              </Field>
+            </div>
           </div>
           <Button variant="outline" onClick={test} disabled={testing}>
             {testing ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Wifi className="mr-1 h-4 w-4" />}

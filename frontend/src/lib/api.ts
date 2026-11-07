@@ -1,5 +1,7 @@
 import apiClient, { getErrorMessage } from './api-client'
 import {
+  AiCallLog,
+  AiCallSummary,
   BatchItemInput,
   BatchJob,
   BatchJobSummary,
@@ -16,6 +18,7 @@ import {
   Inquiry,
   InquiryStatus,
   Listing,
+  ListingQcReport,
   ListingReview,
   ListingReviewSummary,
   MasterProduct,
@@ -27,11 +30,18 @@ import {
   PriceComparison,
   PriceRow,
   Product,
+  ProductCard,
   ProductImage,
+  ProductSpecDetail,
+  ProductSpecRecord,
+  ProductSpecs,
   ProductStatus,
+  ProductionJob,
+  ProductionProgress,
   Settings,
   SimilarResearch,
   SourceInfo,
+  SpecFieldDef,
   SupplierCommunication,
 } from '../types'
 
@@ -1037,6 +1047,176 @@ export const api = {
       `${baseURL}/products/export/submission.xlsx` +
       (includeTrashed ? '?include_trashed=1' : '')
     )
+  },
+
+  // ---------- 产品结构化资料（批量生产系统 V1 · 第一阶段） ----------
+  async listProductSpecCards(params?: {
+    q?: string
+    category?: string
+    filter?: 'all' | 'done' | 'missing' | 'none'
+  }): Promise<{
+    cards: ProductCard[]
+    categories: string[]
+    counts: { all: number; done: number; missing: number; none: number }
+    fields: SpecFieldDef[]
+  }> {
+    const { data } = await apiClient.get('/product-specs/cards', { params })
+    return data
+  },
+
+  async getProductSpec(productId: string): Promise<ProductSpecDetail> {
+    const { data } = await apiClient.get<ProductSpecDetail>(`/product-specs/${productId}`)
+    return data
+  },
+
+  /** 单条重新提取（同步，十几秒）：keepManual=false 时连人工改过的字段也一起覆盖 */
+  async extractProductSpec(productId: string, keepManual = true): Promise<{ record: ProductSpecRecord }> {
+    const { data } = await apiClient.post<{ record: ProductSpecRecord }>(
+      `/product-specs/${productId}/extract`,
+      {},
+      { params: { keepManual: keepManual ? 1 : 0 }, timeout: 180_000 }
+    )
+    return data
+  },
+
+  async saveProductSpec(productId: string, specs: Partial<ProductSpecs>): Promise<{ record: ProductSpecRecord }> {
+    const { data } = await apiClient.patch<{ record: ProductSpecRecord }>(`/product-specs/${productId}`, { specs })
+    return data
+  },
+
+  // ---------- 批量生产中心（第二/四/五阶段） ----------
+  async listProductionCandidates(params?: {
+    q?: string
+    category?: string
+    only?: 'all' | 'specs-ready' | 'specs-missing' | 'has-listing' | 'no-listing'
+  }): Promise<{
+    cards: ProductCard[]
+    categories: string[]
+    counts: { all: number; specsReady: number; specsMissing: number; hasListing: number }
+    limits: { max: number; suggested: number }
+    fields: SpecFieldDef[]
+  }> {
+    const { data } = await apiClient.get('/production/candidates', { params })
+    return data
+  },
+
+  async createProductionJob(payload: {
+    kind: 'listing' | 'spec'
+    productIds: string[]
+    clientKey?: string
+    note?: string
+  }): Promise<{ job: ProductionJob; deduped: boolean; skipped: Array<{ productId: string; reason: string }> }> {
+    const { data } = await apiClient.post('/production/jobs', payload)
+    return data
+  },
+
+  async listProductionJobs(limit = 10): Promise<{ jobs: ProductionJob[] }> {
+    const { data } = await apiClient.get<{ jobs: ProductionJob[] }>('/production/jobs', { params: { limit } })
+    return data
+  },
+
+  async getProductionJob(id: string): Promise<{ job: ProductionJob; progress: ProductionProgress }> {
+    const { data } = await apiClient.get<{ job: ProductionJob; progress: ProductionProgress }>(
+      `/production/jobs/${id}`
+    )
+    return data
+  },
+
+  async controlProductionJob(
+    id: string,
+    action: 'run' | 'pause' | 'cancel' | 'retry-failed'
+  ): Promise<{ job: ProductionJob }> {
+    const { data } = await apiClient.post<{ job: ProductionJob }>(`/production/jobs/${id}/${action}`)
+    return data
+  },
+
+  async retryProductionItem(jobId: string, idx: number): Promise<{ job: ProductionJob }> {
+    const { data } = await apiClient.post<{ job: ProductionJob }>(`/production/jobs/${jobId}/items/${idx}/retry`)
+    return data
+  },
+
+  async listAiCallLogs(params?: { limit?: number; task?: string }): Promise<{
+    logs: AiCallLog[]
+    summary: AiCallSummary[]
+  }> {
+    const { data } = await apiClient.get('/production/ai-logs', { params })
+    return data
+  },
+
+  /** 批量审核：只取待审核（审核中心默认视图） */
+  async listReviewQueue(params?: { status?: string; q?: string; limit?: number; offset?: number }): Promise<{
+    reviews: ListingReviewSummary[]
+    counts: { pending: number; approved: number; rejected: number }
+    limit: number
+    offset: number
+  }> {
+    const { data } = await apiClient.get('/listing-reviews', { params })
+    return data
+  },
+
+  async getReviewDetail(id: string): Promise<{ review: ListingReview }> {
+    const { data } = await apiClient.get<{ review: ListingReview }>(`/listing-reviews/${id}`)
+    return data
+  },
+
+  async patchReviewListing(
+    id: string,
+    listing: Partial<Pick<Listing, 'title' | 'summary' | 'description' | 'keywords'>>
+  ): Promise<{ review: ListingReview }> {
+    const { data } = await apiClient.patch<{ review: ListingReview }>(`/listing-reviews/${id}`, { listing })
+    return data
+  },
+
+  /** 只重生成指定字段（标题/摘要/描述/关键词），结果直接并回这条草稿 */
+  async regenerateReviewFields(
+    id: string,
+    fields: Array<'title' | 'summary' | 'description' | 'keywords'>,
+    instruction?: string
+  ): Promise<{ review: ListingReview; qc: ListingQcReport }> {
+    const { data } = await apiClient.post<{ review: ListingReview; qc: ListingQcReport }>(
+      `/listing-reviews/${id}/regenerate-fields`,
+      { fields, instruction },
+      LONG_TIMEOUT
+    )
+    return data
+  },
+
+  async reviewAiQc(id: string): Promise<{ qc: ListingQcReport; findings: string[] }> {    const { data } = await apiClient.post<{ qc: ListingQcReport; findings: string[] }>(
+      `/listing-reviews/${id}/ai-qc`,
+      {},
+      LONG_TIMEOUT
+    )
+    return data
+  },
+
+  async reviewBulkAiQc(ids: string[]): Promise<{
+    results: Array<{ id: string; ok: boolean; findings: string[]; error?: string }>
+  }> {
+    const { data } = await apiClient.post('/listing-reviews/ai-qc', { ids }, LONG_TIMEOUT)
+    return data
+  },
+
+  async approveReviews(ids: string[]): Promise<{ approved: string[]; failed: Array<{ id: string; error: string }> }> {
+    const { data } = await apiClient.post('/listing-reviews/approve', { ids })
+    return data
+  },
+
+  async rejectReviews(ids: string[], note?: string): Promise<{ rejected: number }> {
+    const { data } = await apiClient.post('/listing-reviews/reject', { ids, note })
+    return data
+  },
+
+  async deleteReviews(ids: string[]): Promise<{ removed: number }> {
+    const { data } = await apiClient.post('/listing-reviews/bulk-delete', { ids })
+    return data
+  },
+
+  /** 导出批量生成结果（Excel）：直接触发浏览器下载 */
+  reviewExportUrl(params: { ids?: string[]; status?: string }): string {
+    const qs = new URLSearchParams()
+    if (params.ids?.length) qs.set('ids', params.ids.join(','))
+    if (params.status) qs.set('status', params.status)
+    return `${apiClient.defaults.baseURL}/listing-reviews/export?${qs.toString()}`
   },
 }
 

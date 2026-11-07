@@ -35,6 +35,9 @@ const settingsSchema = z.object({
   aiBaseUrl: z.string().optional(),
   aiApiKey: z.string().optional(),
   aiModel: z.string().optional(),
+  // 模型分工：不同任务可以指定不同模型（留空=沿用 aiModel）
+  aiModelExtract: z.string().max(200).optional(),
+  aiModelQc: z.string().max(200).optional(),
   // 图像生成配置
   imageBaseUrl: z.string().optional(),
   imageApiKey: z.string().optional(),

@@ -1,8 +1,10 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
+  Boxes,
   ClipboardCheck,
   Compass,
   Database,
+  FileText,
   FolderOpen,
   Layers,
   LayoutDashboard,
@@ -37,13 +39,18 @@ const NAV_GROUPS: Array<{
     items: [
       { to: '/sourcing-suggest', label: '选品预估', icon: Compass },
       { to: '/sourcing', label: '产品信息预填', icon: SearchCheck },
+      { to: '/specs', label: '产品资料卡', icon: FileText },
       { to: '/evaluations', label: '评估库', icon: FolderOpen },
       { to: '/master-data', label: '产品资料库', icon: Database },
     ],
   },
   {
     title: '批量生产',
-    items: [{ to: '/batch', label: '批量处理', icon: Layers }],
+    items: [
+      { to: '/production', label: '批量生产中心', icon: Layers },
+      { to: '/review-center', label: 'Listing 审核中心', icon: ClipboardCheck },
+      { to: '/batch', label: '批量导入处理', icon: Boxes },
+    ],
   },
   {
     title: '审核与上架',
@@ -66,7 +73,10 @@ const TITLES: Record<string, { title: string; sub: string }> = {
   '/pipeline': { title: '产品流水线', sub: '一个产品一条档案（RPA 编号）：资料 → 评估 → 英文文案 → 审核 → 正式产品' },
   '/sourcing-suggest': { title: '选品预估', sub: 'AI 自动搜寻适合美国促销礼品市场的选品方向与 1688 搜索词' },
   '/sourcing': { title: '产品信息预填', sub: '粘贴 1688 链接带出商品资料，补全尺寸、材质、箱规后正式评估' },
-  '/batch': { title: '批量生产', sub: '批量跑单品同一条流程：预填 → 补全 → 预估 → 评估 → 生成链接 → 入库' },
+  '/batch': { title: '批量导入处理', sub: '批量跑单品同一条流程：预填 → 补全 → 预估 → 评估 → 生成链接 → 入库' },
+  '/production': { title: '批量生产中心', sub: '一次 5～10 个产品，各自独立生成英文 Listing，可暂停/继续/重试失败项' },
+  '/specs': { title: '产品资料卡', sub: '每个产品一张卡：14 个标准字段，资料里没有的标 Unknown，可人工修改、可重新提取' },
+  '/review-center': { title: 'Listing 审核中心', sub: '批量生成的草稿都在这里：看质检、直接改、单段重生成、批量通过或驳回，通过才写回产品库' },
   '/listing-reviews': { title: '英文链接待审核', sub: '待审核就是产品档案里状态为「待审核」的那些：通过→正式产品库，驳回→改后重做' },
   '/master-data': { title: '产品资料库', sub: '自建主数据：链接、箱规、每箱数、毛重、多张图片录一次，之后抓取自动命中' },
   '/evaluations': { title: '评估库', sub: '选品评估草稿集中存放，随时载入继续编辑或直接生成英文链接' },

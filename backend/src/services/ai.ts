@@ -1,4 +1,5 @@
 import { Settings } from '../types'
+import { logAiCall } from './ai-log'
 
 export class AiError extends Error {
   constructor(
@@ -19,6 +20,39 @@ interface ChatMessageContentPart {
 interface ChatResponse {
   choices?: { message?: { content?: string } }[]
   error?: { message?: string }
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+}
+
+/**
+ * 调用参数（可选，全部向后兼容）：
+ *  - model    覆盖模型：不同任务用不同模型，不需要改调用方的参数顺序
+ *  - task     台账里的任务名（spec-extract / listing / listing-qc …）
+ *  - productId 关联的产品，便于按产品追成本
+ */
+export interface ChatCallOptions {
+  model?: string
+  task?: string
+  productId?: string | null
+}
+
+/** 一次调用的完整结果（带耗时/token，台账与界面都用它） */
+export interface ChatResult {
+  text: string
+  model: string
+  durationMs: number
+  promptTokens: number | null
+  completionTokens: number | null
+}
+
+/** 模型分工：任务 → 模型。留空就回落到通用模型，行为与改造前完全一致。 */
+export function modelFor(
+  settings: Pick<Settings, 'aiModel' | 'aiModelExtract' | 'aiModelQc'>,
+  task?: string
+): string {
+  const base = settings.aiModel?.trim() || 'gpt-4o-mini'
+  if (task === 'spec-extract' && settings.aiModelExtract?.trim()) return settings.aiModelExtract.trim()
+  if (task === 'listing-qc' && settings.aiModelQc?.trim()) return settings.aiModelQc.trim()
+  return base
 }
 
 function endpointCandidates(baseUrl: string): string[] {
@@ -67,18 +101,24 @@ function friendlyError(status: number, raw: string): AiError {
   return new AiError(`AI 调用失败 (${status})：${raw.slice(0, 300)}`)
 }
 
-export async function callChat(
-  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel'>,
+/**
+ * 真正干活的一次模型调用：返回文本 + 实际模型 + 耗时 + token，
+ * 并把这一笔记进 ai_call_logs（成功失败都记，失败带错误原因）。
+ */
+export async function callChatResult(
+  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel' | 'aiModelExtract' | 'aiModelQc'>,
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.6,
-  images?: string[]
-): Promise<string> {
+  images?: string[],
+  opts?: ChatCallOptions
+): Promise<ChatResult> {
   const baseUrl = settings.aiBaseUrl?.trim()
   if (!baseUrl) throw new AiError('尚未配置 AI 接口地址', '请到「设置」填写 Base URL 与 API Key。')
   if (!settings.aiApiKey?.trim())
     throw new AiError('尚未配置 API Key', '请到「设置」填写 API Key 后再生成。')
-  const model = settings.aiModel?.trim() || 'gpt-4o-mini'
+  const model = opts?.model?.trim() || modelFor(settings, opts?.task)
+  const startedAt = Date.now()
 
   // 支持图片：images 为 base64 dataURL 或 https URL 列表
   const userMessage: { role: string; content: string | ChatMessageContentPart[] } = images?.length
@@ -107,6 +147,19 @@ export async function callChat(
   const candidates = endpointCandidates(baseUrl)
   let lastErr: AiError | null = null
 
+  const fail = (err: AiError): never => {
+    logAiCall({
+      task: opts?.task ?? '',
+      productId: opts?.productId,
+      model,
+      baseUrl,
+      durationMs: Date.now() - startedAt,
+      ok: false,
+      error: err.message,
+    })
+    throw err
+  }
+
   for (const url of candidates) {
     let res: Response
     try {
@@ -125,22 +178,50 @@ export async function callChat(
       lastErr = friendlyError(res.status, raw)
       // 404 时换另一个候选地址
       if (res.status === 404 && candidates.length > 1) continue
-      throw lastErr
+      return fail(lastErr)
     }
 
     let data: ChatResponse
     try {
       data = JSON.parse(raw) as ChatResponse
     } catch {
-      throw new AiError(`AI 返回内容无法解析：${raw.slice(0, 200)}`)
+      return fail(new AiError(`AI 返回内容无法解析：${raw.slice(0, 200)}`))
     }
-    if (data.error?.message) throw new AiError(`AI 返回错误：${data.error.message}`)
+    if (data.error?.message) return fail(new AiError(`AI 返回错误：${data.error.message}`))
     const content = data.choices?.[0]?.message?.content
-    if (!content) throw new AiError('AI 返回内容为空，请重试')
-    return content
+    if (!content) return fail(new AiError('AI 返回内容为空，请重试'))
+
+    const durationMs = Date.now() - startedAt
+    const promptTokens =
+      typeof data.usage?.prompt_tokens === 'number' ? data.usage.prompt_tokens : null
+    const completionTokens =
+      typeof data.usage?.completion_tokens === 'number' ? data.usage.completion_tokens : null
+    logAiCall({
+      task: opts?.task ?? '',
+      productId: opts?.productId,
+      model,
+      baseUrl,
+      durationMs,
+      promptTokens,
+      completionTokens,
+      ok: true,
+    })
+    return { text: content, model, durationMs, promptTokens, completionTokens }
   }
 
-  throw lastErr ?? new AiError('AI 调用失败')
+  return fail(lastErr ?? new AiError('AI 调用失败'))
+}
+
+export async function callChat(
+  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel' | 'aiModelExtract' | 'aiModelQc'>,
+  systemPrompt: string,
+  userPrompt: string,
+  temperature = 0.6,
+  images?: string[],
+  opts?: ChatCallOptions
+): Promise<string> {
+  const result = await callChatResult(settings, systemPrompt, userPrompt, temperature, images, opts)
+  return result.text
 }
 
 /** 从模型输出中稳健地提取 JSON 对象 */
@@ -169,14 +250,27 @@ export function extractJson<T>(text: string): T {
 }
 
 export async function callChatJson<T>(
-  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel'>,
+  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel' | 'aiModelExtract' | 'aiModelQc'>,
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.6,
-  images?: string[]
+  images?: string[],
+  opts?: ChatCallOptions
 ): Promise<T> {
-  const text = await callChat(settings, systemPrompt, userPrompt, temperature, images)
+  const text = await callChat(settings, systemPrompt, userPrompt, temperature, images, opts)
   return extractJson<T>(text)
+}
+
+export async function callChatJsonDetailed<T>(
+  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel' | 'aiModelExtract' | 'aiModelQc'>,
+  systemPrompt: string,
+  userPrompt: string,
+  temperature = 0.6,
+  images?: string[],
+  opts?: ChatCallOptions
+): Promise<{ data: T; model: string; durationMs: number }> {
+  const result = await callChatResult(settings, systemPrompt, userPrompt, temperature, images, opts)
+  return { data: extractJson<T>(result.text), model: result.model, durationMs: result.durationMs }
 }
 
 export async function testConnection(
@@ -187,7 +281,9 @@ export async function testConnection(
       settings,
       'You are a connectivity probe. Reply with exactly: OK',
       'ping',
-      0
+      0,
+      undefined,
+      { task: 'settings-test' }
     )
     return { ok: true, message: `连接成功，模型回复：${reply.trim().slice(0, 40)}`, model: settings.aiModel }
   } catch (err) {

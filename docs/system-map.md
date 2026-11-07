@@ -144,8 +144,38 @@ asi-workbench/
 `pending_review`→审核；`listed`→完成；`archived`→驳回。
 
 ## 6. 改动后的发布流程
-
 1. `cd backend && npx tsc --noEmit`；`cd frontend && npx tsc -b --force`
 2. `git push origin main`（本机 github.com 不通，用工作区根目录的 `push-asi-api.ps1` 走 API 推送）
 3. 等 3–5 分钟，`GET /api/version` 的 `commit` 变了就是新版
 4. 浏览器 **Ctrl+F5** 强刷
+
+## 8. 批量生产系统 V1（2026-11-07 新增）
+
+一句话：在「已有产品档案」上做批量 —— 先把资料整理成 14 个标准字段，再一批 5~10 个各自生成 Listing，
+进待审核库、人工过了才写回产品。生成过程永远不覆盖产品库里现有的 Listing。
+
+后端：
+
+- `backend/src/services/spec-fields.ts` —— 14 字段定义、Unknown 归一、清洗、指纹、提示词片段（纯函数，可单测）
+- `backend/src/services/product-specs.ts` —— 调模型提取（只抄不编）+ `product_specs` 表读写
+- `backend/src/modules/product-specs.ts` —— `/api/product-specs/cards`（信息卡列表）、`/:id`（详情）、
+  `/:id/extract`（单条重提取）、`PATCH /:id`（人工改）
+- `backend/src/services/listing-qc.ts` —— 程序规则质检（长度/结尾句/关键词数量与重复/无依据的参数材质认证），纯函数
+- `backend/src/services/listing-qc-ai.ts` —— AI 复检（语法/美国英语/编造说法），只在用户点「AI 复检」时才调
+- `backend/src/services/production-jobs.ts` —— `production_jobs` 队列：逐条独立、暂停/继续/取消/重试、重启识别、clientKey 防重复
+- `backend/src/modules/production.ts` —— `/api/production/candidates`、`/jobs`（建+跑）、`/jobs/:id`（进度）、
+  `/jobs/:id/run|pause|cancel|retry-failed`、`/jobs/:id/items/:idx/retry`、`/ai-logs`
+- `backend/src/services/ai-log.ts` —— `ai_call_logs` 台账（任务/模型/耗时/token/错误）
+- `backend/src/services/ai.ts` —— `modelFor()` 模型分工（`aiModelExtract`/`aiModelQc` 留空即沿用 `aiModel`）
+
+待审核库的两种模式（`listing-reviews.ts`）：
+
+- `mode='inline'` 旧流程：生成即写产品档案（`pending_review`），审核只改状态
+- `mode='staged'` 批量生产：生成结果只存 `listing_reviews`，**通过时才写 `products.listing`**；
+  驳回/删除都不动产品。同一产品只保留一份未审草稿，重生成自动替换旧的
+
+前端：`ProductSpecs.tsx`（`/specs` 产品资料卡）、`Production.tsx`（`/production` 批量生产中心）、
+`ReviewCenter.tsx`（`/review-center` Listing 审核中心）。
+
+新增表：`product_specs`、`production_jobs`、`ai_call_logs`；`listing_reviews` 加
+`job_id / item_idx / mode / qc / prev_listing / edited_at`（全部可空或带默认值，旧数据不受影响）。

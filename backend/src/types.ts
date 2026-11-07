@@ -283,6 +283,10 @@ export interface Settings {
   aiBaseUrl: string
   aiApiKey: string
   aiModel: string
+  /** 产品资料结构化专用模型（留空 = 用 aiModel）。不同任务可以分工，但共用同一套接口与 Key */
+  aiModelExtract?: string
+  /** Listing 质量检查（AI 复检）专用模型（留空 = 用 aiModel） */
+  aiModelQc?: string
   // 图像生成（默认火山引擎即梦 Seedream 4.0，国内直连；也兼容 OpenAI gpt-image-1）
   /** 图像接口 Base URL（火山 https://ark.cn-beijing.volces.com/api/v3 / OpenAI https://api.openai.com/v1） */
   imageBaseUrl: string
@@ -335,6 +339,8 @@ export const DEFAULT_SETTINGS: Settings = {
   aiBaseUrl: 'https://api.deepseek.com',
   aiApiKey: '',
   aiModel: 'deepseek-chat',
+  aiModelExtract: '',
+  aiModelQc: '',
   imageBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
   imageApiKey: '',
   imageModel: 'doubao-seedream-4-0-250828',
@@ -551,6 +557,94 @@ export interface ProductImage {
     /** 深/厚（可选） */
     depthIn: number | null
   } | null
+  createdAt: string
+  updatedAt: string
+}
+
+// ========== 产品资料结构化（批量生产系统 V1） ==========
+
+/**
+ * 14 个标准产品字段。
+ * 值一律是「字符串」，未知就是字符串 Unknown —— 不用 null 表示未知，
+ * 这样界面上只有一种「没资料」的写法，导出到 Excel 也不会出现空格/None/undefined 三种样子。
+ */
+export interface ProductSpecs {
+  productName: string
+  material: string
+  productSize: string
+  productWeight: string
+  colors: string
+  specifications: string
+  functions: string
+  features: string
+  logoCustomization: string
+  packaging: string
+  cartonDimensions: string
+  unitsPerCarton: string
+  cartonGrossWeight: string
+  application: string
+}
+
+/** 一条产品的结构化资料记录 */
+export interface ProductSpecRecord {
+  productId: string
+  specs: ProductSpecs
+  /** 值为 Unknown（或空）的字段名，界面标黄用 */
+  unknownFields: string[]
+  /** 已填/共 14，资料完整度 */
+  filled: number
+  total: number
+  model: string
+  /** 提取时原始资料的指纹（和现在的对比就知道资料改过没有） */
+  sourceHash?: string
+  extractedAt: string | null
+  editedAt: string | null
+  updatedAt: string
+}
+
+// ========== 批量生产任务（Listing 批量生成 / 结构化批量提取） ==========
+
+export type ProductionJobKind = 'listing' | 'spec'
+
+export type ProductionJobStatus =
+  | 'queued'
+  | 'running'
+  | 'paused'
+  | 'done'
+  | 'cancelled'
+  | 'interrupted'
+
+export type ProductionItemStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
+
+/** 批量里的一条产品：进度 + 结果引用（成品内容不塞这里） */
+export interface ProductionItem {
+  idx: number
+  productId: string
+  code: string
+  /** 产品中文名，列表里显示 */
+  title: string
+  status: ProductionItemStatus
+  /** 当前步骤的人话 */
+  stage: string
+  /** 结果：listing 任务=待审核记录 id；spec 任务=完整度 */
+  reviewId?: string | null
+  qcOk?: boolean | null
+  qcIssues?: string[]
+  /** 结构化任务：填了几个字段 */
+  filled?: number | null
+  error?: string
+  startedAt?: string
+  finishedAt?: string
+  /** 耗时（毫秒） */
+  durationMs?: number
+}
+
+export interface ProductionJob {
+  id: string
+  kind: ProductionJobKind
+  status: ProductionJobStatus
+  items: ProductionItem[]
+  note: string
   createdAt: string
   updatedAt: string
 }

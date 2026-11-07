@@ -1,8 +1,9 @@
-import { Settings, SourceInfo, Evaluation, Listing, SimilarResearch } from '../types'
+import { Settings, SourceInfo, Evaluation, Listing, SimilarResearch, ProductSpecs } from '../types'
 import { ASI_CATEGORIES, ASI_THEMES, ASI_MATERIALS, ASI_IMPRINT_METHODS, BRAND_BLOCKLIST, LIMITS, SEED_KEYWORDS } from '../constants/asi'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { costSummaryForPrompt, convertUnits } from './pricing'
 import { formatImprintConstraint } from './imprint-recommend'
+import { specsToPromptBlock } from './product-specs'
 import type { MarketSnapshot } from './market-probe'
 
 /**
@@ -320,7 +321,9 @@ export function buildListingPrompt(
   settings: Settings,
   answers?: ListingAnswer[],
   similar?: SimilarResearch | null,
-  evaluation?: Evaluation | null
+  evaluation?: Evaluation | null,
+  /** 结构化产品资料（14 字段）——有就注入，没有就完全沿用原来的提示词 */
+  specs?: ProductSpecs | null
 ) {
   const units = convertUnits(source)
   const system = `${ASI_CONTEXT}
@@ -379,7 +382,7 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 - Carton: ${source.cartonLCm ?? '?'}x${source.cartonWCm ?? '?'}x${source.cartonHCm ?? '?'} cm (≈${units.cartonSizeInch}), ${source.pcsPerCarton ?? '?'} pcs/ctn, ${source.cartonGwKg ?? '?'} kg (≈${units.cartonGwLb ?? '?'} lb)
 - Unit weight: ${source.weightG ?? '?'} g (≈${units.unitWeightLb ?? '?'} lb)
 - Category hint: ${source.category || '(unknown)'}
-- Buyer notes: ${source.notes || '(none)'}
+- Buyer notes: ${source.notes || '(none)'}${specsToPromptBlock(specs)}
 ${answersBlock}${similarBlock}${evaluationAdvice}
 
 REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)

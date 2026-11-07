@@ -24,6 +24,8 @@ import { batchRouter } from './modules/batch'
 import { listingReviewsRouter } from './modules/listing-reviews'
 import { masterProductsRouter } from './modules/master-products'
 import { flowRouter } from './modules/flow'
+import { productSpecsRouter } from './modules/product-specs'
+import { productionRouter } from './modules/production'
 
 export const createApp = (): Application => {
   const app = express()
@@ -73,6 +75,10 @@ export const createApp = (): Application => {
   app.use(`${env.API_PREFIX}/flow`, flowRouter)
   // 产品资料库：自建主数据，抓取时优先命中，避免重复补箱规和图片
   app.use(`${env.API_PREFIX}/master-products`, masterProductsRouter)
+  // 产品结构化资料：14 个标准字段（产品信息卡）
+  app.use(`${env.API_PREFIX}/product-specs`, productSpecsRouter)
+  // 批量生产中心：批量生成 Listing / 批量提取结构化资料（任务落库，可暂停继续）
+  app.use(`${env.API_PREFIX}/production`, productionRouter)
 
   // 生产环境：托管前端构建产物（单端口部署）
   const staticDir = resolveStaticDir()
