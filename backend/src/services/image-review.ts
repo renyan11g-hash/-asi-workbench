@@ -1,8 +1,11 @@
 /**
  * 生成图自动审查（批量生产系统 · 图片环节）。
  *
- * 每次生成完一张图，用视觉模型拿「原产品图」对照「生成图」，按 8 项硬指标体检：
- *   产品一致性 / 颜色一致性 / 结构一致性 / 配件一致性 / Logo 一致性 / 场景合理性 / 背景要求 / 图片质量
+ * 每次生成完一张图，用视觉模型拿「原产品图」对照「生成图」，按 7 项硬指标体检：
+ *   产品一致性 / 颜色一致性 / 结构一致性 / 配件一致性 / 场景合理性 / 背景要求 / 图片质量
+ *
+ * 不做 Logo 检查：我们的货源基本无 Logo，或者要先去掉原厂 Logo 再上自己的 Logo，
+ * 拿「有没有 Logo」当不合格会误伤，所以这一项去掉。
  *
  * 为什么不让程序规则判：这些全是「看图」才能判的（像不像同一件货），
  * 只能用视觉模型；但它只负责挑毛病，不负责改图。
@@ -31,7 +34,6 @@ const CHECKS: Array<{ key: string; label: string }> = [
   { key: 'color', label: '颜色一致性' },
   { key: 'structure', label: '结构一致性' },
   { key: 'accessory', label: '配件一致性' },
-  { key: 'logo', label: 'Logo 一致性' },
   { key: 'scene', label: '场景合理性' },
   { key: 'background', label: '背景要求' },
   { key: 'quality', label: '图片质量' },
@@ -47,8 +49,8 @@ export interface ReviewInput {
   /** 产品资料里确实有的颜色（用于判断有没有编颜色） */
   colors: string[]
   material: string
-  /** 这张图是否要求出现 Logo */
-  hasLogo: boolean
+  /** 这张图是否要求出现 Logo（现在不做 Logo 检查，保留字段仅为兼容） */
+  hasLogo?: boolean
 }
 
 /**
@@ -87,24 +89,24 @@ Checks (all required):
 2. color    颜色一致性 — does any colour appear that is NOT in the allowed list and NOT visible in the originals?
 3. structure 结构一致性 — was the structure changed (parts added, removed, reshaped, mirrored)?
 4. accessory 配件一致性 — were accessories/parts added or removed?
-5. logo     Logo 一致性 — if a logo should be present, is it undistorted and legible? If no logo should be present, is the product clean?
-6. scene    场景合理性 — is the usage scene physically plausible (no floating objects, wrong scale, impossible use)?
-7. background 背景要求 — main and dimension images MUST be pure white (#FFFFFF) seamless with no gradient/props/floor line. For detail/scene images this check passes automatically.
-8. quality  图片质量 — sharp, no blur, no warping, no extra limbs/objects, composition not broken.
+5. scene    场景合理性 — is the usage scene physically plausible (no floating objects, wrong scale, impossible use)?
+6. background 背景要求 — main and dimension images MUST be pure white (#FFFFFF) seamless with no gradient/props/floor line. For detail/scene images this check passes automatically.
+7. quality  图片质量 — sharp, no blur, no warping, no extra limbs/objects, composition not broken.
+
+NOTE: do NOT evaluate logos at all — the source product is usually logo-free, and any logo is added deliberately afterwards.
 
 Rules:
 - If a check cannot be judged from the images, mark it pass with note "无法判断".
 - Output STRICT JSON only, no markdown:
-{"checks":[{"key":"product","ok":true,"note":"..."}, ... exactly these 8 keys ...]}`
+{"checks":[{"key":"product","ok":true,"note":"..."}, ... exactly these 7 keys ...]}`
 
   const allowedColors = input.colors.filter(Boolean).slice(0, 12).join(' / ') || '(未提供)'
   const user = `IMAGE TYPE: ${kindLabel}
 ALLOWED COLOURS (only these exist): ${allowedColors}
 MATERIAL: ${input.material || '(未提供)'}
-LOGO SHOULD APPEAR: ${input.hasLogo ? 'yes' : 'no'}
 
 Image 1 is the generated image. Images 2-${input.productImages.length + 1} are the original product photos.
-Run the 8 checks and output the JSON.`
+Run the 7 checks and output the JSON.`
 
   try {
     const { data } = await callChatJsonDetailed<{ checks?: Array<{ key?: string; ok?: boolean; note?: string }> }>(

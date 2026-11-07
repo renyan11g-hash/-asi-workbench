@@ -390,6 +390,25 @@ productImagesRouter.post('/product/:productId/sources', (req: Request, res: Resp
   res.json({ images: merged, added: merged.length - (p.source.images ?? []).length })
 })
 
+/** 产品图：删掉其中一张（按地址精确匹配） */
+productImagesRouter.post('/product/:productId/sources/remove', (req: Request, res: Response) => {
+  const id = String(req.params.productId)
+  const body = z.object({ url: z.string().min(1).max(8_000_000) }).parse(req.body ?? {})
+  const p = findProduct(id)
+  const before = p.source.images ?? []
+  const after = before.filter((u) => u !== body.url)
+  if (after.length === before.length) {
+    res.json({ images: before, removed: 0 })
+    return
+  }
+  db.prepare('UPDATE products SET images=?, updated_at=? WHERE id=?').run(
+    JSON.stringify(after),
+    new Date().toISOString(),
+    id
+  )
+  res.json({ images: after, removed: before.length - after.length })
+})
+
 /** 参考图列表 */
 productImagesRouter.get('/product/:productId/refs', (req: Request, res: Response) => {
   res.json({ refs: listRefs(String(req.params.productId)) })

@@ -650,6 +650,12 @@ export const api = {
     return data
   },
 
+  /** 删掉产品图里的一张（按地址精确匹配） */
+  async removeSourceImage(productId: string, url: string): Promise<{ images: string[]; removed: number }> {
+    const { data } = await apiClient.post(`/product-images/product/${productId}/sources/remove`, { url })
+    return data
+  },
+
   /** 参考图（只学构图/光线/场景，不改产品） */
   async listRefImages(
     productId: string

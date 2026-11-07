@@ -251,7 +251,25 @@ export function ProductImageStudio({
               </div>
             ) : (
               sources.map((u, i) => (
-                <img key={`${i}-${u.slice(0, 24)}`} src={u} alt="" className="h-16 w-16 rounded border border-slate-200 object-cover" />
+                <div key={`${i}-${u.slice(0, 24)}`} className="relative">
+                  <img src={u} alt="" className="h-16 w-16 rounded border border-slate-200 object-cover" />
+                  <button
+                    className="absolute -right-1 -top-1 rounded-full bg-white p-0.5 text-slate-500 shadow hover:text-rose-600"
+                    title="从产品图里删掉这张（不在生成时作为参考）"
+                    onClick={async () => {
+                      if (!window.confirm('从产品图里删掉这张？删除后 AI 生图就不会再参考它。')) return
+                      try {
+                        const r = await api.removeSourceImage(productId, u)
+                        setSources(r.images ?? [])
+                        toast.success('已删除这张产品图')
+                      } catch (err) {
+                        toast.error(getErrorMessage(err))
+                      }
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
               ))
             )}
           </div>
