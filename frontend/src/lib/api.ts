@@ -1179,10 +1179,22 @@ export const api = {
 
   async listEvaluations(params?: { q?: string; status?: string }): Promise<{
     rows: EvaluationRow[]
-    counts: { all: number; pending: number; approved: number; rejected: number; none: number }
+    counts: { all: number; pending: number; approved: number; rejected: number; none: number; orphan: number }
     total: number
   }> {
     const { data } = await apiClient.get('/library/evaluations', { params })
+    return data
+  },
+
+  /** 老草稿的评估详情（还没关联产品时，评估库点「详情」用） */
+  async getEvaluationDraft(draftId: string): Promise<{
+    id: string
+    title: string
+    source: unknown
+    evaluation: unknown
+    priceGrid: unknown
+  }> {
+    const { data } = await apiClient.get(`/library/evaluations/${draftId}`)
     return data
   },
 

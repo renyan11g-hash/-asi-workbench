@@ -25,16 +25,24 @@ import { cn } from '@/lib/utils'
  */
 const NAV_GROUPS: Array<{
   title: string
-  items: Array<{ to: string; label: string; icon: React.ElementType; end?: boolean; badge?: 'flow' | 'review' }>
+  items: Array<{
+    to: string
+    label: string
+    icon: React.ElementType
+    end?: boolean
+    /** 红色数字角标：显示「这一步还有几条要处理」 */
+    badge?: 'specs' | 'evalReview' | 'review'
+  }>
 }> = [
   {
     title: '工作流程',
     items: [
       { to: '/', label: '工作总览', icon: LayoutDashboard, end: true },
-      { to: '/pipeline', label: '产品流水线', icon: Layers, badge: 'flow' },
+      // 产品流水线是总览页，不挂数字（各步的数字挂到对应的功能页上）
+      { to: '/pipeline', label: '产品流水线', icon: Layers },
       { to: '/sourcing-suggest', label: '选品预估', icon: Compass },
-      { to: '/master-data', label: '产品资料库', icon: Database },
-      { to: '/evaluations', label: '评估库', icon: FolderOpen },
+      { to: '/master-data', label: '产品资料库', icon: Database, badge: 'specs' },
+      { to: '/evaluations', label: '评估库', icon: FolderOpen, badge: 'evalReview' },
       { to: '/listing-reviews', label: 'listing 待审核中心', icon: ClipboardCheck, badge: 'review' },
       { to: '/library', label: '预产品库', icon: Package },
       { to: '/rpa', label: 'RPA 档案库', icon: Archive },
@@ -82,10 +90,13 @@ export function AppLayout() {
       ? { title: '链接生成与审核', sub: '资料 / 评估 / 英文文案 / 出图 都在这一个产品档案里' }
       : { title: '工作台', sub: '' })
 
-  const badgeValue = (kind: 'flow' | 'review' | undefined): number => {
+  // 数字角标挂到「这一步的处理页面」上：
+  //   产品资料库 = 待补资料；评估库 = 评估等人工定结论；listing 待审核 = 文案等审核
+  const badgeValue = (kind: 'specs' | 'evalReview' | 'review' | undefined): number => {
     if (!flow || !kind) return 0
-    if (kind === 'review') return flow.pendingReview
-    return (flow.needSpecs ?? 0) + (flow.needEval ?? 0) + (flow.needEvalReview ?? 0) + flow.needListing + flow.needConfirm
+    if (kind === 'specs') return flow.needSpecs ?? 0
+    if (kind === 'evalReview') return flow.needEvalReview ?? 0
+    return flow.pendingReview ?? 0
   }
 
   return (

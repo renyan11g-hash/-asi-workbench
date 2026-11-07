@@ -249,8 +249,12 @@ flowRouter.get('/products', (req: Request, res: Response) => {
       rejected: ['rejected'],
       open: ['specs', 'evaluate', 'listing', 'confirm', 'review'],
     }
-    const allow = want[need] ?? null
-    if (allow) mapped = mapped.filter((r) => allow.includes(r.nextStep as NextStep))
+    if (need === 'rpa') {
+      mapped = mapped.filter((r) => r.libraryState === 'rpa')
+    } else {
+      const allow = want[need] ?? null
+      if (allow) mapped = mapped.filter((r) => allow.includes(r.nextStep as NextStep))
+    }
   }
 
   res.json({ rows: mapped.slice(0, limit), total: mapped.length })

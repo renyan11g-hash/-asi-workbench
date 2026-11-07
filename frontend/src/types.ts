@@ -812,6 +812,9 @@ export interface LibraryRow {
 }
 
 export interface EvaluationRow extends LibraryRow {
+  /** 没有关联产品时为空（改版前的老草稿） */
+  productId: string | null
+  orphan: boolean
   evalSummary: string
   evalScore: number | null
   evalVerdict: string | null
@@ -821,6 +824,8 @@ export interface EvaluationRow extends LibraryRow {
   evalCons: string[]
   evalSuggestions: string[]
   evalBuyers: string[]
+  evalIssues: string[]
+  evalScoreNote: string
 }
 
 // ---------------- 批量生产系统 V1：产品结构化资料 ----------------

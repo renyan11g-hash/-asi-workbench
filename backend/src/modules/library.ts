@@ -10,9 +10,11 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../db'
+import { AppError } from '../middleware/errorHandler'
 import {
   archiveToRpa,
   enterPreLibrary,
+  getDraftEvaluation,
   listEvaluations,
   listPreProducts,
   listRpaArchive,
@@ -74,12 +76,15 @@ libraryRouter.get('/evaluations', (req: Request, res: Response) => {
     pending: rows.filter((r) => r.evalReview === 'pending').length,
     approved: rows.filter((r) => r.evalReview === 'approved').length,
     rejected: rows.filter((r) => r.evalReview === 'rejected').length,
-    none: rows.filter((r) => !r.evalReview).length,
+    none: rows.filter((r) => !r.evalReview && !r.orphan).length,
+    /** 改版前留在评估库、还没关联产品的老草稿 */
+    orphan: rows.filter((r) => r.orphan).length,
   }
   if (status === 'pending') rows = rows.filter((r) => r.evalReview === 'pending')
   else if (status === 'approved') rows = rows.filter((r) => r.evalReview === 'approved')
   else if (status === 'rejected') rows = rows.filter((r) => r.evalReview === 'rejected')
-  else if (status === 'none') rows = rows.filter((r) => !r.evalReview)
+  else if (status === 'none') rows = rows.filter((r) => !r.evalReview && !r.orphan)
+  else if (status === 'orphan') rows = rows.filter((r) => r.orphan)
 
   if (q) {
     rows = rows.filter(
@@ -91,6 +96,22 @@ libraryRouter.get('/evaluations', (req: Request, res: Response) => {
     )
   }
   res.json({ rows, counts, total: rows.length })
+})
+
+/**
+ * 老草稿的评估详情（那条还没进产品档案时，点「详情」走这里）。
+ * 返回完整的评估对象，前端按和产品评估一样的版式渲染。
+ */
+libraryRouter.get('/evaluations/:draftId', (req: Request, res: Response) => {
+  const draft = getDraftEvaluation(String(req.params.draftId))
+  if (!draft) throw new AppError(404, '这条评估记录不存在')
+  res.json({
+    id: draft.id,
+    title: draft.title,
+    source: (draft.content as { source?: unknown }).source ?? null,
+    evaluation: (draft.content as { evaluation?: unknown }).evaluation ?? null,
+    priceGrid: (draft.content as { priceGrid?: unknown }).priceGrid ?? null,
+  })
 })
 
 /**

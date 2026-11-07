@@ -25,6 +25,35 @@ const safeEqual = (a: string, b: string): boolean => {
   return crypto.timingSafeEqual(da, db)
 }
 
+/**
+ * 「登录一次管一天」用的会话 cookie。
+ *
+ * 为什么不用 Basic 硬扛：Basic 凭据只活在浏览器进程里，关掉浏览器/隔一段时间
+ * 就会重新弹系统登录框，一天要输好几次。这里在 Basic 验证通过后额外种一个
+ * HttpOnly cookie（凭据的 HMAC，不含密码本身），有效期 1 天；
+ * 之后带着这个 cookie 的请求直接放行，不再弹框。
+ *
+ * token 由密码派生，所以改密码 = 所有旧 cookie 自动失效；服务重启也不影响。
+ */
+const SESSION_COOKIE = 'asi_auth'
+const SESSION_MAX_AGE_SEC = 24 * 60 * 60
+
+function sessionToken(): string {
+  return crypto
+    .createHmac('sha256', env.BASIC_AUTH_PASS)
+    .update('asi-workbench-session-v1')
+    .digest('hex')
+}
+
+function readCookie(req: Parameters<RequestHandler>[0], name: string): string {
+  const raw = req.headers.cookie ?? ''
+  for (const part of raw.split(';')) {
+    const [k, ...rest] = part.trim().split('=')
+    if (k === name) return decodeURIComponent(rest.join('='))
+  }
+  return ''
+}
+
 export const basicAuth: RequestHandler = (req, res, next) => {
   // 未配置凭据 → 不启用（开发环境 / 尚未配置的部署）
   if (!env.BASIC_AUTH_USER || !env.BASIC_AUTH_PASS) return next()
@@ -41,6 +70,11 @@ export const basicAuth: RequestHandler = (req, res, next) => {
     if (token && safeEqual(token, env.SYNC_TOKEN)) return next()
   }
 
+  // ① 一天内登录过：cookie 有效就直接放行，不再弹系统登录框
+  const cookie = readCookie(req, SESSION_COOKIE)
+  if (cookie && safeEqual(cookie, sessionToken())) return next()
+
+  // ② 带着 Basic 凭据：验证通过后顺手种 cookie，之后一天内都不用再输
   const header = req.headers.authorization ?? ''
   if (header.startsWith('Basic ')) {
     let decoded = ''
@@ -54,6 +88,14 @@ export const basicAuth: RequestHandler = (req, res, next) => {
       const user = decoded.slice(0, sep)
       const pass = decoded.slice(sep + 1)
       if (safeEqual(user, env.BASIC_AUTH_USER) && safeEqual(pass, env.BASIC_AUTH_PASS)) {
+        const secure = req.secure || req.get('x-forwarded-proto') === 'https'
+        res.cookie(SESSION_COOKIE, sessionToken(), {
+          httpOnly: true,
+          sameSite: 'lax',
+          secure,
+          path: '/',
+          maxAge: SESSION_MAX_AGE_SEC * 1000,
+        })
         return next()
       }
     }
@@ -62,6 +104,12 @@ export const basicAuth: RequestHandler = (req, res, next) => {
   res.setHeader('WWW-Authenticate', 'Basic realm="ASI Workbench", charset="UTF-8"')
   res.setHeader('Cache-Control', 'no-store')
   return res.status(401).type('text/plain; charset=utf-8').send('需要登录才能访问 ASI 选品工作台')
+}
+
+/** 主动退出：清掉会话 cookie（页面里点「退出登录」用） */
+export const logoutHandler: RequestHandler = (_req, res) => {
+  res.clearCookie(SESSION_COOKIE, { path: '/' })
+  res.json({ ok: true, message: '已退出登录，下次访问需要重新输入密码' })
 }
 
 /**

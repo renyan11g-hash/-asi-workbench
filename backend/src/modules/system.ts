@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { db } from '../db'
 import { probeWithDiag } from '../services/market-probe'
+import { logoutHandler } from '../middleware/auth'
 
 export const systemRouter: Router = Router()
 
@@ -35,6 +36,9 @@ systemRouter.get('/health/errors', async (req: Request, res: Response) => {
     res.json({ ok: false, errors: [], message: (e as Error)?.message ?? String(e) })
   }
 })
+
+/** 退出登录：清掉「一天免登录」的 cookie */
+systemRouter.post('/logout', logoutHandler)
 
 /**
  * Basic health check - always returns OK

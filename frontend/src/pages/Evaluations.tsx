@@ -1,26 +1,26 @@
-import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CheckCircle2,
-  ChevronDown,
-  ChevronRight,
   ExternalLink,
   FileText,
   Loader2,
   RefreshCw,
   Search,
   Sparkles,
+  X,
   XCircle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { SectionCard, VerdictBadge } from '@/components/ui/primitives'
+import { SectionCard, ScoreRing, VerdictBadge } from '@/components/ui/primitives'
 import { api, getErrorMessage } from '@/lib/api'
-import type { EvaluationRow } from '@/types'
+import { cn } from '@/lib/utils'
+import type { Evaluation, EvaluationRow, Product } from '@/types'
 
-type Tab = 'all' | 'pending' | 'approved' | 'rejected'
+type Tab = 'pending' | 'approved' | 'rejected' | 'all' | 'orphan'
 
 const STATUS_TEXT: Record<string, { label: string; cls: string }> = {
   pending: { label: '待审核', cls: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700' },
@@ -29,11 +29,11 @@ const STATUS_TEXT: Record<string, { label: string; cls: string }> = {
 }
 
 /**
- * 评估库（2026-11-07 流程合并）。
+ * 评估库（2026-11-07 第二次改版）。
  *
- * 这里不再是「另一份草稿」：它就是**产品档案里评估过的那批**，一人一行，
- * 能看分数/结论/优缺点/改善建议，也能直接批量决定「通过」（通过即自动去生成英文链接）
- * 还是「待定」。所以评估通过与否都能在这里筛选出来，不会丢。
+ * 用户要的是「原来那个样子」：一张张评估卡，中间一个大圆圈写分数，点进去看完整评估。
+ * 所以：卡片墙 + 分数圈 + 详情抽屉；新评估（产品档案上的）和老草稿（还没关联产品的）
+ * 都在这一页，一条数据都没删。
  */
 export default function Evaluations() {
   const navigate = useNavigate()
@@ -42,35 +42,50 @@ export default function Evaluations() {
   const [q, setQ] = useState('')
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
-  const [expanded, setExpanded] = useState<string | null>(null)
+  const [openRow, setOpenRow] = useState<EvaluationRow | null>(null)
+  /** 从产品流水线点「审核评估」直接打开对应那条的详情 */
+  const [searchParams, setSearchParams] = useSearchParams()
+  const openId = searchParams.get('open')
 
   const listQuery = useQuery({
     queryKey: ['evaluations', tab, q],
     queryFn: () => api.listEvaluations({ status: tab, q: q || undefined }),
   })
-  const legacyQuery = useQuery({ queryKey: ['eval-legacy-drafts'], queryFn: api.listDrafts })
 
   const rows = useMemo(() => listQuery.data?.rows ?? [], [listQuery.data])
+
+  useEffect(() => {
+    if (!openId) return
+    const hit = rows.find((r) => r.productId === openId)
+    if (hit) {
+      setOpenRow(hit)
+      setSearchParams({}, { replace: true })
+    }
+  }, [openId, rows, setSearchParams])
   const counts = listQuery.data?.counts
 
   const toggle = (id: string) =>
     setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
 
+  const selectedProductIds = rows
+    .filter((r) => selected.includes(r.id) && r.productId)
+    .map((r) => r.productId as string)
+
   const decide = async (decision: 'approve' | 'reject') => {
-    if (!selected.length) return
-    if (
-      decision === 'reject' &&
-      !window.confirm(`把选中的 ${selected.length} 个产品标成「待定」？评估结果会保留在评估库，之后可以改判。`)
-    )
+    if (!selectedProductIds.length) {
+      toast.error('选中的里没有已关联产品的评估（历史草稿要先建档案）')
+      return
+    }
+    if (decision === 'reject' && !window.confirm(`把选中的 ${selectedProductIds.length} 个产品标成「待定」？评估记录会保留，可随时改判。`))
       return
     setBusy(true)
     try {
-      const r = await api.evalReview({ ids: selected, decision })
-      if (decision === 'approve') {
-        toast.success(`已通过 ${r.changed} 条，正在自动生成英文链接（可到产品流水线看进度）`)
-      } else {
-        toast.success(`已标为待定 ${r.changed} 条`)
-      }
+      const r = await api.evalReview({ ids: selectedProductIds, decision })
+      toast.success(
+        decision === 'approve'
+          ? `已通过 ${r.changed} 条，正在自动生成英文链接（产品流水线可看进度）`
+          : `已标为待定 ${r.changed} 条`
+      )
       setSelected([])
       qc.invalidateQueries({ queryKey: ['evaluations'] })
       qc.invalidateQueries({ queryKey: ['flow-overview'] })
@@ -82,13 +97,15 @@ export default function Evaluations() {
     }
   }
 
-  /** 重新评估：把选中的再跑一遍（AI 评估 + 看图找同款），跑完自动回到待审核 */
   const reevaluate = async () => {
-    if (!selected.length) return
+    if (!selectedProductIds.length) {
+      toast.error('选中的里没有已关联产品的评估')
+      return
+    }
     setBusy(true)
     try {
       const { job } = await api.evaluateProducts({
-        productIds: selected.slice(0, 20),
+        productIds: selectedProductIds.slice(0, 20),
         clientKey: `eval-${Date.now()}`,
       })
       localStorage.setItem('asi-production:jobId', job.id)
@@ -102,52 +119,65 @@ export default function Evaluations() {
     }
   }
 
-  const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id))
+  const decideOne = async (row: EvaluationRow, decision: 'approve' | 'reject') => {
+    if (!row.productId) return
+    setBusy(true)
+    try {
+      await api.evalReview({ ids: [row.productId], decision })
+      toast.success(decision === 'approve' ? '已通过，正在生成英文链接' : '已标为待定')
+      qc.invalidateQueries({ queryKey: ['evaluations'] })
+      qc.invalidateQueries({ queryKey: ['flow-overview'] })
+      setOpenRow(null)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const TABS: Array<{ key: Tab; label: string; count?: number }> = [
+    { key: 'pending', label: '待审核', count: counts?.pending },
+    { key: 'approved', label: '已通过', count: counts?.approved },
+    { key: 'rejected', label: '待定', count: counts?.rejected },
+    { key: 'all', label: '全部', count: counts?.all },
+    { key: 'orphan', label: '历史草稿', count: counts?.orphan },
+  ]
 
   return (
     <div className="space-y-4">
       <SectionCard
         title="评估库"
-        hint="评估跑完的产品都在这里。通过就自动进入下一步生成英文链接；不通过只是标待定，资料和评估都保留"
+        hint="每条评估一张卡：圆圈是评估分，点「详情」看优缺点、改善建议、市场同款。通过会自动去生成英文链接，不通过只是标待定"
         right={
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700">
-              待审核 {counts?.pending ?? 0}
-            </Badge>
-            <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
-              已通过 {counts?.approved ?? 0}
-            </Badge>
-            <Badge variant="outline" className="border-slate-300 bg-slate-100 text-slate-600">
-              待定 {counts?.rejected ?? 0}
-            </Badge>
+          <div className="flex flex-wrap items-center gap-1.5">
             <Button variant="outline" size="sm" onClick={() => void listQuery.refetch()}>
-              <RefreshCw className="mr-1 h-3.5 w-3.5" /> 刷新
+              {listQuery.isFetching ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-1 h-3.5 w-3.5" />
+              )}
+              刷新
             </Button>
           </div>
         }
       >
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          {(
-            [
-              { key: 'all', label: `全部（${counts?.all ?? 0}）` },
-              { key: 'pending', label: '待审核' },
-              { key: 'approved', label: '已通过' },
-              { key: 'rejected', label: '待定' },
-            ] as Array<{ key: Tab; label: string }>
-          ).map((t) => (
+          {TABS.map((t) => (
             <button
               key={t.key}
               onClick={() => {
                 setTab(t.key)
                 setSelected([])
               }}
-              className={
+              className={cn(
+                'rounded-full border px-3 py-1 text-[12px]',
                 tab === t.key
-                  ? 'rounded-full border border-blue-300 bg-blue-50 px-3 py-1 text-[12px] font-semibold text-blue-700'
-                  : 'rounded-full border border-slate-200 bg-white px-3 py-1 text-[12px] text-slate-500 hover:border-slate-300'
-              }
+                  ? 'border-blue-300 bg-blue-50 font-semibold text-blue-700'
+                  : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'
+              )}
             >
               {t.label}
+              {typeof t.count === 'number' ? `（${t.count}）` : ''}
             </button>
           ))}
           <div className="relative">
@@ -155,8 +185,8 @@ export default function Evaluations() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="搜编号 / 产品名 / 评估结论 / 链接"
-              className="h-7 w-64 rounded border border-slate-200 pl-7 pr-2 text-[12px] outline-none focus:border-blue-400"
+              placeholder="搜编号 / 产品名 / 结论 / 链接"
+              className="h-7 w-60 rounded border border-slate-200 pl-7 pr-2 text-[12px] outline-none focus:border-blue-400"
             />
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
@@ -176,259 +206,321 @@ export default function Evaluations() {
         </div>
 
         {listQuery.isLoading ? (
-          <div className="flex items-center justify-center py-14 text-sm text-slate-500">
+          <div className="flex items-center justify-center py-16 text-sm text-slate-500">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载评估…
           </div>
         ) : rows.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-14 text-center">
             <FileText className="mx-auto mb-2 h-6 w-6 text-slate-300" />
-            <p className="text-sm font-medium text-slate-600">这一类还没有产品</p>
+            <p className="text-sm font-medium text-slate-600">这一类还没有评估</p>
             <p className="mt-1 text-xs text-slate-400">
-              到「产品资料库」导入并推进到产品评估，或到「产品流水线」点批量评估
+              到「产品流水线」勾选产品点批量评估，或从「产品资料库」推进到产品评估
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] text-left text-[12px]">
-              <thead className="text-[11px] text-slate-400">
-                <tr className="border-b border-slate-100">
-                  <th className="w-8 py-2">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {rows.map((r) => {
+              const status = STATUS_TEXT[r.evalReview ?? '']
+              return (
+                <div
+                  key={r.id}
+                  className={cn(
+                    'rounded-xl border bg-white p-3 transition-colors',
+                    selected.includes(r.id) ? 'border-blue-400 ring-1 ring-blue-200' : 'border-slate-200 hover:border-slate-300'
+                  )}
+                >
+                  <div className="flex items-start gap-2">
                     <input
                       type="checkbox"
-                      className="h-3.5 w-3.5"
-                      checked={allChecked}
-                      onChange={(e) => setSelected(e.target.checked ? rows.map((r) => r.id) : [])}
+                      className="mt-1 h-3.5 w-3.5"
+                      checked={selected.includes(r.id)}
+                      onChange={() => toggle(r.id)}
                     />
-                  </th>
-                  <th className="w-8 py-2" />
-                  <th className="w-24 py-2 font-medium">编号</th>
-                  <th className="py-2 font-medium">产品</th>
-                  <th className="w-24 py-2 font-medium">评分</th>
-                  <th className="w-44 py-2 font-medium">评估结论</th>
-                  <th className="w-24 py-2 font-medium">审核</th>
-                  <th className="w-40 py-2 font-medium">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <EvalRow
-                    key={r.id}
-                    row={r}
-                    checked={selected.includes(r.id)}
-                    expanded={expanded === r.id}
-                    onToggle={() => toggle(r.id)}
-                    onExpand={() => setExpanded(expanded === r.id ? null : r.id)}
-                    onOpen={() => navigate(`/listing/${r.id}`)}
-                    busy={busy}
-                    onDecide={(decision) => {
-                      setSelected([r.id])
-                      void (async () => {
-                        try {
-                          await api.evalReview({ ids: [r.id], decision })
-                          toast.success(decision === 'approve' ? '已通过，正在生成英文链接' : '已标为待定')
-                          qc.invalidateQueries({ queryKey: ['evaluations'] })
-                          qc.invalidateQueries({ queryKey: ['flow-overview'] })
-                        } catch (err) {
-                          toast.error(getErrorMessage(err))
-                        } finally {
-                          setSelected([])
-                        }
-                      })()
-                    }}
-                  />
-                ))}
-              </tbody>
-            </table>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1">
+                        {r.code ? (
+                          <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-white">
+                            {r.code}
+                          </span>
+                        ) : (
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">历史草稿</span>
+                        )}
+                        {status && (
+                          <Badge variant="outline" className={status.cls}>
+                            {status.label}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="mt-1 line-clamp-2 text-[13px] font-medium text-slate-800">
+                        {r.title || '(未命名)'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 flex items-center gap-3">
+                    <ScoreRing score={r.evalScore ?? 0} />
+                    <div className="min-w-0 flex-1">
+                      <VerdictBadge verdict={(r.evalVerdict as 'GO' | 'MAYBE' | 'NO' | null) ?? null} />
+                      <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-slate-500">
+                        {r.evalSummary || '（这条评估没有摘要）'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setOpenRow(r)}>
+                      详情
+                    </Button>
+                    {r.productId && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px] text-slate-600"
+                        onClick={() => navigate(`/listing/${r.productId}`)}
+                      >
+                        产品档案
+                      </Button>
+                    )}
+                    {r.productId && r.evalReview !== 'approved' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px] text-emerald-700"
+                        disabled={busy}
+                        onClick={() => void decideOne(r, 'approve')}
+                      >
+                        通过
+                      </Button>
+                    )}
+                    {r.productId && r.evalReview !== 'rejected' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px] text-slate-500"
+                        disabled={busy}
+                        onClick={() => void decideOne(r, 'reject')}
+                      >
+                        待定
+                      </Button>
+                    )}
+                    {!r.productId && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px] text-blue-600"
+                        onClick={async () => {
+                          try {
+                            const rr = await api.createProductFromDraft(r.id)
+                            toast.success('已建产品档案，可在产品流水线继续')
+                            qc.invalidateQueries({ queryKey: ['evaluations'] })
+                            qc.invalidateQueries({ queryKey: ['flow-overview'] })
+                            navigate(`/listing/${rr.productId}`)
+                          } catch (err) {
+                            toast.error(getErrorMessage(err))
+                          }
+                        }}
+                      >
+                        建产品档案
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
       </SectionCard>
 
-      {/* 历史草稿：老流程留下的、还没进产品档案的评估草稿，别丢 */}
-      {(legacyQuery.data?.length ?? 0) > 0 && (
-        <SectionCard
-          title="历史评估草稿（老数据）"
-          hint="这些是改版前存在评估库里的草稿；关联了产品的已经在上面的列表里，这里只列没进产品的"
-        >
-          <div className="max-h-64 space-y-1 overflow-y-auto">
-            {(legacyQuery.data ?? []).slice(0, 50).map((d) => (
-              <div key={d.id} className="flex items-center gap-2 rounded border border-slate-100 px-2 py-1 text-[12px]">
-                <span className="truncate text-slate-700">{d.title || '(未命名草稿)'}</span>
-                <span className="ml-auto shrink-0 text-[11px] text-slate-400">
-                  {new Date(d.updatedAt).toLocaleDateString('zh-CN')}
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-6 px-1.5 text-[11px]"
-                  onClick={async () => {
-                    try {
-                      const r = await api.createProductFromDraft(d.id)
-                      navigate(`/listing/${r.productId}`)
-                    } catch (err) {
-                      toast.error(getErrorMessage(err))
-                    }
-                  }}
-                >
-                  进入产品档案
-                </Button>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-      )}
+      {openRow && <EvalDetailDrawer row={openRow} onClose={() => setOpenRow(null)} onDecide={decideOne} busy={busy} />}
     </div>
   )
 }
 
-function EvalRow({
+/** 评估详情抽屉：分数大圈 + 完整评估（优缺点/改善建议/风险/市场同款） */
+function EvalDetailDrawer({
   row,
-  checked,
-  expanded,
-  onToggle,
-  onExpand,
-  onOpen,
+  onClose,
   onDecide,
   busy,
 }: {
   row: EvaluationRow
-  checked: boolean
-  expanded: boolean
-  onToggle: () => void
-  onExpand: () => void
-  onOpen: () => void
-  onDecide: (decision: 'approve' | 'reject') => void
+  onClose: () => void
+  onDecide: (row: EvaluationRow, decision: 'approve' | 'reject') => void
   busy: boolean
 }) {
-  const status = STATUS_TEXT[row.evalReview ?? ''] ?? { label: '未审核', cls: 'border-slate-200 bg-slate-50 text-slate-500' }
+  const navigate = useNavigate()
+  const productQuery = useQuery({
+    queryKey: ['eval-detail-product', row.productId],
+    queryFn: () => api.getProduct(row.productId as string),
+    enabled: Boolean(row.productId),
+  })
+  const draftQuery = useQuery({
+    queryKey: ['eval-detail-draft', row.draftId],
+    queryFn: () => api.getEvaluationDraft(row.draftId as string),
+    enabled: !row.productId && Boolean(row.draftId),
+  })
+
+  const loading = productQuery.isLoading || draftQuery.isLoading
+  const evaluation: Evaluation | null = (() => {
+    if (row.productId) return (productQuery.data as Product | undefined)?.evaluation ?? null
+    const d = draftQuery.data?.evaluation
+    if (!d) return null
+    return (typeof d === 'string' ? JSON.parse(d) : d) as Evaluation
+  })()
+  const sourceUrl =
+    (row.productId ? (productQuery.data as Product | undefined)?.source.sourceUrl : undefined) || row.sourceUrl
+
+  const Section = ({ title, items, tone }: { title: string; items?: string[]; tone?: string }) => {
+    if (!items?.length) return null
+    return (
+      <div>
+        <div className={cn('text-[12px] font-semibold', tone ?? 'text-slate-700')}>{title}</div>
+        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-[11px] text-slate-600">
+          {items.map((x, i) => (
+            <li key={i}>{x}</li>
+          ))}
+        </ul>
+      </div>
+    )
+  }
+
   return (
-    <>
-      <tr className="border-b border-slate-50 align-top">
-        <td className="py-2">
-          <input type="checkbox" className="h-3.5 w-3.5" checked={checked} onChange={onToggle} />
-        </td>
-        <td className="py-2">
-          <button onClick={onExpand} className="text-slate-400 hover:text-slate-700">
-            {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          </button>
-        </td>
-        <td className="py-2">
-          <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-white">{row.code || '—'}</span>
-          {row.libraryState === 'rpa' && (
-            <div className="mt-0.5 rounded bg-indigo-100 px-1 text-[10px] text-indigo-700">RPA</div>
-          )}
-        </td>
-        <td className="max-w-[320px] py-2 pr-2">
-          <div className="line-clamp-2 font-medium text-slate-800">{row.title || '(未命名)'}</div>
-          <div className="mt-0.5 line-clamp-1 text-[11px] text-slate-500">{row.evalSummary}</div>
-        </td>
-        <td className="py-2">
-          <VerdictBadge verdict={(row.verdict as 'GO' | 'MAYBE' | 'NO' | null) ?? null} score={row.score ?? undefined} />
-        </td>
-        <td className="py-2 pr-2">
-          <div className="line-clamp-2 text-[11px] text-slate-600">{row.evalSummary || '—'}</div>
-        </td>
-        <td className="py-2">
-          <Badge variant="outline" className={status.cls}>
-            {status.label}
-          </Badge>
-        </td>
-        <td className="py-2">
-          <div className="flex flex-wrap items-center gap-1">
-            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={onOpen}>
-              详情
-            </Button>
-            {row.evalReview !== 'approved' && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-[11px] text-emerald-700"
-                disabled={busy}
-                onClick={() => onDecide('approve')}
-              >
-                通过
-              </Button>
-            )}
-            {row.evalReview !== 'rejected' && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-[11px] text-slate-500"
-                disabled={busy}
-                onClick={() => onDecide('reject')}
-              >
-                待定
-              </Button>
-            )}
-          </div>
-        </td>
-      </tr>
-      {expanded && (
-        <tr className="bg-slate-50/60">
-          <td colSpan={8} className="px-3 py-2 text-[11px] text-slate-600">
-            <div className="grid gap-3 md:grid-cols-2">
-              <div>
-                <div className="font-medium text-slate-700">评估结论</div>
-                <p className="mt-0.5 whitespace-pre-wrap">{row.evalSummary || '—'}</p>
-                {row.evalBuyers.length > 0 && (
-                  <p className="mt-1 text-slate-500">目标买家：{row.evalBuyers.join('、')}</p>
-                )}
-              </div>
-              <div className="space-y-1.5">
-                {row.evalPros.length > 0 && (
-                  <div>
-                    <span className="font-medium text-emerald-700">优点</span>
-                    <ul className="mt-0.5 list-disc pl-4">
-                      {row.evalPros.map((x, i) => (
-                        <li key={i}>{x}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {row.evalCons.length > 0 && (
-                  <div>
-                    <span className="font-medium text-rose-700">缺点</span>
-                    <ul className="mt-0.5 list-disc pl-4">
-                      {row.evalCons.map((x, i) => (
-                        <li key={i}>{x}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {row.evalSuggestions.length > 0 && (
-                  <div>
-                    <span className="font-medium text-blue-700">改善建议</span>
-                    <ul className="mt-0.5 list-disc pl-4">
-                      {row.evalSuggestions.map((x, i) => (
-                        <li key={i}>{x}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>
+      <div className="flex h-full w-full max-w-2xl flex-col overflow-hidden bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between border-b border-slate-100 px-5 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              {row.code && (
+                <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[11px] text-white">{row.code}</span>
+              )}
+              <span className="truncate text-sm font-semibold text-slate-900">{row.title || '(未命名)'}</span>
             </div>
-            <div className="mt-2 border-t border-slate-200 pt-1.5">
-              <span className="font-medium text-slate-700">下一步：</span>
-              {row.evalReview === 'approved'
-                ? row.hasListing
-                  ? '评估已通过、文案已生成，去「listing 待审核中心」审核'
-                  : '评估已通过，正在生成英文链接（可到产品流水线看进度）'
-                : row.evalReview === 'rejected'
-                  ? '已标待定：不进入生成流程，随时可以改判'
-                  : '等人工决定：通过就自动生成英文链接，不通过就待定'}
-              {row.sourceUrl && (
-                <a
-                  href={row.sourceUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="ml-2 inline-flex items-center gap-0.5 text-blue-600 hover:underline"
-                >
-                  <ExternalLink className="h-3 w-3" /> 1688 来源
-                </a>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              评估时间：{row.evalReviewedAt ? new Date(row.evalReviewedAt).toLocaleString('zh-CN') : new Date(row.updatedAt).toLocaleString('zh-CN')}
+            </p>
+          </div>
+          <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-20 text-sm text-slate-500">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载评估…
+            </div>
+          ) : !evaluation ? (
+            <div className="py-16 text-center text-sm text-slate-500">这条记录没有完整的评估数据</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-start gap-4 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+                <ScoreRing score={evaluation.score ?? 0} />
+                <div className="min-w-0 flex-1">
+                  <VerdictBadge verdict={evaluation.verdict ?? null} score={evaluation.score} />
+                  {evaluation.scoreNote && <p className="mt-1 text-[11px] text-slate-500">{evaluation.scoreNote}</p>}
+                  <p className="mt-1.5 text-[12px] leading-relaxed text-slate-700">{evaluation.summary || '（无摘要）'}</p>
+                  {sourceUrl && (
+                    <a
+                      href={sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 inline-flex items-center gap-0.5 text-[11px] text-blue-600 hover:underline"
+                    >
+                      <ExternalLink className="h-3 w-3" /> 1688 来源
+                    </a>
+                  )}
+                </div>
+              </div>
+
+              {evaluation.scoreBreakdown && (
+                <div className="grid grid-cols-5 gap-2">
+                  {(
+                    [
+                      ['差异化', evaluation.scoreBreakdown.differentiation],
+                      ['可定制', evaluation.scoreBreakdown.customization],
+                      ['物流', evaluation.scoreBreakdown.shipping],
+                      ['竞争', evaluation.scoreBreakdown.competition],
+                      ['合规', evaluation.scoreBreakdown.compliance],
+                    ] as Array<[string, number]>
+                  ).map(([label, v]) => (
+                    <div key={label} className="rounded-lg border border-slate-200 px-2 py-1.5 text-center">
+                      <div className="text-[10px] text-slate-500">{label}</div>
+                      <div className="text-sm font-semibold text-slate-800">{v}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <Section title="优点" items={evaluation.pros} tone="text-emerald-700" />
+              <Section title="缺点 / 风险" items={[...(evaluation.cons ?? []), ...(evaluation.risks ?? [])]} tone="text-rose-700" />
+              <Section title="问题点" items={evaluation.issues} tone="text-amber-700" />
+              <Section title="改善建议" items={evaluation.suggestions} tone="text-blue-700" />
+              <Section title="目标买家" items={evaluation.buyers} />
+              <Section title="适用场景" items={evaluation.occasions} />
+              <Section title="建议渠道" items={evaluation.channels} />
+              <Section title="Listing 钩子" items={evaluation.listingHooks} />
+              {evaluation.priceAdviceUsd && (
+                <div className="text-[12px] text-slate-600">
+                  <span className="font-semibold text-slate-700">建议售价：</span>${evaluation.priceAdviceUsd.min} – $
+                  {evaluation.priceAdviceUsd.max}
+                </div>
+              )}
+              {evaluation.marketSnapshot && (
+                <div className="rounded-lg border border-slate-200 bg-white p-2 text-[11px] text-slate-600">
+                  <div className="font-semibold text-slate-700">海外同款（4imprint）</div>
+                  <div className="mt-0.5">
+                    搜到 {evaluation.marketSnapshot.total} 条，命中同款 {evaluation.marketSnapshot.matched ?? '—'} 条，
+                    价格区间 ${evaluation.marketSnapshot.priceLow ?? '?'} – ${evaluation.marketSnapshot.priceHigh ?? '?'}（中位 $
+                    {evaluation.marketSnapshot.median ?? '?'}）
+                  </div>
+                  {evaluation.marketSnapshot.samples?.slice(0, 3).map((s, i) => (
+                    <div key={i} className="mt-0.5 truncate text-slate-500">
+                      · {s.title}（${s.priceMin}–{s.priceMax}）
+                    </div>
+                  ))}
+                </div>
+              )}
+              {evaluation.sourcingTips && (
+                <div className="text-[12px] text-slate-600">
+                  <span className="font-semibold text-slate-700">采购建议：</span>
+                  {evaluation.sourcingTips}
+                </div>
               )}
             </div>
-          </td>
-        </tr>
-      )}
-    </>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-5 py-3">
+          {row.productId && (
+            <>
+              <Button size="sm" disabled={busy || row.evalReview === 'approved'} onClick={() => onDecide(row, 'approve')}>
+                <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> 通过（自动生成文案）
+              </Button>
+              <Button size="sm" variant="outline" disabled={busy || row.evalReview === 'rejected'} onClick={() => onDecide(row, 'reject')}>
+                标为待定
+              </Button>
+              <Button size="sm" variant="ghost" className="text-slate-600" onClick={() => navigate(`/listing/${row.productId}`)}>
+                打开产品档案
+              </Button>
+            </>
+          )}
+          {!row.productId && (
+            <Button
+              size="sm"
+              onClick={async () => {
+                try {
+                  const rr = await api.createProductFromDraft(row.id)
+                  navigate(`/listing/${rr.productId}`)
+                } catch (err) {
+                  toast.error(getErrorMessage(err))
+                }
+              }}
+            >
+              建产品档案
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }

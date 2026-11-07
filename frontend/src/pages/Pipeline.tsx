@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Archive,
   ArrowRight,
-  Boxes,
   CheckCircle2,
   ClipboardCheck,
   FileText,
@@ -238,7 +238,8 @@ export default function Pipeline() {
       return
     }
     if (row.nextStep === 'evalReview' || row.nextStep === 'parked') {
-      navigate('/evaluations')
+      // 直接打开这条的评估详情，而不是只把人丢到评估库首页
+      navigate(`/evaluations?open=${row.id}`)
       return
     }
     if (row.nextStep === 'review') {
@@ -260,7 +261,7 @@ export default function Pipeline() {
           { key: 'needListing', label: '待生成文案', value: (counts?.needListing ?? 0) + (counts?.needConfirm ?? 0), filter: 'listing', icon: FileText, tone: 'text-violet-600' },
           { key: 'pendingReview', label: '待审核', value: counts?.pendingReview ?? 0, filter: 'review', icon: ClipboardCheck, tone: 'text-rose-600' },
           { key: 'listed', label: '预产品库', value: counts?.inPreLibrary ?? counts?.listed ?? 0, filter: 'done', icon: CheckCircle2, tone: 'text-emerald-600' },
-          { key: 'total', label: '产品档案', value: counts?.total ?? 0, filter: 'all', icon: Boxes, tone: 'text-slate-600' },
+          { key: 'rpa', label: 'RPA 档案库', value: counts?.inRpaArchive ?? 0, filter: 'rpa', icon: Archive, tone: 'text-indigo-600' },
         ].map((c) => (
           <button
             key={c.key}
