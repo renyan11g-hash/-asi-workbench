@@ -32,12 +32,14 @@ const SORT_OPTIONS: Array<{ key: SortKey; label: string }> = [
   { key: 'updated_desc', label: '最近更新在前' },
 ]
 
-/** 编号里的数字（GLS0073 → 73）；没有编号的历史草稿返回 null，永远排在最后 */
-function codeNumber(code: string | null | undefined): number | null {
+/** 编号拆成「前缀 + 数字」（GLS0073 → {prefix:'GLS', num:73}）；没有编号的历史草稿返回 null，永远排在最后 */
+function parseCode(code: string | null | undefined): { prefix: string; num: number } | null {
   if (!code) return null
+  const m = code.match(/^([A-Za-z]*)\s*(\d+)/)
   const digits = (code.match(/\d+/g) ?? []).join('')
-  const n = Number(digits)
-  return Number.isFinite(n) && digits ? n : null
+  const num = Number(digits)
+  if (!digits || !Number.isFinite(num)) return null
+  return { prefix: (m?.[1] || code.replace(/\d+/g, '')).toUpperCase(), num }
 }
 
 const STATUS_TEXT: Record<string, { label: string; cls: string }> = {
@@ -80,13 +82,15 @@ export default function Evaluations() {
     list.sort((a, b) => {
       if (sort === 'score_desc') return (b.evalScore ?? -1) - (a.evalScore ?? -1) || updated(b) - updated(a)
       if (sort === 'updated_desc') return updated(b) - updated(a)
-      const na = codeNumber(a.code)
-      const nb = codeNumber(b.code)
+      const na = parseCode(a.code)
+      const nb = parseCode(b.code)
       // 没有编号的（历史草稿）不参与编号排序，固定排最后
       if (na == null && nb == null) return updated(b) - updated(a)
       if (na == null) return 1
       if (nb == null) return -1
-      if (na !== nb) return sort === 'code_asc' ? na - nb : nb - na
+      // 不同前缀（GLS / RPA / PIP…）各自成组，组内再按数字升/降，避免两套编号互相穿插
+      if (na.prefix !== nb.prefix) return na.prefix.localeCompare(nb.prefix)
+      if (na.num !== nb.num) return sort === 'code_asc' ? na.num - nb.num : nb.num - na.num
       return updated(b) - updated(a)
     })
     return list
