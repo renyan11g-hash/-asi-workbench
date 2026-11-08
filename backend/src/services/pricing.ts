@@ -109,6 +109,8 @@ export function buildPriceGrid(
     shippingModes?: Array<'air' | 'sea' | null>
     /** 指定档位用的倍率（切换运输方式时保留该档原倍率，只让运费变） */
     markupByIndex?: Record<number, number>
+    /** 直接指定每一档的数量（资料库改价重算时保留人工调过的档位） */
+    qtyLevels?: number[] | null
   }
 ): { rows: PriceRow[]; breakdowns: CostBreakdown[] } {
   const fx = Number(settings.fxRate) || 6.7
@@ -150,10 +152,13 @@ export function buildPriceGrid(
 
   // 需求 7：默认按「首档 数量×售价 ≥ $200」自动定档；manual 模式才用手填档位
   const firstTierPriceUsd = (airUnitCost * markupAir) / fx
+  const oQty = (overrides?.qtyLevels ?? []).map((n) => Number(n)).filter((n) => n > 0)
   const levels =
-    settings.qtyLevelsMode === 'manual' && settings.qtyLevels?.length
-      ? [...settings.qtyLevels].sort((a, b) => a - b)
-      : suggestQtyLevels(firstTierPriceUsd)
+    oQty.length
+      ? [...oQty].sort((a, b) => a - b)
+      : settings.qtyLevelsMode === 'manual' && settings.qtyLevels?.length
+        ? [...settings.qtyLevels].sort((a, b) => a - b)
+        : suggestQtyLevels(firstTierPriceUsd)
   const airQty = Math.max(1, Math.min(levels.length - 1, settings.airQtyLevels ?? 3))
 
   // 海运第一档倍率固定 1.4

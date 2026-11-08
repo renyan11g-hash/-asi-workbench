@@ -143,7 +143,7 @@ PRODUCT FACTS:
 ${productFacts}
 ${opts?.productInfo ? `\nSTRUCTURED PRODUCT DATA (read this before writing prompts — features / colours / material / usage):\n${opts.productInfo}\n` : ''}${notesBlock}
 ${logoDirective}
-${opts?.styleRefCount ? `STYLE REFERENCES: the LAST ${opts.styleRefCount} reference image(s) are style references only (composition, layout, lighting, background treatment). They may be DIFFERENT products. Never copy their product; only borrow the photographic style.` : ''}
+${opts?.styleRefCount ? `STYLE REFERENCES: style references, when provided for an image, are its LAST reference image(s) (up to 2) — composition, layout, lighting, background treatment. They may be DIFFERENT products. Never copy their product; only borrow the photographic style. Different images in the set may have no style reference at all.` : ''}
 IMAGE SET REQUESTED: ${[opts?.withDetail !== false ? 'detail' : '', opts?.withScene !== false ? 'scene' : ''].filter(Boolean).join(' + ') || 'main + dimension'}
 MAIN STYLE: ${opts?.mainStyle === 'combo' ? 'combo (hero + selling-point close-up insets, still pure white)' : 'white (single hero + colour variants)'}
 REAL-WORLD USE: before writing the scene prompts, decide from the facts above how a US end user actually uses this product

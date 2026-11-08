@@ -22,6 +22,24 @@ import type { Evaluation, EvaluationRow, Product } from '@/types'
 
 type Tab = 'pending' | 'approved' | 'rejected' | 'all' | 'orphan'
 
+/** 排序：编号（GLS/RPA 编号里的数字）升/降，以及评分、更新时间 */
+type SortKey = 'code_desc' | 'code_asc' | 'score_desc' | 'updated_desc'
+
+const SORT_OPTIONS: Array<{ key: SortKey; label: string }> = [
+  { key: 'code_desc', label: '编号从大到小' },
+  { key: 'code_asc', label: '编号从小到大' },
+  { key: 'score_desc', label: '评分从高到低' },
+  { key: 'updated_desc', label: '最近更新在前' },
+]
+
+/** 编号里的数字（GLS0073 → 73）；没有编号的历史草稿返回 null，永远排在最后 */
+function codeNumber(code: string | null | undefined): number | null {
+  if (!code) return null
+  const digits = (code.match(/\d+/g) ?? []).join('')
+  const n = Number(digits)
+  return Number.isFinite(n) && digits ? n : null
+}
+
 const STATUS_TEXT: Record<string, { label: string; cls: string }> = {
   pending: { label: '待审核', cls: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700' },
   approved: { label: '已通过', cls: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
@@ -40,6 +58,7 @@ export default function Evaluations() {
   const qc = useQueryClient()
   const [tab, setTab] = useState<Tab>('pending')
   const [q, setQ] = useState('')
+  const [sort, setSort] = useState<SortKey>('code_desc')
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [openRow, setOpenRow] = useState<EvaluationRow | null>(null)
@@ -54,7 +73,24 @@ export default function Evaluations() {
     refetchInterval: 15_000,
   })
 
-  const rows = useMemo(() => listQuery.data?.rows ?? [], [listQuery.data])
+  /** 列表排序：编号从大到小（默认）/ 从小到大 / 评分 / 更新时间；历史草稿没有编号，永远排最后 */
+  const rows = useMemo(() => {
+    const list = [...(listQuery.data?.rows ?? [])]
+    const updated = (r: EvaluationRow) => new Date(r.updatedAt ?? 0).getTime() || 0
+    list.sort((a, b) => {
+      if (sort === 'score_desc') return (b.evalScore ?? -1) - (a.evalScore ?? -1) || updated(b) - updated(a)
+      if (sort === 'updated_desc') return updated(b) - updated(a)
+      const na = codeNumber(a.code)
+      const nb = codeNumber(b.code)
+      // 没有编号的（历史草稿）不参与编号排序，固定排最后
+      if (na == null && nb == null) return updated(b) - updated(a)
+      if (na == null) return 1
+      if (nb == null) return -1
+      if (na !== nb) return sort === 'code_asc' ? na - nb : nb - na
+      return updated(b) - updated(a)
+    })
+    return list
+  }, [listQuery.data, sort])
 
   useEffect(() => {
     if (!openId) return
@@ -193,6 +229,21 @@ export default function Evaluations() {
               className="h-7 w-60 rounded border border-slate-200 pl-7 pr-2 text-[12px] outline-none focus:border-blue-400"
             />
           </div>
+          <label className="flex items-center gap-1 text-[11px] text-slate-500">
+            排序
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortKey)}
+              className="h-7 rounded border border-slate-200 bg-white px-1.5 text-[12px] text-slate-700 outline-none focus:border-blue-400"
+              title="每个 tab 都按这个顺序排；历史草稿没有编号，固定排最后"
+            >
+              {SORT_OPTIONS.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
             <span className="text-[11px] text-slate-400">
               共 {rows.length} 条{selected.length ? `，已选 ${selected.length}` : ''}
@@ -233,7 +284,13 @@ export default function Evaluations() {
                 title="全选本页"
               />
               <span className="w-[44px] shrink-0">全选</span>
-              <span className="w-24 shrink-0">编号</span>
+              <button
+                className="w-24 shrink-0 text-left text-[11px] text-slate-500 hover:text-blue-600"
+                onClick={() => setSort(sort === 'code_desc' ? 'code_asc' : 'code_desc')}
+                title="点一下切换：编号从大到小 / 从小到大"
+              >
+                编号 {sort === 'code_asc' ? '↑' : '↓'}
+              </button>
               <span className="min-w-0 flex-1">产品 / 评估结论</span>
               <span className="w-24 shrink-0">评级</span>
               <span className="w-16 shrink-0">审核</span>

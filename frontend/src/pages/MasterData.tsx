@@ -227,11 +227,18 @@ function MasterDataPanel() {
         images: form.images.filter(Boolean),
       }
       if (form.id) {
-        await api.updateMasterProduct(form.id, payload)
-        toast.success('资料已更新')
+        const r = await api.updateMasterProduct(form.id, payload)
+        toast.success(
+          r.synced
+            ? `资料已更新：已同步 ${r.synced} 个产品的采购价/规格${r.repriced ? `，重算 ${r.repriced} 张价格表` : ''}`
+            : '资料已更新'
+        )
       } else {
         const r = await api.saveMasterProduct(payload)
-        toast.success(r.updated ? '这条链接已有资料，已覆盖更新' : '已加入产品资料库')
+        toast.success(
+          (r.updated ? '这条链接已有资料，已覆盖更新' : '已加入产品资料库') +
+            (r.repriced ? `，已重算 ${r.repriced} 张价格表` : '')
+        )
       }
       setForm(null)
       await load(q)

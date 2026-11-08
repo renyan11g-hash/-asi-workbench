@@ -616,11 +616,16 @@ export const api = {
     return data.product
   },
 
-  /** 每种图的出图计划（参考哪些产品图 + 生成前对话） */
+  /** 每种图的出图计划（参考哪些产品图 + 哪种风格参考图 + 生成前对话） */
   async getImagePlan(productId: string): Promise<{
     plan: Record<
       string,
-      { sources: string[]; notes: string; chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }> }
+      {
+        sources: string[]
+        refs: string[]
+        notes: string
+        chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
+      }
     >
   }> {
     const { data } = await apiClient.get(`/product-images/product/${productId}/plan`)
@@ -632,10 +637,14 @@ export const api = {
     payload: {
       kind: 'main' | 'dimension' | 'detail' | 'scene'
       sources?: string[]
+      /** 这张图额外参考的「风格参考图」（只学构图/光线/场景，不改产品） */
+      refs?: string[]
       notes?: string
       chat?: Array<{ role: 'user' | 'assistant'; content: string; at?: string }>
     }
-  ): Promise<{ plan: Record<string, { sources: string[]; notes: string; chat: unknown[] }> }> {
+  ): Promise<{
+    plan: Record<string, { sources: string[]; refs: string[]; notes: string; chat: unknown[] }>
+  }> {
     const { data } = await apiClient.put(`/product-images/product/${productId}/plan`, payload)
     return data
   },
@@ -648,7 +657,12 @@ export const api = {
     count: number
     plan: Record<
       string,
-      { sources: string[]; notes: string; chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }> }
+      {
+        sources: string[]
+        refs: string[]
+        notes: string
+        chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
+      }
     >
   }> {
     const { data } = await apiClient.post(`/product-images/product/${productId}/plan/auto`, {}, LONG_TIMEOUT)
@@ -662,7 +676,11 @@ export const api = {
       message: string
       messages?: Array<{ role: 'user' | 'assistant'; content: string }>
     }
-  ): Promise<{ reply: string; notes: string; plan: Record<string, { sources: string[]; notes: string }> }> {
+  ): Promise<{
+    reply: string
+    notes: string
+    plan: Record<string, { sources: string[]; refs: string[]; notes: string }>
+  }> {
     const { data } = await apiClient.post(`/product-images/product/${productId}/plan/chat`, payload, LONG_TIMEOUT)
     return data
   },
@@ -1151,17 +1169,28 @@ export const api = {
     return data.found
   },
 
-  async saveMasterProduct(payload: Partial<MasterProduct>): Promise<{ product: MasterProduct; updated: boolean }> {
-    const { data } = await apiClient.post<{ product: MasterProduct; updated: boolean }>(
-      '/master-products',
-      payload
-    )
+  async saveMasterProduct(
+    payload: Partial<MasterProduct>
+  ): Promise<{ product: MasterProduct; updated: boolean; synced?: number; repriced?: number }> {
+    const { data } = await apiClient.post<{
+      product: MasterProduct
+      updated: boolean
+      synced?: number
+      repriced?: number
+    }>('/master-products', payload)
     return data
   },
 
-  async updateMasterProduct(id: string, patch: Partial<MasterProduct>): Promise<MasterProduct> {
-    const { data } = await apiClient.patch<{ product: MasterProduct }>(`/master-products/${id}`, patch)
-    return data.product
+  async updateMasterProduct(
+    id: string,
+    patch: Partial<MasterProduct>
+  ): Promise<{ product: MasterProduct; synced: number; repriced: number }> {
+    const { data } = await apiClient.patch<{
+      product: MasterProduct
+      synced: number
+      repriced: number
+    }>(`/master-products/${id}`, patch)
+    return data
   },
 
   async deleteMasterProduct(id: string): Promise<void> {

@@ -153,6 +153,10 @@ function remapPlanSources(productId: string, mapped: Map<string, string>): void 
     const cur = plans[k]?.sources ?? []
     const next = cur.map((u) => mapped.get(u) ?? u)
     if (next.some((u, i) => u !== cur[i])) savePlan(productId, k, { sources: next })
+    // 参考图（只学风格）也要跟着换地址，否则选好的风格参考会失效
+    const curRefs = plans[k]?.refs ?? []
+    const nextRefs = curRefs.map((u) => mapped.get(u) ?? u)
+    if (nextRefs.some((u, i) => u !== curRefs[i])) savePlan(productId, k, { refs: nextRefs })
   }
 }
 
@@ -425,7 +429,13 @@ function parseDimensions(source: SourceInfo, listingSizeInch?: string) {
 
 // ---------- 每种图的出图计划（参考哪些产品图 + 生成前对话） ----------
 export interface KindPlan {
+  /** 这张图参考的产品图（产品真身：1688 抓的 / 人工上传的） */
   sources: string[]
+  /**
+   * 这张图额外参考的「风格参考图」（只学构图/排版/光线/场景，绝不许改产品）。
+   * 空数组 = 沿用该产品全部参考图（默认行为）；选了就只送选中的，最多 2 张。
+   */
+  refs: string[]
   notes: string
   chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
 }
@@ -446,14 +456,21 @@ function kindLabelOf(kind: string): string {
 
 function readPlan(productId: string): Record<string, KindPlan> {
   const out: Record<string, KindPlan> = {}
-  for (const k of KINDS) out[k] = { sources: [], notes: '', chat: [] }
+  for (const k of KINDS) out[k] = { sources: [], refs: [], notes: '', chat: [] }
   try {
     const rows = db
-      .prepare('SELECT kind, sources, notes, chat FROM product_image_plan WHERE product_id = ?')
-      .all(productId) as unknown as Array<{ kind: string; sources: string; notes: string; chat: string }>
+      .prepare('SELECT kind, sources, refs, notes, chat FROM product_image_plan WHERE product_id = ?')
+      .all(productId) as unknown as Array<{
+      kind: string
+      sources: string
+      refs: string | null
+      notes: string
+      chat: string
+    }>
     for (const r of rows) {
       out[r.kind] = {
         sources: JSON.parse(r.sources || '[]') as string[],
+        refs: JSON.parse(r.refs || '[]') as string[],
         notes: r.notes || '',
         chat: JSON.parse(r.chat || '[]') as Array<{ role: 'user' | 'assistant'; content: string; at: string }>,
       }
@@ -465,18 +482,27 @@ function readPlan(productId: string): Record<string, KindPlan> {
 }
 
 function savePlan(productId: string, kind: string, patch: Partial<KindPlan>): Record<string, KindPlan> {
-  const cur = readPlan(productId)[kind] ?? { sources: [], notes: '', chat: [] }
+  const cur = readPlan(productId)[kind] ?? { sources: [], refs: [], notes: '', chat: [] }
   const next: KindPlan = {
     sources: patch.sources ?? cur.sources,
+    refs: patch.refs ?? cur.refs,
     notes: patch.notes ?? cur.notes,
     chat: patch.chat ?? cur.chat,
   }
   const now = new Date().toISOString()
   db.prepare(
-    `INSERT INTO product_image_plan (product_id, kind, sources, notes, chat, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(product_id, kind) DO UPDATE SET sources=excluded.sources, notes=excluded.notes, chat=excluded.chat, updated_at=excluded.updated_at`
-  ).run(productId, kind, JSON.stringify(next.sources), next.notes, JSON.stringify(next.chat), now)
+    `INSERT INTO product_image_plan (product_id, kind, sources, refs, notes, chat, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(product_id, kind) DO UPDATE SET sources=excluded.sources, refs=excluded.refs, notes=excluded.notes, chat=excluded.chat, updated_at=excluded.updated_at`
+  ).run(
+    productId,
+    kind,
+    JSON.stringify(next.sources),
+    JSON.stringify(next.refs ?? []),
+    next.notes,
+    JSON.stringify(next.chat),
+    now
+  )
   return readPlan(productId)
 }
 
@@ -493,6 +519,8 @@ productImagesRouter.put('/product/:productId/plan', (req: Request, res: Response
     .object({
       kind: z.enum(KINDS),
       sources: z.array(z.string().max(8_000_000)).max(100).optional(),
+      /** 这张图额外参考的「风格参考图」（只学风格，最多 2 张会真正送模型） */
+      refs: z.array(z.string().max(8_000_000)).max(100).optional(),
       notes: z.string().max(3000).optional(),
       chat: z
         .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().max(4000), at: z.string().optional() }))
@@ -502,6 +530,7 @@ productImagesRouter.put('/product/:productId/plan', (req: Request, res: Response
     .parse(req.body ?? {})
   const plan = savePlan(productId, body.kind, {
     sources: body.sources,
+    refs: body.refs,
     notes: body.notes,
     chat: body.chat?.map((c) => ({ role: c.role, content: c.content, at: c.at ?? new Date().toISOString() })),
   })
@@ -1022,6 +1051,15 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
     const picked = (plan[kind]?.sources ?? []).filter((u) => productUrls.includes(u))
     return picked.length ? picked : productUrls.slice(0, kind === 'main' ? 4 : 2)
   }
+  /**
+   * 这张图用哪些「风格参考图」：
+   *   · 该图种单独选过 → 只送选中的（最多 2 张），不同图种可以学不同风格；
+   *   · 一张没选 → 沿用全部参考图（和以前一样，所有图种共用）。
+   */
+  const styleRefsForKind = (kind: string): string[] => {
+    const picked = (plan[kind]?.refs ?? []).filter((u) => styleRefs.includes(u))
+    return picked.length ? picked : styleRefs
+  }
 
   // 生图前先读产品资料（特点/颜色/材质/场景），拼成事实清单交给提示词编排
   const productInfo = buildProductInfoBlock(source, listingSizeInch)
@@ -1112,10 +1150,11 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
               : (ps.detail[slot - 1] ?? ps.detail[0] ?? ps.main)
 
       // 产品图放前面（事实），风格参考图放最后 2 张（模型通常把靠后的图当风格参考）
+      const styleDataUrlsForKind = await resolveUrls(styleRefsForKind(kind), 2)
       const refsWithStyle: ImageRef[] = [
         ...kindRefs[kind].map((u) => ({ url: u }) as ImageRef),
         ...(kind === 'main' && logo && withLogo ? [{ buffer: logo } as ImageRef] : []),
-        ...styleDataUrls.slice(0, 2).map((u) => ({ url: u }) as ImageRef),
+        ...styleDataUrlsForKind.map((u) => ({ url: u }) as ImageRef),
       ]
 
       let buf = await runAi(() => generateImage(settings, prompt, refsWithStyle))

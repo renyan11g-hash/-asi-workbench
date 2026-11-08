@@ -15,9 +15,11 @@ import { z } from 'zod'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { dispImgIds, extractWpsCellImages } from '../services/cell-images'
+import { buildPriceGrid } from '../services/pricing'
 import { createTask, runTask, updateTask } from '../services/task-manager'
-import type { SourceInfo } from '../types'
+import type { PriceRow, SourceInfo } from '../types'
 import { insertProduct } from './products'
+import { loadSettings } from './settings'
 
 export interface MasterProduct {
   id: string
@@ -170,10 +172,12 @@ function insertMaster(input: MasterInput): string {
     now,
     now
   )
+  // 新建的资料如果已经有产品档案（先建档案、后录资料），也要同步过去
+  syncMasterToProductsById(id)
   return id
 }
 
-function updateMaster(id: string, input: MasterInput): void {
+function updateMaster(id: string, input: MasterInput): MasterSyncResult {
   db.prepare(
     `UPDATE master_products SET offer_id=?, source_url=?, title=?, price_cny=?, size_cn=?, weight_g=?,
       carton_l_cm=?, carton_w_cm=?, carton_h_cm=?, pcs_per_carton=?, carton_gw_kg=?, images=?, notes=?,
@@ -198,6 +202,209 @@ function updateMaster(id: string, input: MasterInput): void {
     new Date().toISOString(),
     id
   )
+  return syncMasterToProductsById(id)
+}
+
+export interface MasterSyncResult {
+  /** 联动更新的产品档案条数 */
+  synced: number
+  /** 其中重算了阶梯价格表的条数（产品文案 / 待审核文案） */
+  repriced: number
+}
+
+interface LinkedProductRow {
+  id: string
+  price_cny: number | null
+  size_cn: string | null
+  weight_g: number | null
+  carton_l_cm: number | null
+  carton_w_cm: number | null
+  carton_h_cm: number | null
+  pcs_per_carton: number | null
+  carton_gw_kg: number | null
+  material_cn: string | null
+  colors_cn: string | null
+  supplier: string | null
+  listing: string | null
+}
+
+/** 资料库里「有值」的字段才覆盖产品档案，空值保留产品原有数据（不会把已填的资料清空） */
+function mergeLinked(m: MasterProduct, r: LinkedProductRow) {
+  const text = (v: string | null | undefined, old: string | null) => ((v ?? '').trim() ? (v as string) : old ?? '')
+  return {
+    priceCny: m.priceCny ?? r.price_cny,
+    sizeCn: text(m.sizeCn, r.size_cn),
+    weightG: m.weightG ?? r.weight_g,
+    cartonLCm: m.cartonLCm ?? r.carton_l_cm,
+    cartonWCm: m.cartonWCm ?? r.carton_w_cm,
+    cartonHCm: m.cartonHCm ?? r.carton_h_cm,
+    pcsPerCarton: m.pcsPerCarton ?? r.pcs_per_carton,
+    cartonGwKg: m.cartonGwKg ?? r.carton_gw_kg,
+    materialCn: text(m.materialCn, r.material_cn),
+    colorsCn: text(m.colorsCn, r.colors_cn),
+    supplier: text(m.supplier, r.supplier),
+  }
+}
+
+/**
+ * 资料库改价后重算阶梯价格表。
+ * 保留人工调过的三样东西：每一档的空运/海运、倍率、数量；只让采购价/箱规的变化反映到售价与毛利上。
+ */
+function repriceListingText(
+  listingText: string | null,
+  src: Pick<
+    SourceInfo,
+    'priceCny' | 'weightG' | 'cartonLCm' | 'cartonWCm' | 'cartonHCm' | 'pcsPerCarton' | 'cartonGwKg'
+  >
+): { text: string; rows: PriceRow[] } | null {
+  if (!listingText) return null
+  let listing: Record<string, unknown>
+  try {
+    listing = JSON.parse(listingText) as Record<string, unknown>
+  } catch {
+    return null
+  }
+  const oldRows = ((listing.priceGrid as PriceRow[] | undefined) ?? []).filter(Boolean)
+  if (!oldRows.length) return null
+  try {
+    const { rows } = buildPriceGrid(src, loadSettings(), {
+      shippingModes: oldRows.map((r) => (r.shipping === 'sea' ? ('sea' as const) : ('air' as const))),
+      markupByIndex: Object.fromEntries(oldRows.map((r, i) => [i, Number(r.markupRate) || 0])),
+      qtyLevels: oldRows.every((r) => Number(r.qty) > 0) ? oldRows.map((r) => Number(r.qty)) : null,
+    })
+    if (!rows.length) return null
+    return { text: JSON.stringify({ ...listing, priceGrid: rows }), rows }
+  } catch {
+    return null
+  }
+}
+
+/** 待审核版本的 source 也一起换成本次同步后的资料，避免重新生成又用回老采购价 */
+function mergeReviewSource(sourceText: string, next: ReturnType<typeof mergeLinked>): string {
+  try {
+    const src = JSON.parse(sourceText || '{}') as Record<string, unknown>
+    return JSON.stringify({
+      ...src,
+      priceCny: next.priceCny ?? 0,
+      sizeCn: next.sizeCn,
+      weightG: next.weightG,
+      cartonLCm: next.cartonLCm,
+      cartonWCm: next.cartonWCm,
+      cartonHCm: next.cartonHCm,
+      pcsPerCarton: next.pcsPerCarton,
+      cartonGwKg: next.cartonGwKg,
+      materialCn: next.materialCn,
+      colorsCn: next.colorsCn,
+    })
+  } catch {
+    return sourceText
+  }
+}
+
+/**
+ * 资料库 → 产品档案（采购价/箱规联动）。
+ *
+ * 产品档案里的采购价、箱规、每箱数、箱毛重是当初抓取/建档时抄下来的副本；
+ * 之后在资料库里改了价，产品档案并不知道，价格表就会一直按老成本算。
+ * 这里在资料保存后统一把它们同步过去，并且「成本真的变了」才重算价格表，
+ * 避免每次保存都把人工调过的价格表重置一遍。
+ */
+export function syncMasterToProducts(m: MasterProduct): MasterSyncResult {
+  const out: MasterSyncResult = { synced: 0, repriced: 0 }
+  let rows: LinkedProductRow[]
+  try {
+    const sql = `SELECT id, price_cny, size_cn, weight_g, carton_l_cm, carton_w_cm, carton_h_cm,
+                        pcs_per_carton, carton_gw_kg, material_cn, colors_cn, supplier, listing
+                   FROM products
+                  WHERE master_id = ?${m.sourceUrl ? " OR (source_url <> '' AND source_url = ?)" : ''}`
+    rows = (m.sourceUrl
+      ? db.prepare(sql).all(m.id, m.sourceUrl)
+      : db.prepare(sql).all(m.id)) as unknown as LinkedProductRow[]
+  } catch {
+    return out
+  }
+
+  const now = new Date().toISOString()
+  for (const r of rows) {
+    const next = mergeLinked(m, r)
+    const numChanged = (a: number | null, b: number | null | undefined) =>
+      Number(a ?? 0) !== Number(b ?? 0)
+    // 只有影响报价的字段变了才重算价格表
+    const costChanged =
+      numChanged(r.price_cny, next.priceCny) ||
+      numChanged(r.carton_l_cm, next.cartonLCm) ||
+      numChanged(r.carton_w_cm, next.cartonWCm) ||
+      numChanged(r.carton_h_cm, next.cartonHCm) ||
+      numChanged(r.pcs_per_carton, next.pcsPerCarton) ||
+      numChanged(r.carton_gw_kg, next.cartonGwKg) ||
+      numChanged(r.weight_g, next.weightG)
+
+    db.prepare(
+      `UPDATE products SET price_cny=?, size_cn=?, weight_g=?, carton_l_cm=?, carton_w_cm=?, carton_h_cm=?,
+         pcs_per_carton=?, carton_gw_kg=?, material_cn=?, colors_cn=?, supplier=?, master_id=?, updated_at=?
+       WHERE id=?`
+    ).run(
+      next.priceCny ?? null,
+      next.sizeCn,
+      next.weightG ?? null,
+      next.cartonLCm ?? null,
+      next.cartonWCm ?? null,
+      next.cartonHCm ?? null,
+      next.pcsPerCarton ?? null,
+      next.cartonGwKg ?? null,
+      next.materialCn,
+      next.colorsCn,
+      next.supplier,
+      m.id,
+      now,
+      r.id
+    )
+    out.synced += 1
+    if (!costChanged) continue
+
+    const src = {
+      priceCny: next.priceCny ?? 0,
+      weightG: next.weightG,
+      cartonLCm: next.cartonLCm,
+      cartonWCm: next.cartonWCm,
+      cartonHCm: next.cartonHCm,
+      pcsPerCarton: next.pcsPerCarton,
+      cartonGwKg: next.cartonGwKg,
+    }
+
+    // ① 产品自己的文案（已保存的 / 已上架的）
+    const re = repriceListingText(r.listing, src)
+    if (re) {
+      db.prepare('UPDATE products SET listing=?, updated_at=? WHERE id=?').run(re.text, now, r.id)
+      out.repriced += 1
+    }
+
+    // ② 还没审完的那份文案（价格表也存在待审核记录里）
+    try {
+      const reviews = db
+        .prepare(
+          `SELECT id, listing, source FROM listing_reviews WHERE product_id = ? AND status = 'pending'`
+        )
+        .all(r.id) as unknown as Array<{ id: string; listing: string; source: string }>
+      for (const rv of reviews) {
+        const rr = repriceListingText(rv.listing, src)
+        if (!rr) continue
+        db.prepare(
+          'UPDATE listing_reviews SET listing=?, price_grid=?, source=?, updated_at=? WHERE id=?'
+        ).run(rr.text, JSON.stringify(rr.rows), mergeReviewSource(rv.source, next), now, rv.id)
+        out.repriced += 1
+      }
+    } catch {
+      /* 审核表结构异常不影响产品档案同步 */
+    }
+  }
+  return out
+}
+
+function syncMasterToProductsById(id: string): MasterSyncResult {
+  const row = db.prepare('SELECT * FROM master_products WHERE id = ?').get(id) as unknown as Row | undefined
+  if (!row) return { synced: 0, repriced: 0 }
+  return syncMasterToProducts(rowToMaster(row))
 }
 
 export const masterProductsRouter: Router = Router()
@@ -337,8 +544,13 @@ masterProductsRouter.post('/', async (req: Request, res: Response) => {
   const body = masterSchema.parse(req.body ?? {})
   const existing = findMasterByUrl(body.sourceUrl)
   if (existing) {
-    updateMaster(existing.id, body)
-    res.json({ product: findMasterByUrl(body.sourceUrl), updated: true })
+    const sync = updateMaster(existing.id, body)
+    res.json({
+      product: findMasterByUrl(body.sourceUrl),
+      updated: true,
+      synced: sync.synced,
+      repriced: sync.repriced,
+    })
     return
   }
   const id = insertMaster(body)
@@ -352,9 +564,13 @@ masterProductsRouter.patch('/:id', async (req: Request, res: Response) => {
   if (!row) throw new AppError(404, '资料不存在')
   const current = rowToMaster(row)
   const body = masterSchema.parse({ ...current, ...(req.body ?? {}) })
-  updateMaster(id, body)
+  const sync = updateMaster(id, body)
   const next = db.prepare('SELECT * FROM master_products WHERE id = ?').get(id) as unknown as Row
-  res.json({ product: rowToMaster(next) })
+  res.json({
+    product: rowToMaster(next),
+    synced: sync.synced,
+    repriced: sync.repriced,
+  })
 })
 
 masterProductsRouter.delete('/:id', async (req: Request, res: Response) => {

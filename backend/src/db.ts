@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS product_image_plan (
   product_id TEXT NOT NULL,
   kind TEXT NOT NULL,
   sources TEXT NOT NULL DEFAULT '[]',
+  refs TEXT NOT NULL DEFAULT '[]',
   notes TEXT NOT NULL DEFAULT '',
   chat TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL,
@@ -565,6 +566,9 @@ ensureTableColumn('product_images', 'review', 'review TEXT')
 
 // 产品图片表：老库补 with_logo 列（主图是否融合 Logo，0/1）
 ensureTableColumn('product_images', 'with_logo', 'with_logo INTEGER NOT NULL DEFAULT 1')
+
+// 每种图单独选「参考图（只学风格）」：refs 存参考图地址数组（空数组 = 沿用全部参考图）
+ensureTableColumn('product_image_plan', 'refs', "refs TEXT NOT NULL DEFAULT '[]'")
 
 // 待审核库：批量生产走「暂存草稿」模式后，需要知道这条审核记录
 //   ① 是不是批量任务产出的（job_id）；

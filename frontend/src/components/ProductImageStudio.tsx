@@ -69,16 +69,37 @@ export function ProductImageStudio({
   const [refPaste, setRefPaste] = useState('')
   const [fetchedInfo, setFetchedInfo] = useState<{ added: number; total: number; message: string } | null>(null)
 
-  // 每种图各自的参考图 / 注意点 / 生成前对话
+  // 每种图各自的参考图（产品图）/ 风格参考图 / 注意点 / 生成前对话
   type KindKey = 'main' | 'dimension' | 'detail' | 'scene'
-  const [plan, setPlan] = useState<
-    Record<KindKey, { sources: string[]; notes: string; chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }> }>
-  >({
-    main: { sources: [], notes: '', chat: [] },
-    dimension: { sources: [], notes: '', chat: [] },
-    detail: { sources: [], notes: '', chat: [] },
-    scene: { sources: [], notes: '', chat: [] },
+  type KindPlanState = {
+    sources: string[]
+    refs: string[]
+    notes: string
+    chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
+  }
+  /** 接口返回的计划可能缺字段（老数据没有 refs），统一补全再进 state */
+  const normalizePlan = (p: Record<string, Partial<KindPlanState>> | undefined): Record<KindKey, KindPlanState> => ({
+    main: { sources: p?.main?.sources ?? [], refs: p?.main?.refs ?? [], notes: p?.main?.notes ?? '', chat: p?.main?.chat ?? [] },
+    dimension: {
+      sources: p?.dimension?.sources ?? [],
+      refs: p?.dimension?.refs ?? [],
+      notes: p?.dimension?.notes ?? '',
+      chat: p?.dimension?.chat ?? [],
+    },
+    detail: {
+      sources: p?.detail?.sources ?? [],
+      refs: p?.detail?.refs ?? [],
+      notes: p?.detail?.notes ?? '',
+      chat: p?.detail?.chat ?? [],
+    },
+    scene: {
+      sources: p?.scene?.sources ?? [],
+      refs: p?.scene?.refs ?? [],
+      notes: p?.scene?.notes ?? '',
+      chat: p?.scene?.chat ?? [],
+    },
   })
+  const [plan, setPlan] = useState<Record<KindKey, KindPlanState>>(() => normalizePlan(undefined))
   const [chatKind, setChatKind] = useState<KindKey | null>(null)
   const [chatInput, setChatInput] = useState('')
   const [chatBusy, setChatBusy] = useState(false)
@@ -97,12 +118,7 @@ export function ProductImageStudio({
       setRefs(rf.refs ?? [])
       setImages(imgs ?? [])
       const p = pl.plan ?? {}
-      setPlan({
-        main: p.main ?? { sources: [], notes: '', chat: [] },
-        dimension: p.dimension ?? { sources: [], notes: '', chat: [] },
-        detail: p.detail ?? { sources: [], notes: '', chat: [] },
-        scene: p.scene ?? { sources: [], notes: '', chat: [] },
-      } as typeof plan)
+      setPlan(normalizePlan(p as Record<string, Partial<KindPlanState>>))
     } catch {
       /* 单个接口失败不阻塞页面 */
     } finally {
@@ -284,6 +300,19 @@ export function ProductImageStudio({
     }
   }
 
+  /** 保存某种图选中的「风格参考图」（空数组=沿用全部参考图，最多 2 张） */
+  const setKindRefs = async (kind: KindKey, next: string[]) => {
+    const prev = plan[kind].refs
+    setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], refs: next } }))
+    try {
+      const r = await api.saveImagePlan(productId, { kind, refs: next })
+      setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], ...(r.plan[kind] ?? {}) } }))
+    } catch (err) {
+      setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], refs: prev } }))
+      toast.error(getErrorMessage(err))
+    }
+  }
+
   /** 生成前对话：把用户这句话发给 AI，AI 回复构图建议并把注意点写进这张图的 notes */
   const sendChat = async () => {
     if (!chatKind || !chatInput.trim()) return
@@ -319,12 +348,7 @@ export function ProductImageStudio({
     try {
       const r = await api.autoAssignImagePlan(productId)
       const p = r.plan ?? {}
-      setPlan({
-        main: p.main ?? { sources: [], notes: '', chat: [] },
-        dimension: p.dimension ?? { sources: [], notes: '', chat: [] },
-        detail: p.detail ?? { sources: [], notes: '', chat: [] },
-        scene: p.scene ?? { sources: [], notes: '', chat: [] },
-      } as typeof plan)
+      setPlan(normalizePlan(p as Record<string, Partial<KindPlanState>>))
       const n = (k: 'main' | 'dimension' | 'detail' | 'scene') => r.picks?.[k]?.length ?? 0
       toast.success(
         `AI 挑好了：主图 ${n('main')} 张 / 尺寸图 ${n('dimension')} 张 / 细节图 ${n('detail')} 张 / 场景图 ${n('scene')} 张`
@@ -659,9 +683,10 @@ export function ProductImageStudio({
       <div className="rounded-xl border border-slate-200 bg-white p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <div className="text-[13px] font-semibold text-slate-800">每张图参考哪些产品图</div>
+            <div className="text-[13px] font-semibold text-slate-800">每张图参考哪些图（产品图 + 风格参考图）</div>
             <div className="text-[11px] text-slate-500">
-              四种图分别选各自的参考图，AI 只照着选中的图画；一张都不选就用全部产品图。生成前可以先和 AI 对话确认怎么拍。
+              四种图分别选自己的产品图和风格参考图：产品图是事实基准（只照着选中的画），风格参考图只学构图/光线/场景。
+              产品图一张都不选 = 用全部产品图；风格参考图一张都不选 = 沿用全部参考图。生成前可以先和 AI 对话确认怎么拍。
             </div>
           </div>
           <Button
@@ -683,9 +708,11 @@ export function ProductImageStudio({
                 <span className="text-[12px] font-medium text-slate-800">{KIND_LABEL[k]}</span>
                 <span
                   className="text-[11px] text-slate-400"
-                  title="这里列出全部产品图，不限数量；出图时每张图最多送 6 张参考图给模型（模型上限），按选择顺序取前 6 张"
+                  title="产品图不限数量，出图时每张图最多送 6 张给模型（按选择顺序取前 6 张）；风格参考图只学构图/光线/场景，最多送 2 张"
                 >
-                  已选 {plan[k].sources.length ? `${plan[k].sources.length} 张` : '全部产品图'} · 共 {sources.length} 张可选
+                  产品图 {plan[k].sources.length ? `${plan[k].sources.length} 张` : `全部 ${sources.length} 张`}
+                  {' · '}
+                  风格参考 {plan[k].refs.length ? `${plan[k].refs.length} 张` : refs.length ? '全部' : '无'}
                 </span>
                 <Button
                   size="sm"
@@ -746,6 +773,47 @@ export function ProductImageStudio({
                   </button>
                 </div>
               )}
+
+              {/* 风格参考图（只学构图/光线/场景，绝不改产品）：和产品图一样，每种图可以单独挑 */}
+              <div className="mt-1.5 rounded border border-dashed border-slate-200 px-1.5 py-1">
+                <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-400">
+                  <span>
+                    风格参考图（只学风格）：
+                    {plan[k].refs.length ? `已选 ${plan[k].refs.length} 张` : refs.length ? '默认全部（最多 2 张）' : '还没有参考图'}
+                  </span>
+                  {plan[k].refs.length > 0 && (
+                    <button
+                      className="text-rose-500 hover:underline"
+                      onClick={() => void setKindRefs(k, [])}
+                      title="清空后这张图会沿用全部参考图"
+                    >
+                      清空（用全部参考图）
+                    </button>
+                  )}
+                </div>
+                {refs.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {refs.map((rf) => {
+                      const onRef = plan[k].refs.includes(rf.url)
+                      return (
+                        <button
+                          key={`${k}-ref-${rf.id}`}
+                          title={onRef ? '这张图会参考它的风格（点一下取消）' : '点一下，让这张图参考它的风格'}
+                          onClick={() =>
+                            void setKindRefs(k, onRef ? plan[k].refs.filter((x) => x !== rf.url) : [...plan[k].refs, rf.url])
+                          }
+                          className={cn(
+                            'block rounded border-2 p-0',
+                            onRef ? 'border-emerald-500' : 'border-transparent opacity-70 hover:opacity-100'
+                          )}
+                        >
+                          <Thumb url={rf.url} className="h-9 w-9" />
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
 
               <input
                 value={plan[k].notes}
