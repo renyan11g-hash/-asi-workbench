@@ -47,6 +47,13 @@ Rules for every prompt:
   Metal hardware (zippers, pulls, rings, D-rings, buckles, snaps, rivets, chain) must keep its EXACT original finish and tone:
   silver/stainless stays silver, gold stays gold, black stays black, rose-gold stays rose-gold. Never upgrade the hardware to look more premium.
   If something is not visible in the reference images, do not invent it.
+- REAL-WORLD USE (critical for detail and scene images): work out from the product facts how a US end user actually
+  uses this item — who they are, where they use it, what they hold it next to, and how big it is. Every scene prompt
+  must describe ONE concrete, shootable situation (exact place + action + props + light + time of day), never a vague
+  "lifestyle setting". Show true scale against familiar objects (hands, a mug, a laptop, a bottle, a bag). A person or
+  hands may appear when it makes the use obvious; keep them believable and secondary to the product. The situation must
+  suit a promotional-gift catalogue (office desk, trade-show table, gym, kitchen, travel, commute, outdoor activity,
+  corporate gifting, etc.) and the product's real function — never fantasy, never impossible use.
 - BACKGROUND: every "main" and "dimension" image sits on a PURE WHITE background (#FFFFFF, RGB 255,255,255):
   seamless, flat, no gradient, no vignette, no grey sweep, no floor line, no coloured backdrop, no scenery, no reflection pool.
   A soft contact shadow directly under the product is acceptable, but the background itself must stay pure white.
@@ -78,13 +85,22 @@ Prompt requirements per image:
   * Do NOT draw dimension lines, arrows, rulers, numbers, labels or text of any kind. No protractor, no grid, no measuring props.
   * Same fidelity rule as above: the product must look exactly like the reference, not a redrawn or idealized version.
 - "detail": 1-2 extreme close-up prompts showing the PRODUCT'S REAL material texture, construction seams, functional mechanism and hardware.
+  * Pick the feature a real buyer would inspect before ordering (e.g. the zip and lining of a pouch, the grip of a bottle, the stitching and print area of a cap, the hinge of a box).
   * Macro lens look, shallow depth of field, soft studio light, neutral or pure white background.
   * Show only what is actually visible in the reference photos — never invent stitching, ridges, ports, buttons, logos or accessories.
   * No text, no numbers, no dimension lines, no props.
-- "scene": 1-2 realistic lifestyle prompts of the product being used in a plausible setting that matches its real use case.
-  * The product must stay identical (shape, colour, material, parts, scale relative to hands/objects).
-  * Physically plausible: rests on a surface / held naturally, correct scale, correct gravity, no floating, no impossible use, no extra products.
-  * Natural light mixed with soft fill, photorealistic, no text.
+- "scene": 1-2 realistic IN-USE lifestyle prompts showing the product actually being used by its real end user in the US.
+  * Name the exact place and action, e.g. "on a cluttered trade-show table while a visitor picks it up", "clipped to a
+    carry-on handle in an airport gate area", "on a kitchen counter next to chopped vegetables while cooking", "on a gym
+    bench beside a water bottle after a workout", "on a desk in a sunlit office during a video call".
+  * The two scene prompts must be DIFFERENT situations (e.g. one personal use, one gifting/office context), not two
+    angles of the same room.
+  * The product stays identical (shape, colour, material, parts) and at true scale next to hands or familiar objects;
+    it must be the clear visual focus, unobstructed and in focus.
+  * Physically plausible: rests on a surface / held naturally, correct scale, correct gravity, no floating, no
+    impossible use, no extra copies of the product, no props that compete with it.
+  * Natural light mixed with soft fill, photorealistic; no text, no logos or brand names on props, no price tags,
+    no watermark.
 
 STYLE REFERENCES (when provided) are DIFFERENT products used only to learn composition, layout, lighting, colour grading and scene treatment.
 Never copy their product, parts, accessories, colours, material or proportions into our product.`
@@ -130,6 +146,9 @@ ${logoDirective}
 ${opts?.styleRefCount ? `STYLE REFERENCES: the LAST ${opts.styleRefCount} reference image(s) are style references only (composition, layout, lighting, background treatment). They may be DIFFERENT products. Never copy their product; only borrow the photographic style.` : ''}
 IMAGE SET REQUESTED: ${[opts?.withDetail !== false ? 'detail' : '', opts?.withScene !== false ? 'scene' : ''].filter(Boolean).join(' + ') || 'main + dimension'}
 MAIN STYLE: ${opts?.mainStyle === 'combo' ? 'combo (hero + selling-point close-up insets, still pure white)' : 'white (single hero + colour variants)'}
+REAL-WORLD USE: before writing the scene prompts, decide from the facts above how a US end user actually uses this product
+(who they are, where and with what, how big it is). Put that thinking into the scene prompts themselves — concrete place,
+action and props — not into separate commentary.
 The reference images (if any) show the real product.${withLogo ? ' The LAST reference image (if provided) is the user\'s brand logo to blend onto the product front in the "main" prompt only.' : ' No logo reference image is provided — do not include any logo in any prompt.'}`
 
   const images = (source.images ?? [])
@@ -164,7 +183,8 @@ function fallbackDetail(source: SourceInfo, index: number): string {
 }
 
 function fallbackScene(source: SourceInfo): string {
-  return `Photorealistic lifestyle photo of the ${source.sourceTitle || 'product'} being used in a realistic everyday setting that matches its real use case, natural light mixed with soft studio fill, product clearly visible and accurate to the reference photos (same shape, colour, material, parts), no text, no numbers, no floating objects, no exaggerated scale.`
+  const where = source.category ? `in a realistic ${source.category} setting` : 'in a realistic everyday setting'
+  return `Photorealistic in-use lifestyle photo of the ${source.sourceTitle || 'product'} being used by an adult in the US ${where} that matches its real function, product shown at TRUE scale next to hands or familiar objects, naturally held or resting on a surface, natural light mixed with soft fill, secondary props slightly out of focus, product sharp and unobstructed, identical shape/colour/material/parts to the reference photos, no text, no logos or brand names on props, no price tags, no floating objects, no extra copies of the product.`
 }
 
 function fallbackMain(source: SourceInfo, withLogo = true): string {

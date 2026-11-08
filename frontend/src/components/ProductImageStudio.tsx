@@ -681,8 +681,11 @@ export function ProductImageStudio({
             <div key={k} className="rounded-lg border border-slate-200 px-2 py-2">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[12px] font-medium text-slate-800">{KIND_LABEL[k]}</span>
-                <span className="text-[11px] text-slate-400">
-                  已选 {plan[k].sources.length ? `${plan[k].sources.length} 张` : '全部产品图'}
+                <span
+                  className="text-[11px] text-slate-400"
+                  title="这里列出全部产品图，不限数量；出图时每张图最多送 6 张参考图给模型（模型上限），按选择顺序取前 6 张"
+                >
+                  已选 {plan[k].sources.length ? `${plan[k].sources.length} 张` : '全部产品图'} · 共 {sources.length} 张可选
                 </span>
                 <Button
                   size="sm"
@@ -697,37 +700,39 @@ export function ProductImageStudio({
                 </Button>
               </div>
 
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                {sources.slice(0, 12).map((u, i) => {
-                  const on = plan[k].sources.includes(u)
-                  return (
-                    <div key={`${k}-${i}`} className="relative">
-                      <button
-                        title={on ? '已选为这张图的参考图（点右上角 × 取消）' : '点一下，作为这张图的参考图'}
-                        onClick={() => void setKindSources(k, on ? plan[k].sources.filter((x) => x !== u) : [...plan[k].sources, u])}
-                        className={cn(
-                          'block rounded border-2 p-0',
-                          on ? 'border-blue-500' : 'border-transparent opacity-70 hover:opacity-100'
-                        )}
-                      >
-                        <Thumb url={u} className="h-10 w-10" />
-                      </button>
-                      {on && (
+              <div className="mt-1 max-h-52 overflow-y-auto pr-1">
+                <div className="flex flex-wrap gap-1.5">
+                  {sources.map((u, i) => {
+                    const on = plan[k].sources.includes(u)
+                    return (
+                      <div key={`${k}-${i}`} className="relative">
                         <button
-                          title="取消这张参考图（不会删掉产品图本身）"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            void setKindSources(k, plan[k].sources.filter((x) => x !== u))
-                          }}
-                          className="absolute -right-1.5 -top-1.5 rounded-full bg-white p-0.5 text-slate-500 shadow ring-1 ring-slate-200 hover:text-rose-600"
+                          title={on ? '已选为这张图的参考图（点右上角 × 取消）' : '点一下，作为这张图的参考图'}
+                          onClick={() => void setKindSources(k, on ? plan[k].sources.filter((x) => x !== u) : [...plan[k].sources, u])}
+                          className={cn(
+                            'block rounded border-2 p-0',
+                            on ? 'border-blue-500' : 'border-transparent opacity-70 hover:opacity-100'
+                          )}
                         >
-                          <X className="h-3 w-3" />
+                          <Thumb url={u} className="h-10 w-10" />
                         </button>
-                      )}
-                    </div>
-                  )
-                })}
-                {sources.length === 0 && <span className="text-[11px] text-slate-400">先在左边加产品图</span>}
+                        {on && (
+                          <button
+                            title="取消这张参考图（不会删掉产品图本身）"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void setKindSources(k, plan[k].sources.filter((x) => x !== u))
+                            }}
+                            className="absolute -right-1.5 -top-1.5 rounded-full bg-white p-0.5 text-slate-500 shadow ring-1 ring-slate-200 hover:text-rose-600"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })}
+                  {sources.length === 0 && <span className="text-[11px] text-slate-400">先在左边加产品图</span>}
+                </div>
               </div>
               {plan[k].sources.length > 0 && (
                 <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-400">
@@ -840,6 +845,10 @@ export function ProductImageStudio({
             placeholder="这次出图的注意点（可空），例如：主图展示正面、细节图拍缝线、场景用办公桌"
             className="h-8 w-full rounded border border-slate-200 px-2 text-[12px] outline-none focus:border-blue-400"
           />
+          <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+            场景图会按产品的真实用途来安排（办公桌、展会现场、通勤、旅行、健身等），并按真实比例出现在手或常见物品旁边；
+            细节图会挑买家下单前最想看的部位（拉链、缝线、握感、印 logo 的面）。
+          </p>
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-2">

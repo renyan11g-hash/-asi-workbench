@@ -365,9 +365,11 @@ async function refToDataUrl(u: string): Promise<string> {
 function buildProductInfoBlock(source: SourceInfo, listingSizeInch?: string): string {
   const lines = [
     source.sourceTitle ? `- Product: ${source.sourceTitle}` : '',
+    source.category ? `- Category: ${source.category}` : '',
     source.materialCn ? `- Material: ${source.materialCn}` : '',
     source.colorsCn ? `- Colours: ${source.colorsCn}` : '',
     source.sizeCn ? `- Size: ${source.sizeCn}` : listingSizeInch ? `- Size: ${listingSizeInch}` : '',
+    source.moq ? `- MOQ: ${source.moq}` : '',
     source.description ? `- Details: ${source.description.slice(0, 600)}` : '',
     source.notes ? `- Notes: ${source.notes.slice(0, 300)}` : '',
   ].filter(Boolean)
@@ -490,7 +492,7 @@ productImagesRouter.put('/product/:productId/plan', (req: Request, res: Response
   const body = z
     .object({
       kind: z.enum(KINDS),
-      sources: z.array(z.string().max(8_000_000)).max(8).optional(),
+      sources: z.array(z.string().max(8_000_000)).max(100).optional(),
       notes: z.string().max(3000).optional(),
       chat: z
         .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().max(4000), at: z.string().optional() }))
@@ -1045,9 +1047,9 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   runTask(task, async () => {
     // 0) 参考图先在服务器侧读成 data URL：外链防盗链 / 链接过期都不会让模型拿不到实物而瞎画
     const refCache = new Map<string, string>()
-    const resolveUrls = async (urls: string[]): Promise<string[]> => {
+    const resolveUrls = async (urls: string[], limit = 6): Promise<string[]> => {
       const out: string[] = []
-      for (const u of urls.slice(0, 4)) {
+      for (const u of urls.slice(0, limit)) {
         try {
           let dataUrl = refCache.get(u)
           if (!dataUrl) {
@@ -1085,7 +1087,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
     const ps =
       promptSet ??
       (promptSet = await runAi(() =>
-        buildImagePromptSet({ ...source, images: kindRefs.main.slice(0, 4) }, settings, allNotes, withLogo, {
+        buildImagePromptSet({ ...source, images: kindRefs.main.slice(0, 6) }, settings, allNotes, withLogo, {
           productInfo,
           styleRefCount: Math.min(styleDataUrls.length, 2),
           mainStyle,
