@@ -5,7 +5,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db, getSetting, setSetting } from '../db'
 import { AppError } from '../middleware/errorHandler'
-import { AiError } from '../services/ai'
+import { AiError, callChat } from '../services/ai'
 import { editImage, generateImage, ImageRef, ImageSettings, testImageConnection } from '../services/image-gen'
 import { buildImagePromptSet, buildIntroSuggestions, translateImageEditInstruction } from '../services/image-prompts'
 import { overlayDimensions } from '../services/dimension-overlay'
@@ -297,6 +297,153 @@ function parseDimensions(source: SourceInfo, listingSizeInch?: string) {
   }
 }
 
+// ---------- 每种图的出图计划（参考哪些产品图 + 生成前对话） ----------
+export interface KindPlan {
+  sources: string[]
+  notes: string
+  chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
+}
+
+const KINDS = ['main', 'dimension', 'detail', 'scene'] as const
+
+function readPlan(productId: string): Record<string, KindPlan> {
+  const out: Record<string, KindPlan> = {}
+  for (const k of KINDS) out[k] = { sources: [], notes: '', chat: [] }
+  try {
+    const rows = db
+      .prepare('SELECT kind, sources, notes, chat FROM product_image_plan WHERE product_id = ?')
+      .all(productId) as unknown as Array<{ kind: string; sources: string; notes: string; chat: string }>
+    for (const r of rows) {
+      out[r.kind] = {
+        sources: JSON.parse(r.sources || '[]') as string[],
+        notes: r.notes || '',
+        chat: JSON.parse(r.chat || '[]') as Array<{ role: 'user' | 'assistant'; content: string; at: string }>,
+      }
+    }
+  } catch {
+    /* 表还没建好时返回空计划 */
+  }
+  return out
+}
+
+function savePlan(productId: string, kind: string, patch: Partial<KindPlan>): Record<string, KindPlan> {
+  const cur = readPlan(productId)[kind] ?? { sources: [], notes: '', chat: [] }
+  const next: KindPlan = {
+    sources: patch.sources ?? cur.sources,
+    notes: patch.notes ?? cur.notes,
+    chat: patch.chat ?? cur.chat,
+  }
+  const now = new Date().toISOString()
+  db.prepare(
+    `INSERT INTO product_image_plan (product_id, kind, sources, notes, chat, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(product_id, kind) DO UPDATE SET sources=excluded.sources, notes=excluded.notes, chat=excluded.chat, updated_at=excluded.updated_at`
+  ).run(productId, kind, JSON.stringify(next.sources), next.notes, JSON.stringify(next.chat), now)
+  return readPlan(productId)
+}
+
+/** 读取四种图的出图计划 */
+productImagesRouter.get('/product/:productId/plan', (req: Request, res: Response) => {
+  const plan = readPlan(String(req.params.productId))
+  res.json({ plan })
+})
+
+/** 保存某种图的参考图 / 注意点 / 对话记录 */
+productImagesRouter.put('/product/:productId/plan', (req: Request, res: Response) => {
+  const productId = String(req.params.productId)
+  const body = z
+    .object({
+      kind: z.enum(KINDS),
+      sources: z.array(z.string().max(8_000_000)).max(8).optional(),
+      notes: z.string().max(3000).optional(),
+      chat: z
+        .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().max(4000), at: z.string().optional() }))
+        .max(40)
+        .optional(),
+    })
+    .parse(req.body ?? {})
+  const plan = savePlan(productId, body.kind, {
+    sources: body.sources,
+    notes: body.notes,
+    chat: body.chat?.map((c) => ({ role: c.role, content: c.content, at: c.at ?? new Date().toISOString() })),
+  })
+  res.json({ plan })
+})
+
+/**
+ * 生成前先对话：让 AI 先读懂产品 + 用户对这张图的要求，给出构图确认和一份「生成注意点」。
+ * 只调文本模型，不消耗出图费用；用户确认后再点生成。
+ */
+productImagesRouter.post('/product/:productId/plan/chat', async (req: Request, res: Response) => {
+  const productId = String(req.params.productId)
+  const body = z
+    .object({
+      kind: z.enum(KINDS),
+      message: z.string().min(1).max(2000),
+      messages: z
+        .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().max(4000) }))
+        .max(30)
+        .optional(),
+    })
+    .parse(req.body ?? {})
+  const product = findProduct(productId)
+  const settings = loadSettings()
+  const plan = readPlan(productId)[body.kind]
+  const kindLabel =
+    body.kind === 'main'
+      ? '主图（纯白底、产品突出、其他颜色小图放下方或右侧）'
+      : body.kind === 'dimension'
+        ? '尺寸图（纯白底、真实外观 + 英寸标注）'
+        : body.kind === 'detail'
+          ? '细节图（真实材质/结构/功能特写）'
+          : '场景图（真实使用场景）'
+
+  const colors = String(product.listing?.colors || product.source.colorsCn || '') || '(未提供)'
+  const material = String(product.listing?.material || product.source.materialCn || '') || '(未提供)'
+
+  const system = `你是 ASI 促销礼品行业的图片美术指导。用户在生成产品图之前，先和你确认这张图要怎么拍。
+
+规则（必须遵守）：
+- 产品必须和用户提供的产品照片完全一致：形状、结构、配件、材质、纹理、比例、颜色都不得改变，不得凭空增加或减少任何部件。
+- 颜色只能用用户明确提供的颜色，照片里没有的颜色一律不许出现。
+- 主图/尺寸图必须纯白底；不要出现任何文字、数字、尺寸线、水印。
+- 你只能给「怎么拍」的建议（构图、角度、光线、留白、展示哪些卖点），不能改动产品本身。
+
+用中文回答，200 字以内，分点说清：①这张图重点展示什么 ②构图/角度怎么安排 ③要避免什么。
+最后单独给一行：NOTES: <一段可直接交给生图模型的中文注意点>`
+
+  const history = (body.messages ?? []).slice(-10)
+  const user = `产品：${product.source.sourceTitle || product.code}
+产品编号：${product.code}
+这张图是：${kindLabel}
+材质：${material}
+可用颜色：${colors}
+用户为这张图选了几张产品参考图：${plan.sources.length || '未单独选，将用产品图'}
+
+对话记录：
+${history.map((m) => `${m.role === 'user' ? '用户' : '你'}：${m.content}`).join('\n') || '(无)'}
+
+用户这次说：${body.message}`
+
+  let reply = ''
+  let notes = ''
+  try {
+    const text = await callChat(settings, system, user, 0.4)
+    const m = text.match(/NOTES:\s*([\s\S]+)$/i)
+    reply = (m ? text.replace(m[0], '') : text).trim()
+    notes = (m ? m[1] : '').trim()
+  } catch (err) {
+    throw new AppError(502, `对话失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  const now = new Date().toISOString()
+  const chat = [...plan.chat, { role: 'user' as const, content: body.message, at: now }]
+  if (reply) chat.push({ role: 'assistant' as const, content: reply, at: now })
+  const mergedNotes = notes ? (plan.notes ? `${plan.notes}\n${notes}` : notes) : plan.notes
+  savePlan(productId, body.kind, { chat, notes: mergedNotes })
+  res.json({ reply, notes, plan: readPlan(productId) })
+})
+
 // ---------- 产品图 / 参考图（两个独立区域） ----------
 /**
  * 「产品图」= 产品自己的真身图（1688 抓的 / 人工上传），是生成时的事实基准；
@@ -501,11 +648,16 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
     .map((r) => r.url)
     .filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
 
-  const mainRefs: ImageRef[] = productUrls
-    .slice(0, 4)
-    .map((u) => ({ url: u }) as ImageRef)
+  // 每种图各自的参考图来自「出图计划」：用户为这张图单独挑的产品图；
+  // 没挑就用产品图兜底（主图多给几张，便于看清结构和颜色）。
+  const plan = productId !== 'preview' ? readPlan(productId) : ({} as Record<string, KindPlan>)
+  const refsForKind = (kind: string): ImageRef[] => {
+    const picked = (plan[kind]?.sources ?? []).filter((u) => productUrls.includes(u))
+    const urls = picked.length ? picked : productUrls.slice(0, kind === 'main' ? 4 : 2)
+    return urls.map((u) => ({ url: u }) as ImageRef)
+  }
+  const mainRefs: ImageRef[] = refsForKind('main')
   if (logo && withLogo) mainRefs.push({ buffer: logo })
-  const plainRefs: ImageRef[] = productUrls.slice(0, 2).map((u) => ({ url: u }) as ImageRef)
   // 参考图放最后 2 张：模型对「靠后的参考图」通常当风格参考，产品事实仍以前面产品图为准
   const refsWithStyle = (base: ImageRef[]): ImageRef[] => [
     ...base,
@@ -514,6 +666,17 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
 
   // 生图前先读产品资料（特点/颜色/材质/场景），拼成事实清单交给提示词编排
   const productInfo = buildProductInfoBlock(source, listingSizeInch)
+  // 每种图在生成前对话里确认过的注意点，带上图种标签一起交给提示词编排
+  const kindNotes = kinds
+    .map((k) => {
+      const n = plan[k]?.notes?.trim()
+      if (!n) return ''
+      const label = k === 'main' ? '主图' : k === 'dimension' ? '尺寸图' : k === 'detail' ? '细节图' : '场景图'
+      return `【${label}】${n}`
+    })
+    .filter(Boolean)
+    .join('\n')
+  const allNotes = [body.notes?.trim(), kindNotes].filter(Boolean).join('\n')
 
   // 异步任务：5 张图逐张生成耗时 1-5 分钟，同步等待会超 Render 100 秒代理超时（502）
   const task = createTask('generate-product-images')
@@ -527,7 +690,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
     const ps =
       promptSet ??
       (promptSet = await runAi(() =>
-        buildImagePromptSet(source, settings, body.notes, withLogo, {
+        buildImagePromptSet(source, settings, allNotes, withLogo, {
           productInfo,
           styleRefCount: Math.min(styleRefs.length, 2),
           mainStyle,
@@ -552,7 +715,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
               : (ps.detail[slot - 1] ?? ps.detail[0] ?? ps.main)
 
       let buf = await runAi(() =>
-        generateImage(settings, prompt, kind === 'main' ? refsWithStyle(mainRefs) : refsWithStyle(plainRefs))
+        generateImage(settings, prompt, kind === 'main' ? refsWithStyle(mainRefs) : refsWithStyle(refsForKind(kind)))
       )
 
       // 主图：外圈刷成纯白。生图模型常给一点点灰底/渐变，而 ASI 目录要求纯白背景。

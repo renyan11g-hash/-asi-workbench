@@ -64,7 +64,8 @@ Prompt requirements per image:
   * One hero product in its primary colour, the largest object in the frame, slightly above centre, filling roughly 55-65% of the frame height.
   * The SAME product in its other available colours shown as SMALLER thumbnails: a horizontal row below the hero, or a vertical column to the right of it when the hero is tall and narrow.
     Each thumbnail: same camera angle, same lighting, same white background, evenly spaced, aligned, never overlapping the hero or each other, each about 25-30% of the hero's height.
-    Only colours that are actually listed for this product — never invent colourways.
+    Only colours that are actually PHOTOGRAPHED in the provided product images — never invent, guess or extrapolate a colourway.
+    If a colour has no photo among the references, it must not appear in the image at all.
   * The rest of the canvas stays empty pure white. Optionally ONE small close-up detail inset of the SAME product in a corner (to hint a feature) if it does not crowd the colour thumbnails; never overlap them, never add text to it.
   * No props, no models, no packaging, no dimensions, no text.
   * LOGO: if "LOGO: none" the product front stays completely clean. Otherwise blend the user's logo (LAST reference image) onto the FRONT of the HERO product only, like a real factory imprint — correct perspective and curvature, subtle fabric/material texture, not a floating sticker. Not on the colour thumbnails. The logo MUST be clearly visible against the product colour: on a dark product recolour the logo artwork to WHITE (or another high-contrast light tone); on a light product keep it dark or in its original colours. Only the logo's colour may change for contrast — its shape and content stay identical.

@@ -616,6 +616,43 @@ export const api = {
     return data.product
   },
 
+  /** 每种图的出图计划（参考哪些产品图 + 生成前对话） */
+  async getImagePlan(productId: string): Promise<{
+    plan: Record<
+      string,
+      { sources: string[]; notes: string; chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }> }
+    >
+  }> {
+    const { data } = await apiClient.get(`/product-images/product/${productId}/plan`)
+    return data
+  },
+
+  async saveImagePlan(
+    productId: string,
+    payload: {
+      kind: 'main' | 'dimension' | 'detail' | 'scene'
+      sources?: string[]
+      notes?: string
+      chat?: Array<{ role: 'user' | 'assistant'; content: string; at?: string }>
+    }
+  ): Promise<{ plan: Record<string, { sources: string[]; notes: string; chat: unknown[] }> }> {
+    const { data } = await apiClient.put(`/product-images/product/${productId}/plan`, payload)
+    return data
+  },
+
+  /** 生成前先和 AI 对话：确认这张图怎么拍，AI 会给一段生成注意点 */
+  async chatImagePlan(
+    productId: string,
+    payload: {
+      kind: 'main' | 'dimension' | 'detail' | 'scene'
+      message: string
+      messages?: Array<{ role: 'user' | 'assistant'; content: string }>
+    }
+  ): Promise<{ reply: string; notes: string; plan: Record<string, { sources: string[]; notes: string }> }> {
+    const { data } = await apiClient.post(`/product-images/product/${productId}/plan/chat`, payload, LONG_TIMEOUT)
+    return data
+  },
+
   /** 产品图（产品真身图，生成时的事实基准） */
   async getSourceImages(productId: string): Promise<{
     images: string[]

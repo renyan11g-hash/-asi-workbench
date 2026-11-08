@@ -61,22 +61,45 @@ export function ProductImageStudio({
   const [refPaste, setRefPaste] = useState('')
   const [fetchedInfo, setFetchedInfo] = useState<{ added: number; total: number; message: string } | null>(null)
 
+  // 每种图各自的参考图 / 注意点 / 生成前对话
+  type KindKey = 'main' | 'dimension' | 'detail' | 'scene'
+  const [plan, setPlan] = useState<
+    Record<KindKey, { sources: string[]; notes: string; chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }> }>
+  >({
+    main: { sources: [], notes: '', chat: [] },
+    dimension: { sources: [], notes: '', chat: [] },
+    detail: { sources: [], notes: '', chat: [] },
+    scene: { sources: [], notes: '', chat: [] },
+  })
+  const [chatKind, setChatKind] = useState<KindKey | null>(null)
+  const [chatInput, setChatInput] = useState('')
+  const [chatBusy, setChatBusy] = useState(false)
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [src, rf, imgs] = await Promise.all([
+      const [src, rf, imgs, pl] = await Promise.all([
         api.getSourceImages(productId),
         api.listRefImages(productId),
         api.listProductImages(productId),
+        api.getImagePlan(productId),
       ])
       setSources(src.images ?? [])
       setRefs(rf.refs ?? [])
       setImages(imgs ?? [])
+      const p = pl.plan ?? {}
+      setPlan({
+        main: p.main ?? { sources: [], notes: '', chat: [] },
+        dimension: p.dimension ?? { sources: [], notes: '', chat: [] },
+        detail: p.detail ?? { sources: [], notes: '', chat: [] },
+        scene: p.scene ?? { sources: [], notes: '', chat: [] },
+      } as typeof plan)
     } catch {
       /* 单个接口失败不阻塞页面 */
     } finally {
       setLoading(false)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId])
 
   useEffect(() => {
@@ -160,8 +183,36 @@ export function ProductImageStudio({
     reader.readAsDataURL(file)
   }
 
-  const generate = async () => {
-    if (!kinds.length) {
+  /** 生成前对话：把用户这句话发给 AI，AI 回复构图建议并把注意点写进这张图的 notes */
+  const sendChat = async () => {
+    if (!chatKind || !chatInput.trim()) return
+    const kind = chatKind
+    const msg = chatInput.trim()
+    setChatBusy(true)
+    setChatInput('')
+    try {
+      const r = await api.chatImagePlan(productId, {
+        kind,
+        message: msg,
+        messages: plan[kind].chat.map((m) => ({ role: m.role, content: m.content })),
+      })
+      const now = new Date().toISOString()
+      setPlan((cur) => ({
+        ...cur,
+        [kind]: {
+          ...cur[kind],
+          chat: [...cur[kind].chat, { role: 'user', content: msg, at: now }, ...(r.reply ? [{ role: 'assistant' as const, content: r.reply, at: now }] : [])],
+          notes: r.plan?.[kind]?.notes ?? cur[kind].notes,
+        },
+      }))
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setChatBusy(false)
+    }
+  }
+
+  const generate = async () => {    if (!kinds.length) {
       toast.error('至少选一种图')
       return
     }
@@ -376,7 +427,85 @@ export function ProductImageStudio({
         </div>
       </div>
 
-      {/* 2. 生成设置 */}
+      {/* 2. 每种图各自的参考图与生成前对话 */}
+      <div className="rounded-xl border border-slate-200 bg-white p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-[13px] font-semibold text-slate-800">每张图参考哪些产品图</div>
+            <div className="text-[11px] text-slate-500">
+              四种图分别选各自的参考图，AI 只照着选中的图画；一张都不选就用全部产品图。生成前可以先和 AI 对话确认怎么拍。
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-2 grid gap-2 lg:grid-cols-2">
+          {(['main', 'dimension', 'detail', 'scene'] as const).map((k) => (
+            <div key={k} className="rounded-lg border border-slate-200 px-2 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[12px] font-medium text-slate-800">{KIND_LABEL[k]}</span>
+                <span className="text-[11px] text-slate-400">
+                  已选 {plan[k].sources.length ? `${plan[k].sources.length} 张` : '全部产品图'}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto h-6 px-2 text-[11px]"
+                  onClick={() => {
+                    setChatKind(k)
+                    setChatInput('')
+                  }}
+                >
+                  <MessageSquare className="mr-0.5 h-3 w-3" /> 先和 AI 对话
+                </Button>
+              </div>
+
+              <div className="mt-1 flex flex-wrap gap-1">
+                {sources.slice(0, 12).map((u, i) => {
+                  const on = plan[k].sources.includes(u)
+                  return (
+                    <button
+                      key={`${k}-${i}`}
+                      title={on ? '点击取消' : '作为这张图的参考图'}
+                      onClick={async () => {
+                        const next = on ? plan[k].sources.filter((x) => x !== u) : [...plan[k].sources, u]
+                        try {
+                          const r = await api.saveImagePlan(productId, { kind: k, sources: next })
+                          setPlan((cur) => ({ ...cur, [k]: { ...cur[k], ...(r.plan[k] ?? {}) } }))
+                        } catch (err) {
+                          toast.error(getErrorMessage(err))
+                        }
+                      }}
+                      className={cn(
+                        'rounded border-2 p-0',
+                        on ? 'border-blue-500' : 'border-transparent opacity-70 hover:opacity-100'
+                      )}
+                    >
+                      <img src={u} alt="" className="h-10 w-10 rounded object-cover" />
+                    </button>
+                  )
+                })}
+                {sources.length === 0 && <span className="text-[11px] text-slate-400">先在左边加产品图</span>}
+              </div>
+
+              <input
+                value={plan[k].notes}
+                onChange={(e) => setPlan((cur) => ({ ...cur, [k]: { ...cur[k], notes: e.target.value } }))}
+                onBlur={async () => {
+                  try {
+                    await api.saveImagePlan(productId, { kind: k, notes: plan[k].notes })
+                  } catch {
+                    /* 静默失败，下次保存会带上 */
+                  }
+                }}
+                placeholder="这张图的注意点（对话后自动填入，也可手改）"
+                className="mt-1 h-7 w-full rounded border border-slate-200 px-2 text-[11px] outline-none focus:border-blue-400"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 3. 生成设置 */}
       <div className="rounded-xl border border-slate-200 bg-white p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-[13px] font-semibold text-slate-800">生成哪些图</div>
@@ -516,6 +645,61 @@ export function ProductImageStudio({
           </div>
         )}
       </div>
+
+      {/* 生成前对话：确认这张图怎么拍，AI 会给一段注意点 */}
+      {chatKind && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 sm:items-center" onClick={() => setChatKind(null)}>
+          <div
+            className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl sm:rounded-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+              <div className="text-[13px] font-semibold text-slate-800">
+                生成前对话 · {KIND_LABEL[chatKind]}
+              </div>
+              <button onClick={() => setChatKind(null)} className="rounded p-1 text-slate-400 hover:bg-slate-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+              {plan[chatKind].chat.length === 0 && (
+                <p className="text-[12px] text-slate-500">
+                  告诉 AI 这张图想怎么拍，例如：「主图展示正面，白色小图放右下角，不要加文字」。AI 会确认构图并给出生图注意点。
+                </p>
+              )}
+              {plan[chatKind].chat.map((m, i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    'rounded-lg px-2.5 py-1.5 text-[12px] leading-relaxed',
+                    m.role === 'user' ? 'ml-8 bg-blue-50 text-slate-800' : 'mr-8 bg-slate-100 text-slate-700'
+                  )}
+                >
+                  {m.content}
+                </div>
+              ))}
+              {chatBusy && <div className="text-[11px] text-slate-400">AI 正在回复…</div>}
+            </div>
+            <div className="flex gap-1.5 border-t border-slate-100 px-4 py-2.5">
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void sendChat()
+                  }
+                }}
+                placeholder="说一句这张图的要求…"
+                className="h-8 flex-1 rounded border border-slate-200 px-2 text-[12px] outline-none focus:border-blue-400"
+              />
+              <Button size="sm" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendChat()}>
+                {chatBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : '发送'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

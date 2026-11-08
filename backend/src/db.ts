@@ -152,6 +152,20 @@ CREATE TABLE IF NOT EXISTS product_ref_images (
 );
 CREATE INDEX IF NOT EXISTS idx_product_ref_images_product ON product_ref_images(product_id);
 
+-- 每种图（主图/尺寸图/细节图/场景图）各自的出图计划：
+-- sources = 这张图要参考的产品图（从产品图里挑，保证图种之间参照不同图片，更准）
+-- notes   = 生成前和 AI 对话确认的注意点
+-- chat    = 对话记录（生成前先聊清楚，避免凭空发挥）
+CREATE TABLE IF NOT EXISTS product_image_plan (
+  product_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  sources TEXT NOT NULL DEFAULT '[]',
+  notes TEXT NOT NULL DEFAULT '',
+  chat TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (product_id, kind)
+);
+
 -- 品牌 Logo（全局单条，key='brand-logo'，value=文件名）
 CREATE TABLE IF NOT EXISTS brand_assets (
   key TEXT PRIMARY KEY,
