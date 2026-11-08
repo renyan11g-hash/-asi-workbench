@@ -44,6 +44,8 @@ Rules for every prompt:
 - PRODUCT FIDELITY IS THE HIGHEST PRIORITY. The generated product must be indistinguishable from the reference photos:
   identical silhouette and proportions, identical construction details (seams, stitching, zippers, pulls, buckles, handles, mesh panels, pockets, hardware), identical material sheen and texture, identical colour.
   Never beautify or redesign: no restyling, no simplification, no added or removed parts, no colour shift, no mirrored image, no change of material or finish.
+  Metal hardware (zippers, pulls, rings, D-rings, buckles, snaps, rivets, chain) must keep its EXACT original finish and tone:
+  silver/stainless stays silver, gold stays gold, black stays black, rose-gold stays rose-gold. Never upgrade the hardware to look more premium.
   If something is not visible in the reference images, do not invent it.
 - BACKGROUND: every "main" and "dimension" image sits on a PURE WHITE background (#FFFFFF, RGB 255,255,255):
   seamless, flat, no gradient, no vignette, no grey sweep, no floor line, no coloured backdrop, no scenery, no reflection pool.

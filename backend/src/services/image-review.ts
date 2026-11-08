@@ -87,10 +87,16 @@ Never suggest improvements, never rewrite prompts; only state what is wrong.
 Checks (all required):
 1. product  产品一致性 — is it the same product as the originals (silhouette, proportions, construction)?
 2. color    颜色一致性 — does any colour appear that is NOT in the allowed list and NOT visible in the originals?
+   Metal hardware finish counts as colour: silver hardware must not become gold/rose-gold, and vice versa.
 3. structure 结构一致性 — was the structure changed (parts added, removed, reshaped, mirrored)?
 4. accessory 配件一致性 — were accessories/parts added or removed?
 5. scene    场景合理性 — is the usage scene physically plausible (no floating objects, wrong scale, impossible use)?
-6. background 背景要求 — main and dimension images MUST be pure white (#FFFFFF) seamless with no gradient/props/floor line. For detail/scene images this check passes automatically.
+6. background 背景要求 — main and dimension images MUST be pure white (#FFFFFF) seamless, no gradient, no scenery, no props, no floor line.
+   Two allowances for MAIN images only:
+   - a row/column of SMALL COLOUR VARIANTS of the SAME product (the ASI colourway layout) is REQUIRED, not a prop:
+     judge those variants under checks 2/3/4, do not fail the background because of them.
+   - a soft contact shadow directly under the product is acceptable; a long cast shadow, reflection pool or grey floor gradient is not.
+   For detail/scene images this check passes automatically.
 7. quality  图片质量 — sharp, no blur, no warping, no extra limbs/objects, composition not broken.
 
 NOTE: do NOT evaluate logos at all — the source product is usually logo-free, and any logo is added deliberately afterwards.
