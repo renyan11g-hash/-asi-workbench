@@ -419,7 +419,7 @@ export default function ListingReviews() {
                     </td>
                     <td className="py-2 pr-2">
                       {thumb ? (
-                        <img src={thumb} alt="" className="h-10 w-10 rounded border border-slate-200 object-cover" />
+                        <img src={api.proxyImageUrl(thumb)} alt="" className="h-10 w-10 rounded border border-slate-200 object-cover" />
                       ) : (
                         <span className="text-slate-300">—</span>
                       )}

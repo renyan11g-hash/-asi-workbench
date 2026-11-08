@@ -242,7 +242,7 @@ function ImageStack({ images }: { images: string[] }) {
       {show.map((u, i) => (
         <img
           key={`${u.slice(0, 24)}-${i}`}
-          src={u}
+          src={api.proxyImageUrl(u)}
           alt=""
           className="h-8 w-8 rounded border border-slate-200 bg-white object-cover"
         />
@@ -1339,7 +1339,7 @@ function ItemRow({
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {(draft.images ?? []).map((u, i) => (
                       <div key={`${u}-${i}`} className="group relative h-14 w-14 overflow-hidden rounded border border-slate-200">
-                        <img src={u} alt="" className="h-full w-full object-cover" />
+                        <img src={api.proxyImageUrl(u)} alt="" className="h-full w-full object-cover" />
                         <button
                           type="button"
                           className="absolute right-0 top-0 hidden rounded-bl bg-black/60 px-1 text-[10px] text-white group-hover:block"

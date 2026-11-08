@@ -198,7 +198,7 @@ export function ProductSpecCards() {
                       }
                     />
                     {thumb ? (
-                      <img src={thumb} alt="" className="h-12 w-12 shrink-0 rounded border border-slate-200 object-cover" />
+                      <img src={api.proxyImageUrl(thumb)} alt="" className="h-12 w-12 shrink-0 rounded border border-slate-200 object-cover" />
                     ) : (
                       <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded border border-dashed border-slate-300 bg-slate-50">
                         <Database className="h-4 w-4 text-slate-300" />

@@ -201,3 +201,23 @@ asi-workbench/
 - 评估任务复用 `production_jobs`（kind='evaluate'）：评估 + 看图找同款一次跑完，写 `evaluation`/`similar`/`drafts`，标 `eval_review='pending'`。
 - 一次性迁移已执行（2026-11-07）：删除 21 条非 listed（含回收站 2 条），75 条重编 GLS0001–GLS0075，
   备份文件在 `C:\Users\Administrator\Desktop\asi-backup-before-gls-20261107.json`。
+
+## 10. 图片来源与出图链路（2026-11-08 修「破损图片」）
+
+- **为什么会破图**：1688/alicdn 对 `Referer` 做防盗链 —— 从我们域名引用会返回 403（实测带
+  `Referer: https://asi-workbench.onrender.com/` = 403，带 `Referer: https://detail.1688.com/` = 200）。
+  复制过来的链接还会过期。破图不只是难看：生图时模型拿不到实物参考，就会「凭空捏造」产品。
+- **统一入口** `services/image-source.ts`：带 1688 Referer 下载、按文件头校正格式、压到 1600px JPEG。
+  所有取图（代理、转存、出图参考、AI 审查、批量内联）都走这里，不要另写 fetch。
+- **转存（镜像）**：加图/抓图/粘贴的瞬间就下载进 `image_blobs`，`products.images` 里存
+  `/api/product-images/{productId}/src-<内容哈希>.jpg`。同一张图重复抓取只落一个文件（内容寻址）。
+- **显示**：前端一律 `api.proxyImageUrl(url)`；外链走 `GET /api/product-images/proxy?url=`（服务器带
+  Referer 取回），站内图直接用。破图显示「破损」并支持点一下重新下载。
+- **出图**：`/api/product-images/generate` 先把参考图在服务器侧读成 data URL 再发给模型，
+  外链失效/防盗链不会再导致「模型没见过产品」；一张都读不到就直接报错，不允许瞎画。
+- **AI 自动挑图**：`POST /api/product-images/product/:id/plan/auto` 用视觉模型给每张图打
+  正面/侧面/特写/场景标签，自动分配四种图的参考图。
+- **粘贴上传**：产品图/参考图区支持 Ctrl+V 和拖拽（`frontend/src/lib/image-file.ts` 压到 1600px JPEG），
+  不需要任何看图插件。
+- **ASI 导入**：Excel PICTURE 列写公开地址 `/api/product-images/public/{pid}/{file}`（免登录、
+  文件名是内容哈希）；`gls-export.ts` 会把 base64 大图落成文件再给公开地址。

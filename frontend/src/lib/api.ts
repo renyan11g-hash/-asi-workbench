@@ -641,6 +641,20 @@ export const api = {
   },
 
   /** 生成前先和 AI 对话：确认这张图怎么拍，AI 会给一段生成注意点 */
+  /** AI 自动挑图：认每张产品图是正面/侧面对比/特写/场景，再按用途分配参考图 */
+  async autoAssignImagePlan(productId: string): Promise<{
+    picks: { main: string[]; dimension: string[]; detail: string[]; scene: string[] }
+    roles: Array<{ index?: number; role?: string; reason?: string }>
+    count: number
+    plan: Record<
+      string,
+      { sources: string[]; notes: string; chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }> }
+    >
+  }> {
+    const { data } = await apiClient.post(`/product-images/product/${productId}/plan/auto`, {}, LONG_TIMEOUT)
+    return data
+  },
+
   async chatImagePlan(
     productId: string,
     payload: {
@@ -671,19 +685,62 @@ export const api = {
     total: number
     addedImages: string[]
     images: string[]
+    mirrored: number
+    failed: Array<{ url: string; error: string }>
     message: string
   }> {
     const { data } = await apiClient.post(
       `/product-images/product/${productId}/fetch-source`,
       {},
-      { timeout: 150_000 }
+      { timeout: 180_000 }
     )
     return data
   },
 
-  /** 手动粘贴产品图地址（1688 抓不到时兜底） */
-  async addSourceImages(productId: string, urls: string[]): Promise<{ images: string[]; added: number }> {
-    const { data } = await apiClient.post(`/product-images/product/${productId}/sources`, { urls })
+  /** 手动粘贴产品图地址 / base64（后端会立刻下载转存到我们自己的存储） */
+  async addSourceImages(
+    productId: string,
+    urls: string[]
+  ): Promise<{
+    images: string[]
+    added: number
+    mirrored: number
+    failed: Array<{ url: string; error: string }>
+  }> {
+    const { data } = await apiClient.post(
+      `/product-images/product/${productId}/sources`,
+      { urls },
+      { timeout: 180_000 }
+    )
+    return data
+  },
+
+  /** 修复破损图：把还没转存的外链产品图下载到本地存储（可只传某几张） */
+  async mirrorSourceImages(
+    productId: string,
+    urls?: string[]
+  ): Promise<{
+    images: string[]
+    mirrored: number
+    failed: Array<{ url: string; error: string }>
+  }> {
+    const { data } = await apiClient.post(
+      `/product-images/product/${productId}/sources/mirror`,
+      urls?.length ? { urls } : {},
+      { timeout: 180_000 }
+    )
+    return data
+  },
+
+  /** 图片体检：外链还能不能打开 */
+  async checkSourceImages(productId: string): Promise<{
+    results: Array<{ url: string; ok: boolean; contentType: string; bytes: number; error: string }>
+  }> {
+    const { data } = await apiClient.post(
+      `/product-images/product/${productId}/sources/check`,
+      {},
+      { timeout: 120_000 }
+    )
     return data
   },
 
@@ -704,8 +761,14 @@ export const api = {
   async addRefImages(
     productId: string,
     payload: { urls?: string[]; images?: string[]; note?: string }
-  ): Promise<{ refs: Array<{ id: string; url: string; createdAt: string; note: string }>; added: number }> {
-    const { data } = await apiClient.post(`/product-images/product/${productId}/refs`, payload)
+  ): Promise<{
+    refs: Array<{ id: string; url: string; createdAt: string; note: string }>
+    added: number
+    failed: Array<{ url: string; error: string }>
+  }> {
+    const { data } = await apiClient.post(`/product-images/product/${productId}/refs`, payload, {
+      timeout: 180_000,
+    })
     return data
   },
 
@@ -825,6 +888,23 @@ export const api = {
   productImageUrl(productId: string, file: string): string {
     const baseURL = import.meta.env.VITE_API_URL || '/api'
     return `${baseURL}/product-images/${productId}/${file}`
+  },
+
+  /**
+   * 任意图片地址 → 可直接放进 img src 的地址。
+   * 1688/alicdn 有防盗链：浏览器从我们域名直连会变成破损图，统一走服务器代理，
+   * 服务器带 1688 Referer 取回再转发；已经存到我们自己存储的图片（/api/...）直接用。
+   */
+  proxyImageUrl(url: string | null | undefined): string {
+    const u = (url ?? '').trim()
+    if (!u) return ''
+    if (u.startsWith('data:image/') || u.startsWith('blob:')) return u
+    if (u.startsWith('/api/')) return u
+    if (/^https?:\/\//i.test(u)) {
+      const baseURL = import.meta.env.VITE_API_URL || '/api'
+      return `${baseURL}/product-images/proxy?url=${encodeURIComponent(u)}`
+    }
+    return ''
   },
 
   /** 评估库草稿 → 产品档案（有了档案才能生成英文链接） */

@@ -1,11 +1,11 @@
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db, getSetting, setSetting } from '../db'
 import { AppError } from '../middleware/errorHandler'
-import { AiError, callChat } from '../services/ai'
+import { AiError, callChat, callChatJson } from '../services/ai'
 import { editImage, generateImage, ImageRef, ImageSettings, testImageConnection } from '../services/image-gen'
 import { buildImagePromptSet, buildIntroSuggestions, translateImageEditInstruction } from '../services/image-prompts'
 import { overlayDimensions } from '../services/dimension-overlay'
@@ -15,6 +15,16 @@ import { ProductImage, ProductImageKind, SourceInfo } from '../types'
 import { reviewProductImage } from '../services/image-review'
 import { fetch1688Page } from './products'
 import { loadSettings } from './settings'
+import {
+  contentTypeOf,
+  dataUrlToBuffer,
+  fetchRemoteImage,
+  isHttpUrl,
+  isManagedImage,
+  normalizeImage,
+  normalizeRemoteUrl,
+  toJpegDataUrl,
+} from '../services/image-source'
 import { createTask, getTask, runTask, updateTask } from '../services/task-manager'
 import { findProduct } from './products'
 
@@ -38,14 +48,112 @@ function blobKey(productId: string, file: string): string {
   return `${productId}/${path.basename(file)}`
 }
 
-function saveImageFile(productId: string, buf: Buffer): string {
-  const file = `${Date.now()}-${randomUUID().slice(0, 8)}.png`
+function saveImageFile(productId: string, buf: Buffer, ext = 'png'): string {
+  const safeExt = /^(png|jpg|webp|gif|bmp)$/i.test(ext) ? ext.toLowerCase() : 'png'
+  const file = `${Date.now()}-${randomUUID().slice(0, 8)}.${safeExt}`
   fs.writeFileSync(path.join(productDir(productId), file), buf)
   db.prepare('INSERT INTO image_blobs (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data').run(
     blobKey(productId, file),
     buf
   )
   return file
+}
+
+/** 我们自己存储里的图片地址（同源，不分防盗链，部署后从 DB 恢复） */
+function managedImageUrl(productId: string, file: string): string {
+  return `/api/product-images/${productId}/${path.basename(file)}`
+}
+
+/**
+ * 内容寻址保存（文件名=图片内容哈希）：
+ * 同一张图不管从哪个链接、抓几次都落到同一个文件，产品图列表自然去重，
+ * 也不会因为重复抓取而堆一堆一样的图。
+ */
+function saveContentImage(productId: string, buf: Buffer, ext: string): string {
+  const safeExt = /^(png|jpg|webp|gif|bmp)$/i.test(ext) ? ext.toLowerCase() : 'jpg'
+  const hash = createHash('sha1').update(buf).digest('hex').slice(0, 16)
+  const file = `src-${hash}.${safeExt}`
+  const fp = path.join(productDir(productId), file)
+  if (!fs.existsSync(fp)) {
+    try {
+      fs.writeFileSync(fp, buf)
+      db.prepare(
+        'INSERT INTO image_blobs (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data'
+      ).run(blobKey(productId, file), buf)
+    } catch {
+      /* 写缓存失败不阻塞，真身本来就在外部链接/数据库 */
+    }
+  }
+  return managedImageUrl(productId, file)
+}
+
+/** 把外链图片下载下来存进我们自己的存储，返回新地址；失败抛错（带原因） */
+async function mirrorImage(productId: string, rawUrl: string): Promise<string> {
+  const remote = await fetchRemoteImage(rawUrl, { timeoutMs: 6000 })
+  const norm = await normalizeImage(remote.buffer, { max: 1600, quality: 88 })
+  return saveContentImage(productId, norm.buffer, norm.ext)
+}
+
+interface MirrorFailure {
+  url: string
+  error: string
+}
+
+/** 批量转存（并发 4，单张 6 秒超时）；失败的保留原地址并回报原因 */
+async function mirrorImages(
+  productId: string,
+  urls: string[],
+  opts?: { deadline?: number }
+): Promise<{ mapped: Map<string, string>; failed: MirrorFailure[] }> {
+  const mapped = new Map<string, string>()
+  const failed: MirrorFailure[] = []
+  const queue = urls.filter((u) => isHttpUrl(u))
+  const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+    for (;;) {
+      const u = queue.shift()
+      if (!u) return
+      // 总时长兜底：Render 代理 100 秒就断，宁可留几张「稍后重试」也不要整页 502
+      if (opts?.deadline && Date.now() > opts.deadline) {
+        failed.push({ url: u, error: '下载超时，稍后点「一键修复/转存」重试' })
+        continue
+      }
+      try {
+        mapped.set(u, await mirrorImage(productId, u))
+      } catch (err) {
+        failed.push({ url: u, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+  })
+  await Promise.all(workers)
+  return { mapped, failed }
+}
+
+/** 把产品图地址换成本地存储地址（能转存的转存，转不了的保留原链接） */
+function mergeSourceImages(productId: string, current: string[], incoming: string[], mapped: Map<string, string>) {
+  const conv = (u: string) => mapped.get(u) ?? u
+  const merged = Array.from(new Set([...current.map(conv), ...incoming.map(conv)]))
+  db.prepare('UPDATE products SET images=?, updated_at=? WHERE id=?').run(
+    JSON.stringify(merged),
+    new Date().toISOString(),
+    productId
+  )
+  return merged
+}
+
+/** 图片地址转存后，把「每种图选中的参考图」里对应的老地址一起换掉，否则选好的参考图会失效 */
+function remapPlanSources(productId: string, mapped: Map<string, string>): void {
+  if (!mapped.size) return
+  let plans: Record<string, KindPlan>
+  try {
+    plans = readPlan(productId)
+  } catch {
+    return
+  }
+  for (const k of KINDS) {
+    const cur = plans[k]?.sources ?? []
+    const next = cur.map((u) => mapped.get(u) ?? u)
+    if (next.some((u, i) => u !== cur[i])) savePlan(productId, k, { sources: next })
+  }
 }
 
 function readImageFile(productId: string, file: string): Buffer {
@@ -237,7 +345,23 @@ const generateSchema = z.object({
   withLogo: z.boolean().optional(),
 })
 
-/** 生图前把产品资料读成一段事实清单（特点/颜色/材质/使用场景），让模型先理解再画 */
+/** 把任意图片地址读成 data URL（模型一定读得到；外链防盗链/过期都不影响出图） */
+async function refToDataUrl(u: string): Promise<string> {
+  if (u.startsWith('data:image/')) {
+    const parsed = dataUrlToBuffer(u)
+    if (!parsed) throw new Error('图片数据损坏')
+    return toJpegDataUrl(parsed.buffer, 1200, 84)
+  }
+  if (isManagedImage(u)) {
+    const m = /^\/api\/product-images\/([^/]+)\/([^/?#]+)/.exec(u)
+    if (!m) throw new Error('图片地址无法识别')
+    return toJpegDataUrl(readImageFile(decodeURIComponent(m[1]), decodeURIComponent(m[2])), 1200, 84)
+  }
+  const remote = await fetchRemoteImage(u, { timeoutMs: 9000 })
+  return toJpegDataUrl(remote.buffer, 1200, 84)
+}
+
+/** 生成前的产品资料 */
 function buildProductInfoBlock(source: SourceInfo, listingSizeInch?: string): string {
   const lines = [
     source.sourceTitle ? `- Product: ${source.sourceTitle}` : '',
@@ -306,6 +430,18 @@ export interface KindPlan {
 
 const KINDS = ['main', 'dimension', 'detail', 'scene'] as const
 
+function kindLabelOf(kind: string): string {
+  return kind === 'main'
+    ? '主图'
+    : kind === 'dimension'
+      ? '尺寸图'
+      : kind === 'detail'
+        ? '细节图'
+        : kind === 'scene'
+          ? '场景图'
+          : kind
+}
+
 function readPlan(productId: string): Record<string, KindPlan> {
   const out: Record<string, KindPlan> = {}
   for (const k of KINDS) out[k] = { sources: [], notes: '', chat: [] }
@@ -368,6 +504,113 @@ productImagesRouter.put('/product/:productId/plan', (req: Request, res: Response
     chat: body.chat?.map((c) => ({ role: c.role, content: c.content, at: c.at ?? new Date().toISOString() })),
   })
   res.json({ plan })
+})
+
+/**
+ * 自动挑图：让视觉模型先认清每张产品图是「正面 / 侧面 / 特写 / 场景 / 其他颜色」，
+ * 再按用途给主图/尺寸图/细节图/场景图各挑参考图。
+ * 用户手上十几张图往往分不清哪张适合哪种图，这一步省掉逐张点选。
+ */
+productImagesRouter.post('/product/:productId/plan/auto', async (req: Request, res: Response) => {
+  const productId = String(req.params.productId)
+  const p = findProduct(productId)
+  const settings = loadSettings()
+  const urls = (p.source.images ?? [])
+    .filter((u) => isHttpUrl(u) || isManagedImage(u) || u.startsWith('data:image/'))
+    .slice(0, 6)
+  if (!urls.length) throw new AppError(400, '还没有产品图：先「从 1688 抓取」或上传/粘贴产品图')
+
+  // 转成模型能读的 data URL（外链防盗链/失效都不影响）
+  const images: string[] = []
+  for (const u of urls) {
+    try {
+      images.push(await refToDataUrl(u))
+    } catch {
+      /* 单张失败跳过 */
+    }
+  }
+  if (!images.length)
+    throw new AppError(400, '产品图都读不出来（链接可能已失效）：先点「一键修复/转存」或重新上传图片')
+
+  const system = `You are a product-photo editor for a US promotional-products (ASI) catalogue.
+You receive several photos of the SAME product, numbered 1..N in the order they are sent.
+
+Classify every photo into exactly one role:
+- FRONT: clean front or three-quarter view showing the whole product clearly, little clutter
+- SIDE: straight side / top / back / orthographic view, useful for showing dimensions
+- DETAIL: close-up of material, stitching, texture, structure, mechanism or accessory
+- SCENE: product in real use / lifestyle / model / environment (not a clean studio shot)
+- COLOR: photo included mainly to show another colourway
+- OTHER: anything else
+
+Then choose the best reference photos for four catalogue images:
+- MAIN: 1-3 photos, prefer FRONT; must show shape and colour clearly
+- DIMENSION: 1-2 photos, prefer SIDE or a distortion-free FRONT
+- DETAIL: 1-2 photos, prefer DETAIL close-ups
+- SCENE: 1-2 photos, prefer SCENE; if there is none, use the best FRONT
+
+Output STRICT JSON only:
+{"roles":[{"index":1,"role":"FRONT","reason":"short"}],"picks":{"MAIN":[1,2],"DIMENSION":[1],"DETAIL":[3],"SCENE":[4]}}
+
+Rules:
+- Only use indices that exist.
+- Prefer variety; do not pick the same photo for every slot unless it is the only one.
+- Never invent photos, features or roles that are not visible.`
+
+  let raw: {
+    roles?: Array<{ index?: number; role?: string; reason?: string }>
+    picks?: Record<string, unknown>
+  }
+  try {
+    raw = await callChatJson<typeof raw>(
+      settings,
+      system,
+      `Photos of one product, numbered 1..${images.length} in the order sent. Classify them and pick the references.`,
+      0.2,
+      images
+    )
+  } catch (err) {
+    throw new AppError(502, `自动挑图失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  const max = urls.length
+  const pick = (key: string, limit: number): string[] => {
+    const list = Array.isArray(raw.picks?.[key]) ? (raw.picks?.[key] as unknown[]) : []
+    return Array.from(
+      new Set(
+        list
+          .map((v) => Number(v))
+          .filter((n) => Number.isInteger(n) && n >= 1 && n <= max)
+          .map((n) => urls[n - 1])
+      )
+    ).slice(0, limit)
+  }
+  const fromRole = (roles: string[], limit: number): string[] =>
+    Array.from(
+      new Set(
+        (raw.roles ?? [])
+          .filter(
+            (r) =>
+              typeof r?.index === 'number' &&
+              r.index >= 1 &&
+              r.index <= max &&
+              roles.includes(String(r.role ?? '').toUpperCase())
+          )
+          .map((r) => urls[Number(r.index) - 1])
+      )
+    ).slice(0, limit)
+
+  const picks = {
+    main: pick('MAIN', 3).length ? pick('MAIN', 3) : fromRole(['FRONT'], 2).length ? fromRole(['FRONT'], 2) : urls.slice(0, 2),
+    dimension: pick('DIMENSION', 2).length ? pick('DIMENSION', 2) : fromRole(['SIDE', 'FRONT'], 2),
+    detail: pick('DETAIL', 2).length ? pick('DETAIL', 2) : fromRole(['DETAIL'], 2),
+    scene: pick('SCENE', 2).length ? pick('SCENE', 2) : fromRole(['SCENE'], 2),
+  }
+
+  for (const k of KINDS) {
+    if (picks[k].length) savePlan(productId, k, { sources: picks[k] })
+  }
+  res.json({ picks, roles: raw.roles ?? [], count: urls.length, plan: readPlan(productId) })
 })
 
 /**
@@ -481,7 +724,7 @@ productImagesRouter.get('/product/:productId/sources', (req: Request, res: Respo
     count: images.length,
     sourceUrl: p.source.sourceUrl ?? '',
     /** 已经抓到过 1688 图没有（没有就可以点「从 1688 抓取」） */
-    hasSourceImages: images.some((u) => /^https?:\/\//.test(u) || u.startsWith('data:image')),
+    hasSourceImages: images.some((u) => /^https?:\/\//.test(u) || isManagedImage(u) || u.startsWith('data:image')),
   })
 })
 
@@ -501,41 +744,134 @@ productImagesRouter.post('/product/:productId/fetch-source', async (req: Request
   }
   const before = new Set(p.source.images ?? [])
   const added = fetched.filter((u) => !before.has(u))
-  const merged = Array.from(new Set([...(p.source.images ?? []), ...fetched]))
-  if (added.length) {
-    db.prepare('UPDATE products SET images=?, updated_at=? WHERE id=?').run(
-      JSON.stringify(merged),
-      new Date().toISOString(),
-      id
-    )
-  }
+  // 抓到的 1688 外链立刻下载转存：以后链接失效/防盗链都不会再变成破损图，出图也一定读得到
+  const { mapped, failed } = await mirrorImages(id, added.slice(0, 20), { deadline: Date.now() + 35_000 })
+  const merged = mergeSourceImages(id, p.source.images ?? [], fetched, mapped)
+  remapPlanSources(id, mapped)
   res.json({
     ok: true,
     added: added.length,
     total: merged.length,
-    /** 这次新增的图（前端高亮展示「抓到哪几张」） */
-    addedImages: added,
+    /** 这次新增的图（前端高亮展示「抓到哪几张」，已经是本地地址） */
+    addedImages: added.map((u) => mapped.get(u) ?? u),
     images: merged,
+    mirrored: mapped.size,
+    failed,
     message,
   })
 })
 
-/** 产品图：手动追加图片地址（1688 抓不到时的兜底） */
-productImagesRouter.post('/product/:productId/sources', (req: Request, res: Response) => {
+/** 产品图：手动追加图片地址（1688 抓不到时的兜底）。加进来时立刻下载转存，避免以后链接失效变破损图 */
+productImagesRouter.post('/product/:productId/sources', async (req: Request, res: Response) => {
   const id = String(req.params.productId)
-  const body = z.object({ urls: z.array(z.string().max(4000)).min(1).max(20) }).parse(req.body ?? {})
+  const body = z
+    .object({ urls: z.array(z.string().max(8_000_000)).min(1).max(20) })
+    .parse(req.body ?? {})
   const p = findProduct(id)
-  const valid = body.urls
-    .map((u) => u.trim())
-    .filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
-  const merged = Array.from(new Set([...(p.source.images ?? []), ...valid]))
-  db.prepare('UPDATE products SET images=?, updated_at=? WHERE id=?').run(
-    JSON.stringify(merged),
-    new Date().toISOString(),
-    id
-  )
-  res.json({ images: merged, added: merged.length - (p.source.images ?? []).length })
+  const raws = body.urls.map((u) => u.trim()).filter(Boolean)
+  const valid = raws.filter((u) => isHttpUrl(u) || u.startsWith('data:image/'))
+
+  // 粘贴/截图来的 base64：压缩后直接存进我们的存储
+  const localFromData: string[] = []
+  for (const u of valid.filter((x) => x.startsWith('data:image/'))) {
+    const parsed = dataUrlToBuffer(u)
+    if (!parsed) continue
+    const norm = await normalizeImage(parsed.buffer, { max: 1600, quality: 88 })
+    localFromData.push(saveContentImage(id, norm.buffer, norm.ext))
+  }
+
+  const httpUrls = valid.filter((u) => isHttpUrl(u))
+  const { mapped, failed } = await mirrorImages(id, httpUrls, { deadline: Date.now() + 55_000 })
+  const incoming = [...localFromData, ...httpUrls.map((u) => mapped.get(u) ?? u)]
+  const merged = mergeSourceImages(id, p.source.images ?? [], incoming, mapped)
+  remapPlanSources(id, mapped)
+  res.json({
+    images: merged,
+    added: merged.length - (p.source.images ?? []).length,
+    /** 下载成功、已经变成我们自己的图片的张数 */
+    mirrored: mapped.size,
+    failed,
+  })
 })
+
+/** 产品图：修复破损 / 把还没转存的外链图下载到我们自己的存储 */
+productImagesRouter.post('/product/:productId/sources/mirror', async (req: Request, res: Response) => {
+  const id = String(req.params.productId)
+  const body = z.object({ urls: z.array(z.string().max(4000)).max(30).optional() }).parse(req.body ?? {})
+  const p = findProduct(id)
+  const current = p.source.images ?? []
+  const targets = (body.urls?.length ? body.urls : current.filter(isHttpUrl)).filter(isHttpUrl).slice(0, 30)
+
+  // base64 大图（截图/粘贴进来的）顺手压成站内文件：列表不再动辄几百 KB
+  const dataUrls = body.urls?.length ? [] : current.filter((u) => u.startsWith('data:image/')).slice(0, 30)
+  const inlineMapped = new Map<string, string>()
+  for (const u of dataUrls) {
+    const parsed = dataUrlToBuffer(u)
+    if (!parsed) continue
+    try {
+      const norm = await normalizeImage(parsed.buffer, { max: 1600, quality: 88 })
+      inlineMapped.set(u, saveContentImage(id, norm.buffer, norm.ext))
+    } catch {
+      /* 单张失败不影响其他 */
+    }
+  }
+
+  if (!targets.length && !inlineMapped.size) {
+    res.json({ images: current, mirrored: 0, failed: [] as MirrorFailure[] })
+    return
+  }
+  const { mapped, failed } = await mirrorImages(id, targets, { deadline: Date.now() + 60_000 })
+  const allMapped = new Map([...mapped, ...inlineMapped])
+  const merged = mergeSourceImages(id, current, [], allMapped)
+  remapPlanSources(id, allMapped)
+  res.json({ images: merged, mirrored: allMapped.size, failed })
+})
+
+/** 产品图：外链是否还能打开（前端给破损图标做体检） */
+productImagesRouter.post('/product/:productId/sources/check', async (req: Request, res: Response) => {
+  const id = String(req.params.productId)
+  const body = z.object({ urls: z.array(z.string().max(4000)).max(40).optional() }).parse(req.body ?? {})
+  const p = findProduct(id)
+  const targets = (body.urls?.length ? body.urls : (p.source.images ?? []).filter(isHttpUrl)).slice(0, 40)
+  const results = await Promise.all(
+    targets.map(async (u) => {
+      try {
+        const r = await fetchRemoteImage(u, { timeoutMs: 7000 })
+        return { url: u, ok: true, contentType: r.contentType, bytes: r.buffer.length, error: '' }
+      } catch (err) {
+        return {
+          url: u,
+          ok: false,
+          contentType: '',
+          bytes: 0,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    })
+  )
+  res.json({ results })
+})
+
+/** 公开图片：给 ASI 目录导入 / 外部系统抓图用（不需要登录；文件名是内容哈希，猜不到） */
+productImagesRouter.get('/public/:productId/:file', async (req: Request, res: Response) => {
+  const productId = String(req.params.productId)
+  const file = String(req.params.file)
+  const buf = readImageFile(productId, file)
+  res.setHeader('Content-Type', contentTypeOf(path.extname(file).slice(1)))
+  res.setHeader('Cache-Control', 'public, max-age=86400')
+  res.send(buf)
+})
+
+/** 外链图片代理：浏览器直接引用 1688 图会被防盗链拦成破损图，这里由服务器带 Referer 取回再转发 */
+productImagesRouter.get('/proxy', async (req: Request, res: Response) => {
+  const raw = String(req.query.url ?? '')
+  if (!isHttpUrl(normalizeRemoteUrl(raw))) throw new AppError(400, '缺少图片地址（url 参数，http(s):// 开头）')
+  const remote = await fetchRemoteImage(raw, { timeoutMs: 12_000 })
+  res.setHeader('Content-Type', remote.contentType)
+  res.setHeader('Cache-Control', 'public, max-age=604800, immutable')
+  res.send(remote.buffer)
+})
+
 
 /** 产品图：删掉其中一张（按地址精确匹配） */
 productImagesRouter.post('/product/:productId/sources/remove', (req: Request, res: Response) => {
@@ -561,8 +897,8 @@ productImagesRouter.get('/product/:productId/refs', (req: Request, res: Response
   res.json({ refs: listRefs(String(req.params.productId)) })
 })
 
-/** 新增参考图（粘贴 URL / base64） */
-productImagesRouter.post('/product/:productId/refs', (req: Request, res: Response) => {
+/** 新增参考图（粘贴 URL / base64）：一律先存进我们自己的存储，避免以后链接失效 */
+productImagesRouter.post('/product/:productId/refs', async (req: Request, res: Response) => {
   const id = String(req.params.productId)
   const body = z
     .object({
@@ -573,7 +909,7 @@ productImagesRouter.post('/product/:productId/refs', (req: Request, res: Respons
     .parse(req.body ?? {})
   const urls = [...(body.urls ?? []), ...(body.images ?? [])]
     .map((u) => u.trim())
-    .filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
+    .filter((u) => isHttpUrl(u) || u.startsWith('data:image/') || isManagedImage(u))
   if (!urls.length) throw new AppError(400, '没有可用的图片地址（要 http(s):// 或 data:image 开头）')
   const existing = listRefs(id)
   const room = Math.max(0, 6 - existing.length)
@@ -582,11 +918,39 @@ productImagesRouter.post('/product/:productId/refs', (req: Request, res: Respons
   const stmt = db.prepare(
     'INSERT INTO product_ref_images (id, product_id, url, file, note, created_at) VALUES (?, ?, ?, ?, ?, ?)'
   )
+  const failed: MirrorFailure[] = []
+  const seen = new Set(existing.map((r) => r.url))
+  const deadline = Date.now() + 55_000
+  let added = 0
   for (const u of urls.slice(0, room)) {
-    stmt.run(randomUUID(), id, u, '', body.note ?? '', now)
+    let stored = u
+    if (u.startsWith('data:image/')) {
+      const parsed = dataUrlToBuffer(u)
+      if (!parsed) {
+        failed.push({ url: u.slice(0, 80), error: '不是有效的 base64 图片' })
+        continue
+      }
+      const norm = await normalizeImage(parsed.buffer, { max: 1600, quality: 88 })
+      stored = saveContentImage(id, norm.buffer, norm.ext)
+    } else if (isHttpUrl(u)) {
+      if (Date.now() > deadline) {
+        failed.push({ url: u, error: '下载超时，先保留原链接' })
+      } else {
+        try {
+          stored = await mirrorImage(id, u)
+        } catch (err) {
+          failed.push({ url: u, error: err instanceof Error ? err.message : String(err) })
+        }
+      }
+    }
+    if (seen.has(stored)) continue
+    seen.add(stored)
+    stmt.run(randomUUID(), id, stored, '', body.note ?? '', now)
+    added += 1
   }
-  res.json({ ok: true, refs: listRefs(id), added: Math.min(urls.length, room) })
+  res.json({ ok: true, refs: listRefs(id), added, failed })
 })
+
 
 /** 删除参考图 */
 productImagesRouter.delete('/refs/:refId', (req: Request, res: Response) => {
@@ -641,28 +1005,21 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   // 主图 Logo 开关：默认加 Logo；用户明确选择不加时不传 Logo 参考图（还省 1 张输入费）
   const withLogo = body.withLogo !== false
 
-  // 「产品图」才是产品事实基准：只认产品真身图（1688 抓的 / 人工上传的），含 data URL。
+  // 「产品图」才是产品事实基准：只认产品真身图（1688 抓的 / 人工上传的 / 已转存到本地的），含 data URL。
   // 「参考图」只学构图/光线/场景，单独传给生图模型，并在提示词里明确禁止改产品。
-  const productUrls = (source.images ?? []).filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
+  const isImageRef = (u: string) => isHttpUrl(u) || isManagedImage(u) || u.startsWith('data:image/')
+  const productUrls = (source.images ?? []).filter(isImageRef)
   const styleRefs = listRefs(productId)
     .map((r) => r.url)
-    .filter((u) => /^(https?:\/\/|data:image\/)/i.test(u))
+    .filter(isImageRef)
 
   // 每种图各自的参考图来自「出图计划」：用户为这张图单独挑的产品图；
   // 没挑就用产品图兜底（主图多给几张，便于看清结构和颜色）。
   const plan = productId !== 'preview' ? readPlan(productId) : ({} as Record<string, KindPlan>)
-  const refsForKind = (kind: string): ImageRef[] => {
+  const urlsForKind = (kind: string): string[] => {
     const picked = (plan[kind]?.sources ?? []).filter((u) => productUrls.includes(u))
-    const urls = picked.length ? picked : productUrls.slice(0, kind === 'main' ? 4 : 2)
-    return urls.map((u) => ({ url: u }) as ImageRef)
+    return picked.length ? picked : productUrls.slice(0, kind === 'main' ? 4 : 2)
   }
-  const mainRefs: ImageRef[] = refsForKind('main')
-  if (logo && withLogo) mainRefs.push({ buffer: logo })
-  // 参考图放最后 2 张：模型对「靠后的参考图」通常当风格参考，产品事实仍以前面产品图为准
-  const refsWithStyle = (base: ImageRef[]): ImageRef[] => [
-    ...base,
-    ...styleRefs.slice(0, 2).map((u) => ({ url: u }) as ImageRef),
-  ]
 
   // 生图前先读产品资料（特点/颜色/材质/场景），拼成事实清单交给提示词编排
   const productInfo = buildProductInfoBlock(source, listingSizeInch)
@@ -686,13 +1043,51 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   let promptSet: Awaited<ReturnType<typeof buildImagePromptSet>> | null = null
 
   runTask(task, async () => {
-    // 1) 文本模型产出全部图片的 Prompt（带产品事实清单 + 参考图；用户注意点融入编排）
+    // 0) 参考图先在服务器侧读成 data URL：外链防盗链 / 链接过期都不会让模型拿不到实物而瞎画
+    const refCache = new Map<string, string>()
+    const resolveUrls = async (urls: string[]): Promise<string[]> => {
+      const out: string[] = []
+      for (const u of urls.slice(0, 4)) {
+        try {
+          let dataUrl = refCache.get(u)
+          if (!dataUrl) {
+            dataUrl = await refToDataUrl(u)
+            refCache.set(u, dataUrl)
+          }
+          out.push(dataUrl)
+        } catch {
+          /* 单张失败先跳过，全部失败时下面会拦住 */
+        }
+      }
+      return out
+    }
+    const kindRefs: Record<string, string[]> = {
+      // 主图参考图同时用来写 Prompt（模型要先看见产品），所以总是读
+      main: await resolveUrls(urlsForKind('main')),
+      dimension: [],
+      detail: [],
+      scene: [],
+    }
+    for (const k of ['dimension', 'detail', 'scene'] as const) {
+      kindRefs[k] = kinds.includes(k) ? await resolveUrls(urlsForKind(k)) : []
+    }
+    for (const k of ['main', 'dimension', 'detail', 'scene']) {
+      if (kinds.includes(k as ProductImageKind) && !kindRefs[k].length) {
+        throw new AppError(
+          400,
+          `「${kindLabelOf(k)}」的产品参考图一张都读不出来（链接可能已失效）：请到产品图区点「修复破损图」或重新抓取/上传产品图后再生成`
+        )
+      }
+    }
+    const styleDataUrls = await resolveUrls(styleRefs)
+
+    // 1) 文本模型产出全部图片的 Prompt（带产品事实清单 + 真实参考图；用户注意点融入编排）
     const ps =
       promptSet ??
       (promptSet = await runAi(() =>
-        buildImagePromptSet(source, settings, allNotes, withLogo, {
+        buildImagePromptSet({ ...source, images: kindRefs.main.slice(0, 4) }, settings, allNotes, withLogo, {
           productInfo,
-          styleRefCount: Math.min(styleRefs.length, 2),
+          styleRefCount: Math.min(styleDataUrls.length, 2),
           mainStyle,
           withDetail: kinds.includes('detail'),
           withScene: kinds.includes('scene'),
@@ -714,9 +1109,14 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
               ? (ps.scene[slot - 1] ?? ps.scene[0] ?? ps.detail[0] ?? ps.main)
               : (ps.detail[slot - 1] ?? ps.detail[0] ?? ps.main)
 
-      let buf = await runAi(() =>
-        generateImage(settings, prompt, kind === 'main' ? refsWithStyle(mainRefs) : refsWithStyle(refsForKind(kind)))
-      )
+      // 产品图放前面（事实），风格参考图放最后 2 张（模型通常把靠后的图当风格参考）
+      const refsWithStyle: ImageRef[] = [
+        ...kindRefs[kind].map((u) => ({ url: u }) as ImageRef),
+        ...(kind === 'main' && logo && withLogo ? [{ buffer: logo } as ImageRef] : []),
+        ...styleDataUrls.slice(0, 2).map((u) => ({ url: u }) as ImageRef),
+      ]
+
+      let buf = await runAi(() => generateImage(settings, prompt, refsWithStyle))
 
       // 主图：外圈刷成纯白。生图模型常给一点点灰底/渐变，而 ASI 目录要求纯白背景。
       // 只清理外圈（提示词保证那里是空白边距），不会动到产品本身的浅色边缘。
@@ -783,7 +1183,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
           settings,
           {
             image: await smallDataUrl(buf),
-            productImages: productUrls.slice(0, 2),
+            productImages: kindRefs[kind].slice(0, 2),
             kind,
             colors: expectColors,
             material: String(parsedListing?.material || source.materialCn || ''),
@@ -889,7 +1289,7 @@ productImagesRouter.get('/:productId/:file', async (req: Request, res: Response)
   const productId = String(req.params.productId)
   const file = String(req.params.file)
   const buf = readImageFile(productId, file)
-  res.setHeader('Content-Type', 'image/png')
+  res.setHeader('Content-Type', contentTypeOf(path.extname(file).slice(1)))
   res.setHeader('Cache-Control', 'public, max-age=86400')
   res.send(buf)
 })

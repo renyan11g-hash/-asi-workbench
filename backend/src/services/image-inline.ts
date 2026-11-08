@@ -8,6 +8,8 @@
  */
 
 import Jimp from 'jimp'
+import { db } from '../db'
+import { tryFetchRemoteImage } from './image-source'
 
 const MAX_BYTES = 8 * 1024 * 1024
 const TARGET = 720
@@ -20,31 +22,25 @@ function isHttp(url: string): boolean {
   return /^https?:\/\//i.test(url)
 }
 
-async function download(url: string): Promise<Buffer | null> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 12_000)
+/** 我们自己存储的图片（/api/product-images/{pid}/{file}）：从 DB 的 image_blobs 读，部署后也不丢 */
+function managedImageBuffer(url: string): Buffer | null {
+  const m = /^\/api\/product-images\/([^/]+)\/([^/?#]+)/.exec(url)
+  if (!m) return null
   try {
-    const r = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        // 不带 Referer 会被 alicdn 拦；UA 也装成浏览器
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
-        Referer: 'https://detail.1688.com/',
-        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-      },
-    })
-    if (!r.ok) return null
-    const type = r.headers.get('content-type') ?? ''
-    if (!type.startsWith('image/')) return null
-    const buf = Buffer.from(await r.arrayBuffer())
-    if (buf.length === 0 || buf.length > MAX_BYTES) return null
-    return buf
+    const row = db.prepare('SELECT data FROM image_blobs WHERE key = ?').get(`${m[1]}/${m[2]}`) as
+      | { data: Buffer | Uint8Array | string }
+      | undefined
+    if (!row) return null
+    return Buffer.from(row.data as Uint8Array)
   } catch {
     return null
-  } finally {
-    clearTimeout(timer)
   }
+}
+
+async function download(url: string): Promise<Buffer | null> {
+  const remote = await tryFetchRemoteImage(url, { timeoutMs: 12_000 })
+  if (!remote || remote.buffer.length > MAX_BYTES) return null
+  return remote.buffer
 }
 
 async function toDataUrl(buf: Buffer): Promise<string | null> {
@@ -63,16 +59,19 @@ async function toDataUrl(buf: Buffer): Promise<string | null> {
   }
 }
 
-/** 单张：http(s) 的下载并转成 data URL；已经是 data URL 的原样返回 */
+/** 单张：http(s) 的下载并转成 data URL；已经是 data URL 的原样返回；站内存储从 DB 读 */
 export async function inlineImage(url: string): Promise<string | null> {
   const u = (url ?? '').trim()
   if (!u) return null
   if (u.startsWith('data:image/')) return u
-  if (!isHttp(u)) return null
   const hit = cache.get(u)
   if (hit) return hit
-  const buf = await download(u)
+
+  let buf: Buffer | null = null
+  if (isHttp(u)) buf = await download(u)
+  else if (u.startsWith('/api/product-images/')) buf = managedImageBuffer(u)
   if (!buf) return null
+
   const dataUrl = await toDataUrl(buf)
   if (!dataUrl) return null
   if (cache.size > 400) cache.clear()

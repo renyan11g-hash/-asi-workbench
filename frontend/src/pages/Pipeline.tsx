@@ -441,7 +441,7 @@ export default function Pipeline() {
                         <div className="flex items-start gap-2.5">
                           {thumb ? (
                             <img
-                              src={thumb}
+                              src={api.proxyImageUrl(thumb)}
                               alt=""
                               className="h-10 w-10 shrink-0 rounded border border-slate-200 object-cover"
                               loading="lazy"

@@ -670,7 +670,7 @@ function MasterDataPanel() {
               <div className="mt-2 flex flex-wrap gap-2">
                 {form.images.map((u, i) => (
                   <div key={`${u}-${i}`} className="group relative h-16 w-16 overflow-hidden rounded border border-slate-200">
-                    <img src={u} alt="" className="h-full w-full object-cover" />
+                    <img src={api.proxyImageUrl(u)} alt="" className="h-full w-full object-cover" />
                     <button
                       type="button"
                       className="absolute right-0 top-0 hidden rounded-bl bg-black/60 px-1 text-[10px] text-white group-hover:block"
@@ -797,7 +797,7 @@ function MasterDataPanel() {
                       <td className="py-2 pr-2">
                         <div className="flex items-center gap-1">
                           {p.images.slice(0, 3).map((u, i) => (
-                            <img key={`${p.id}-${i}`} src={u} alt="" className="h-8 w-8 rounded object-cover" />
+                            <img key={`${p.id}-${i}`} src={api.proxyImageUrl(u)} alt="" className="h-8 w-8 rounded object-cover" />
                           ))}
                           <span className="text-[11px] text-slate-400">{p.images.length}</span>
                         </div>

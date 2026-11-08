@@ -1,5 +1,6 @@
 import { Settings } from '../types'
 import { logAiCall } from './ai-log'
+import { inlineImage } from './image-inline'
 
 export class AiError extends Error {
   constructor(
@@ -121,12 +122,29 @@ export async function callChatResult(
   const startedAt = Date.now()
 
   // 支持图片：images 为 base64 dataURL 或 https URL 列表
-  const userMessage: { role: string; content: string | ChatMessageContentPart[] } = images?.length
+  // 发请求前把图片读成 data URL：
+  // - 1688 图有防盗链，模型服务商从机房直接抓大概率被拒（结果就是「模型没见过产品」）
+  // - 我们自己存的 /api/product-images/... 是站内相对地址，模型更抓不到
+  // 读不到时保留原地址，让服务商再试一次（不因为本地网络问题直接丢图）。
+  const modelImages = images?.length
+    ? (
+        await Promise.all(
+          images.map(async (u) => {
+            try {
+              return (await inlineImage(u)) ?? u
+            } catch {
+              return u
+            }
+          })
+        )
+      ).filter((u): u is string => Boolean(u))
+    : images
+  const userMessage: { role: string; content: string | ChatMessageContentPart[] } = modelImages?.length
     ? {
         role: 'user',
         content: [
           { type: 'text', text: userPrompt },
-          ...images.map((u) => ({
+          ...modelImages.map((u) => ({
             type: 'image_url' as const,
             image_url: { url: u, detail: 'auto' as const },
           })),

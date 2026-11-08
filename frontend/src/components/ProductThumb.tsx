@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ImageOff } from 'lucide-react'
+import { api } from '@/lib/api'
 
 /**
  * 产品缩略图：取选品评估时上传的第一张图片（base64 dataURL 或 https URL）。
@@ -21,6 +22,8 @@ export default function ProductThumb({
 }) {
   const [failed, setFailed] = useState(false)
   const src = images?.[0]
+  // 外链（1688/alicdn）走服务器代理：浏览器直连会被防盗链拦成破损图
+  const viewSrc = api.proxyImageUrl(src)
 
   if (!src || failed) {
     return (
@@ -36,7 +39,7 @@ export default function ProductThumb({
 
   const img = (
     <img
-      src={src}
+      src={viewSrc}
       alt=""
       style={{ width: size, height: size }}
       onError={() => setFailed(true)}
@@ -48,7 +51,7 @@ export default function ProductThumb({
   if (!clickable) return img
   return (
     <a
-      href={src}
+      href={viewSrc}
       target="_blank"
       rel="noreferrer"
       title="查看原图"

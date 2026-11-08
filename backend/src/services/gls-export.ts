@@ -1,4 +1,8 @@
 import ExcelJS from 'exceljs'
+import fs from 'fs'
+import path from 'path'
+import { createHash } from 'crypto'
+import { db } from '../db'
 import { Listing, Product, Settings } from '../types'
 import { buildPriceGrid, parseProductSizeCm, TIER_COUNT } from './pricing'
 
@@ -25,6 +29,56 @@ export const GLS_DEFAULTS = {
   setupCharge: 30,
   sampleCharge: 30,
 } as const
+
+/**
+ * ASI 目录导入要能直接抓图：站内图片换成「不需要登录」的公开绝对地址。
+ * 图片已经下载到我们自己的存储（/api/product-images/...），这样即使 1688 链接失效也能导入。
+ * 还是 base64 大图的，导出时顺手落成文件（内容寻址，重复导出不会堆文件）。
+ */
+function publicBase(): string {
+  return (
+    process.env.PUBLIC_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    'https://asi-workbench.onrender.com'
+  ).replace(/\/+$/, '')
+}
+
+const EXPORT_IMAGES_DIR =
+  process.env.IMAGES_DIR || path.join(process.env.DATA_DIR || path.join(process.cwd(), 'data'), 'images')
+
+function persistDataUrl(productId: string, dataUrl: string): string {
+  const m = /^data:image\/([a-z0-9.+-]+);base64,(.+)$/i.exec(dataUrl)
+  if (!m) return ''
+  const buf = Buffer.from(m[2], 'base64')
+  const ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1]
+  const safeExt = /^(png|jpg|webp|gif|bmp)$/.test(ext) ? ext : 'jpg'
+  const hash = createHash('sha1').update(buf).digest('hex').slice(0, 16)
+  const file = `src-${hash}.${safeExt}`
+  const dir = path.join(EXPORT_IMAGES_DIR, productId)
+  const fp = path.join(dir, file)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    if (!fs.existsSync(fp)) {
+      fs.writeFileSync(fp, buf)
+      db.prepare(
+        'INSERT INTO image_blobs (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data'
+      ).run(`${productId}/${file}`, buf)
+    }
+  } catch {
+    /* 落盘失败就退回空，不阻塞导出 */
+  }
+  return `${publicBase()}/api/product-images/public/${productId}/${file}`
+}
+
+function publicImageUrl(u: string, productId: string): string {
+  const raw = (u ?? '').trim()
+  if (!raw) return ''
+  if (raw.startsWith('/api/product-images/')) {
+    return `${publicBase()}${raw.replace('/api/product-images/', '/api/product-images/public/')}`
+  }
+  if (raw.startsWith('data:image/')) return persistDataUrl(productId, raw)
+  return raw
+}
 
 /** 第 3 行主表头（列号 → 文本），一字不改 */
 const HEADER_ROW3: Record<number, string> = {
@@ -313,7 +367,7 @@ export function buildGlsWorkbook(options: GlsExportOptions): ExcelJS.Workbook {
 
     // B: PICTURE（图片链接，多个用换行）
     const imgs = (p.source.images ?? []).filter(Boolean)
-    if (imgs.length) row.getCell(COL.picture).value = imgs.join('\n')
+    if (imgs.length) row.getCell(COL.picture).value = imgs.map((u) => publicImageUrl(u, p.id)).filter(Boolean).join('\n')
 
     // C: Product Name（≤60 字符）
     row.getCell(COL.productName).value = (l?.title || p.source.sourceTitle || '').slice(0, 60)

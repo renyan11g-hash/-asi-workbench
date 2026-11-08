@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
+  ImageOff,
   ImagePlus,
   Link2,
   Loader2,
@@ -8,11 +9,13 @@ import {
   RefreshCw,
   ShieldCheck,
   Sparkles,
+  Upload,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { api, getErrorMessage } from '@/lib/api'
+import { filesToDataUrls } from '@/lib/image-file'
 import { cn } from '@/lib/utils'
 import type { ProductImage } from '@/types'
 
@@ -54,6 +57,11 @@ export function ProductImageStudio({
   const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState<'fetch' | 'gen' | null>(null)
   const [progress, setProgress] = useState('')
+  /** 当前「Ctrl+V 粘贴」的目标区域：产品图 / 参考图 */
+  const [pasteZone, setPasteZone] = useState<'source' | 'ref'>('source')
+  const [uploading, setUploading] = useState(false)
+  const [mirroring, setMirroring] = useState(false)
+  const [failedUrls, setFailedUrls] = useState<Array<{ url: string; error: string }>>([])
 
   // 手动粘贴
   const [sourcePaste, setSourcePaste] = useState('')
@@ -74,6 +82,7 @@ export function ProductImageStudio({
   const [chatKind, setChatKind] = useState<KindKey | null>(null)
   const [chatInput, setChatInput] = useState('')
   const [chatBusy, setChatBusy] = useState(false)
+  const [autoPicking, setAutoPicking] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -122,12 +131,17 @@ export function ProductImageStudio({
   const fetchFrom1688 = async () => {
     setBusy('fetch')
     setFetchedInfo(null)
+    setFailedUrls([])
     try {
       const r = await api.fetchSourceImages(productId)
       setSources(r.images ?? [])
       setFetchedInfo({ added: r.added, total: r.total, message: r.message })
-      if (r.added > 0) toast.success(`从 1688 抓到 ${r.added} 张产品图（共 ${r.total} 张）`)
-      else toast.warning(r.message || '没有抓到新图：可以手动粘贴图片地址')
+      setFailedUrls(r.failed ?? [])
+      if (r.added > 0)
+        toast.success(
+          `从 1688 抓到 ${r.added} 张产品图（共 ${r.total} 张）${r.mirrored ? `，${r.mirrored} 张已存到服务器` : ''}`
+        )
+      else toast.warning(r.message || '没有抓到新图：可以手动粘贴图片地址，或直接 Ctrl+V 粘贴图片')
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
@@ -144,13 +158,18 @@ export function ProductImageStudio({
       toast.error('没识别到图片地址（要以 http(s):// 开头）')
       return
     }
+    setUploading(true)
     try {
       const r = await api.addSourceImages(productId, urls)
       setSources(r.images ?? [])
       setSourcePaste('')
-      toast.success(`已添加产品图，共 ${(r.images ?? []).length} 张`)
+      setFailedUrls(r.failed ?? [])
+      toast.success(`已添加 ${urls.length} 张产品图，其中 ${r.mirrored} 张已下载到服务器`)
+      if (r.failed?.length) toast.warning(`${r.failed.length} 张下载失败：${r.failed[0].error}`)
     } catch (err) {
       toast.error(getErrorMessage(err))
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -159,9 +178,70 @@ export function ProductImageStudio({
       const r = await api.addRefImages(productId, payload)
       setRefs(r.refs ?? [])
       setRefPaste('')
-      if (r.added) toast.success(`已添加 ${r.added} 张参考图`)
+      if (r.added) toast.success(`已添加 ${r.added} 张参考图（已存到服务器）`)
+      if (r.failed?.length) toast.warning(`${r.failed.length} 张参考图下载失败：${r.failed[0].error}`)
     } catch (err) {
       toast.error(getErrorMessage(err))
+    }
+  }
+
+  /** 粘贴 / 拖入 / 选择文件：压缩后直接上传，不需要任何看图插件 */
+  const handleFiles = async (files: File[], zone: 'source' | 'ref') => {
+    const imgs = files.filter((f) => f.type.startsWith('image/'))
+    if (!imgs.length) {
+      toast.error('没读到图片：先截图/复制图片，再点这里按 Ctrl+V')
+      return
+    }
+    setUploading(true)
+    try {
+      const dataUrls = await filesToDataUrls(imgs)
+      if (!dataUrls.length) {
+        toast.error('图片读取失败，换一张试试（PNG / JPG 最稳）')
+        return
+      }
+      if (zone === 'ref') {
+        await addRefs({ images: dataUrls })
+        return
+      }
+      const r = await api.addSourceImages(productId, dataUrls)
+      setSources(r.images ?? [])
+      toast.success(`已加入 ${dataUrls.length} 张产品图，并已存到服务器`)
+      if (r.failed?.length) toast.warning(`${r.failed.length} 张下载失败：${r.failed[0].error}`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  // 全局 Ctrl+V：图片直接进「当前选中的区域」（默认产品图）
+  const handleFilesRef = useRef<(files: File[], zone: 'source' | 'ref') => void>(() => {})
+  handleFilesRef.current = (files, zone) => void handleFiles(files, zone)
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
+      if (!files.length) return
+      e.preventDefault()
+      handleFilesRef.current(files, pasteZone)
+    }
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [pasteZone])
+
+  /** 修复破损图：把外链图下载到我们自己的存储 */
+  const mirrorAll = async () => {
+    setMirroring(true)
+    try {
+      const r = await api.mirrorSourceImages(productId)
+      setSources(r.images ?? [])
+      setFailedUrls(r.failed ?? [])
+      if (r.mirrored) toast.success(`已把 ${r.mirrored} 张外链图下载到服务器，以后不会再破损`)
+      if (r.failed?.length) toast.warning(`${r.failed.length} 张下载失败：${r.failed[0].error}`)
+      else if (!r.mirrored) toast.info('没有需要转存的外链图')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setMirroring(false)
     }
   }
 
@@ -174,14 +254,21 @@ export function ProductImageStudio({
     }
   }
 
-  const pickRefFile = (file: File) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const v = String(reader.result ?? '')
-      if (v.startsWith('data:image/')) void addRefs({ images: [v] })
+  const mirrorOne = async (u: string) => {
+    try {
+      const r = await api.mirrorSourceImages(productId, [u])
+      setSources(r.images ?? [])
+      const f = r.failed ?? []
+      if (f.length) toast.error(`这张图下载失败：${f[0].error}`)
+      else toast.success('已下载到我们自己的服务器')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
     }
-    reader.readAsDataURL(file)
   }
+
+  const externalCount = sources.filter((u) => /^https?:\/\//i.test(u)).length
+  const localCount = sources.filter((u) => u.startsWith('/api/')).length
+  const inlineCount = sources.filter((u) => u.startsWith('data:image/')).length
 
   /** 保存某种图选中的产品参考图（空数组=用全部产品图） */
   const setKindSources = async (kind: KindKey, next: string[]) => {
@@ -223,6 +310,29 @@ export function ProductImageStudio({
       toast.error(getErrorMessage(err))
     } finally {
       setChatBusy(false)
+    }
+  }
+
+  /** AI 自动挑图：认图后按用途分配四种图的参考图 */
+  const autoPick = async () => {
+    setAutoPicking(true)
+    try {
+      const r = await api.autoAssignImagePlan(productId)
+      const p = r.plan ?? {}
+      setPlan({
+        main: p.main ?? { sources: [], notes: '', chat: [] },
+        dimension: p.dimension ?? { sources: [], notes: '', chat: [] },
+        detail: p.detail ?? { sources: [], notes: '', chat: [] },
+        scene: p.scene ?? { sources: [], notes: '', chat: [] },
+      } as typeof plan)
+      const n = (k: 'main' | 'dimension' | 'detail' | 'scene') => r.picks?.[k]?.length ?? 0
+      toast.success(
+        `AI 挑好了：主图 ${n('main')} 张 / 尺寸图 ${n('dimension')} 张 / 细节图 ${n('detail')} 张 / 场景图 ${n('scene')} 张`
+      )
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setAutoPicking(false)
     }
   }
 
@@ -289,17 +399,88 @@ export function ProductImageStudio({
     <div className="space-y-4">
       {/* 1. 产品图 / 参考图 */}
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-xl border border-slate-200 bg-white p-3">
-          <div className="flex items-center justify-between">
+        <div
+          className={cn(
+            'rounded-xl border bg-white p-3 transition',
+            pasteZone === 'source' ? 'border-blue-400 ring-1 ring-blue-200' : 'border-slate-200'
+          )}
+          onClick={() => setPasteZone('source')}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault()
+            setPasteZone('source')
+            void handleFiles(Array.from(e.dataTransfer.files), 'source')
+          }}
+        >
+          <div className="flex items-start justify-between gap-2">
             <div>
-              <div className="text-[13px] font-semibold text-slate-800">产品图（产品真身）</div>
+              <div className="text-[13px] font-semibold text-slate-800">
+                产品图（产品真身）
+                {pasteZone === 'source' && (
+                  <span className="ml-1.5 rounded bg-blue-50 px-1 py-0.5 text-[10px] font-normal text-blue-600">
+                    Ctrl+V / 拖拽图片粘到这里
+                  </span>
+                )}
+              </div>
               <div className="text-[11px] text-slate-500">AI 只照着这些图画，是产品事实的唯一来源</div>
             </div>
-            <Button size="sm" variant="outline" disabled={busy === 'fetch'} onClick={() => void fetchFrom1688()}>
-              {busy === 'fetch' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
-              从 1688 抓取
-            </Button>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    const fs = Array.from(e.target.files ?? [])
+                    e.target.value = ''
+                    void handleFiles(fs, 'source')
+                  }}
+                />
+                <span className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-[12px] text-slate-700 hover:border-blue-300">
+                  {uploading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1 h-3.5 w-3.5" />}
+                  上传
+                </span>
+              </label>
+              <Button size="sm" variant="outline" disabled={busy === 'fetch'} onClick={() => void fetchFrom1688()}>
+                {busy === 'fetch' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+                从 1688 抓取
+              </Button>
+            </div>
           </div>
+
+          {sources.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+              <span>共 {sources.length} 张</span>
+              {localCount > 0 && <span className="text-emerald-600">已存服务器 {localCount}</span>}
+              {(externalCount > 0 || inlineCount > 0) && (
+                <span className="text-amber-700">
+                  {externalCount > 0 && <>外链 {externalCount}（链接失效就会破损）</>}
+                  {externalCount > 0 && inlineCount > 0 && ' · '}
+                  {inlineCount > 0 && <>base64 大图 {inlineCount} 张</>}
+                  <button
+                    className="ml-1 text-blue-600 hover:underline disabled:text-slate-400"
+                    disabled={mirroring}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void mirrorAll()
+                    }}
+                  >
+                    {mirroring ? '正在下载…' : '一键修复/转存'}
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+
+          {failedUrls.length > 0 && (
+            <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] text-rose-700">
+              有 {failedUrls.length} 张图没下载成功（链接可能已失效或被防盗链拦）：{failedUrls[0].error}
+              <button className="ml-1 underline" onClick={() => void mirrorAll()}>
+                重试
+              </button>
+            </div>
+          )}
 
           {fetchedInfo && (
             <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-blue-800">
@@ -312,12 +493,24 @@ export function ProductImageStudio({
             {sources.length === 0 ? (
               <div className="flex w-full flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 py-6 text-[11px] text-slate-400">
                 <ImagePlus className="mb-1 h-5 w-5" />
-                还没有产品图：点「从 1688 抓取」，或手动粘贴图片地址
+                还没有产品图：点「从 1688 抓取」、「上传」，或直接 Ctrl+V 粘贴图片
               </div>
             ) : (
               sources.map((u, i) => (
                 <div key={`${i}-${u.slice(0, 24)}`} className="relative">
-                  <img src={u} alt="" className="h-16 w-16 rounded border border-slate-200 object-cover" />
+                  <Thumb url={u} className="h-16 w-16" onRetry={() => void mirrorOne(u)} />
+                  {/^https?:\/\//i.test(u) && (
+                    <button
+                      className="absolute inset-x-0 bottom-0 bg-amber-500/90 text-center text-[9px] leading-4 text-white"
+                      title="这张还是外链，点一下下载到我们自己服务器"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void mirrorOne(u)
+                      }}
+                    >
+                      外链·点转存
+                    </button>
+                  )}
                   <button
                     className="absolute -right-1 -top-1 rounded-full bg-white p-0.5 text-slate-500 shadow hover:text-rose-600"
                     title="从产品图里删掉这张（不在生成时作为参考）"
@@ -369,25 +562,46 @@ export function ProductImageStudio({
           </div>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-3">
-          <div className="flex items-center justify-between">
+        <div
+          className={cn(
+            'rounded-xl border bg-white p-3 transition',
+            pasteZone === 'ref' ? 'border-blue-400 ring-1 ring-blue-200' : 'border-slate-200'
+          )}
+          onClick={() => setPasteZone('ref')}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault()
+            setPasteZone('ref')
+            void handleFiles(Array.from(e.dataTransfer.files), 'ref')
+          }}
+        >
+          <div className="flex items-start justify-between gap-2">
             <div>
-              <div className="text-[13px] font-semibold text-slate-800">参考图（只学风格）</div>
+              <div className="text-[13px] font-semibold text-slate-800">
+                参考图（只学风格）
+                {pasteZone === 'ref' && (
+                  <span className="ml-1.5 rounded bg-blue-50 px-1 py-0.5 text-[10px] font-normal text-blue-600">
+                    Ctrl+V / 拖拽图片粘到这里
+                  </span>
+                )}
+              </div>
               <div className="text-[11px] text-slate-500">学构图/排版/光线/场景，绝不会改你的产品</div>
             </div>
             <label className="cursor-pointer">
               <input
                 type="file"
                 accept="image/*"
+                multiple
                 className="hidden"
                 onChange={(e) => {
-                  const f = e.target.files?.[0]
-                  if (f) pickRefFile(f)
+                  const fs = Array.from(e.target.files ?? [])
                   e.target.value = ''
+                  void handleFiles(fs, 'ref')
                 }}
               />
               <span className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-[12px] text-slate-700 hover:border-blue-300">
-                <ImagePlus className="mr-1 h-3.5 w-3.5" /> 上传
+                {uploading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1 h-3.5 w-3.5" />}
+                上传
               </span>
             </label>
           </div>
@@ -395,12 +609,12 @@ export function ProductImageStudio({
           <div className="mt-2 flex min-h-[80px] flex-wrap gap-2">
             {refs.length === 0 ? (
               <div className="flex w-full flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 py-6 text-[11px] text-slate-400">
-                还没有参考图（可选）。有好看的行业图片可以传上来，AI 会参考它的风格
+                还没有参考图（可选）。上传、拖入或 Ctrl+V 粘贴行业好图，AI 只学它的风格，不改你的产品
               </div>
             ) : (
               refs.map((r) => (
                 <div key={r.id} className="relative">
-                  <img src={r.url} alt="" className="h-16 w-16 rounded border border-slate-200 object-cover" />
+                  <Thumb url={r.url} className="h-16 w-16" />
                   <button
                     className="absolute -right-1 -top-1 rounded-full bg-white p-0.5 text-slate-500 shadow hover:text-rose-600"
                     onClick={() => void removeRef(r.id)}
@@ -450,6 +664,16 @@ export function ProductImageStudio({
               四种图分别选各自的参考图，AI 只照着选中的图画；一张都不选就用全部产品图。生成前可以先和 AI 对话确认怎么拍。
             </div>
           </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={autoPicking || !sources.length}
+            onClick={() => void autoPick()}
+            title="让 AI 看一遍产品图，按正面/侧面对比/特写/场景自动分配四种图的参考图"
+          >
+            {autoPicking ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
+            AI 自动挑图
+          </Button>
         </div>
 
         <div className="mt-2 grid gap-2 lg:grid-cols-2">
@@ -486,7 +710,7 @@ export function ProductImageStudio({
                           on ? 'border-blue-500' : 'border-transparent opacity-70 hover:opacity-100'
                         )}
                       >
-                        <img src={u} alt="" className="h-10 w-10 rounded object-cover" />
+                        <Thumb url={u} className="h-10 w-10" />
                       </button>
                       {on && (
                         <button
@@ -731,6 +955,40 @@ export function ProductImageStudio({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * 缩略图：外链图统一走服务器代理（1688 有防盗链，浏览器直连会破损），
+ * 加载失败时显示「破损」，点一下可以让服务器重新下载。
+ */
+function Thumb({ url, className, onRetry }: { url: string; className?: string; onRetry?: () => void }) {
+  const [failed, setFailed] = useState(false)
+  const src = api.proxyImageUrl(url)
+  if (!src || failed) {
+    return (
+      <div
+        className={cn(
+          'relative flex flex-col items-center justify-center gap-0.5 rounded border border-dashed border-rose-300 bg-rose-50 text-[9px] text-rose-600',
+          className
+        )}
+        title={onRetry ? '这张图加载失败：点一下让服务器重新下载' : '这张图加载失败'}
+        onClick={(e) => {
+          if (!onRetry) return
+          e.stopPropagation()
+          setFailed(false)
+          onRetry()
+        }}
+      >
+        <ImageOff className="h-4 w-4" />
+        <span>破损</span>
+      </div>
+    )
+  }
+  return (
+    <div className={cn('overflow-hidden rounded border border-slate-200 bg-slate-50', className)}>
+      <img src={src} alt="" className="h-full w-full object-cover" loading="lazy" onError={() => setFailed(true)} referrerPolicy="no-referrer" />
     </div>
   )
 }

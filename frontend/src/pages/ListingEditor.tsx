@@ -1202,7 +1202,7 @@ export default function ListingEditor() {
             {images.slice(0, 8).map((src, i) => (
               <img
                 key={i}
-                src={src}
+                src={api.proxyImageUrl(src)}
                 alt=""
                 className="h-16 w-16 rounded-md border border-slate-200 object-cover"
                 referrerPolicy="no-referrer"

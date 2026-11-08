@@ -14,7 +14,16 @@ import { env } from '../config/env'
  */
 
 // 无需鉴权的路径（前缀匹配）
-const PUBLIC_PATHS = ['/api/health', '/api/ping', '/api/version', '/favicon.svg', '/favicon.ico', '/robots.txt']
+// - /api/product-images/public：产品图公开地址（文件名是内容哈希，不可猜；ASI 目录导入需要能直接抓图）
+const PUBLIC_PATHS = [
+  '/api/health',
+  '/api/ping',
+  '/api/version',
+  '/api/product-images/public',
+  '/favicon.svg',
+  '/favicon.ico',
+  '/robots.txt',
+]
 
 const sha256 = (value: string) => crypto.createHash('sha256').update(value, 'utf8').digest()
 
