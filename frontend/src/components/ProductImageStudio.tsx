@@ -183,6 +183,20 @@ export function ProductImageStudio({
     reader.readAsDataURL(file)
   }
 
+  /** 保存某种图选中的产品参考图（空数组=用全部产品图） */
+  const setKindSources = async (kind: KindKey, next: string[]) => {
+    // 先本地更新，界面立刻有反馈；接口失败再回滚提示
+    const prev = plan[kind].sources
+    setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], sources: next } }))
+    try {
+      const r = await api.saveImagePlan(productId, { kind, sources: next })
+      setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], ...(r.plan[kind] ?? {}) } }))
+    } catch (err) {
+      setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], sources: prev } }))
+      toast.error(getErrorMessage(err))
+    }
+  }
+
   /** 生成前对话：把用户这句话发给 AI，AI 回复构图建议并把注意点写进这张图的 notes */
   const sendChat = async () => {
     if (!chatKind || !chatInput.trim()) return
@@ -459,33 +473,50 @@ export function ProductImageStudio({
                 </Button>
               </div>
 
-              <div className="mt-1 flex flex-wrap gap-1">
+              <div className="mt-1 flex flex-wrap gap-1.5">
                 {sources.slice(0, 12).map((u, i) => {
                   const on = plan[k].sources.includes(u)
                   return (
-                    <button
-                      key={`${k}-${i}`}
-                      title={on ? '点击取消' : '作为这张图的参考图'}
-                      onClick={async () => {
-                        const next = on ? plan[k].sources.filter((x) => x !== u) : [...plan[k].sources, u]
-                        try {
-                          const r = await api.saveImagePlan(productId, { kind: k, sources: next })
-                          setPlan((cur) => ({ ...cur, [k]: { ...cur[k], ...(r.plan[k] ?? {}) } }))
-                        } catch (err) {
-                          toast.error(getErrorMessage(err))
-                        }
-                      }}
-                      className={cn(
-                        'rounded border-2 p-0',
-                        on ? 'border-blue-500' : 'border-transparent opacity-70 hover:opacity-100'
+                    <div key={`${k}-${i}`} className="relative">
+                      <button
+                        title={on ? '已选为这张图的参考图（点右上角 × 取消）' : '点一下，作为这张图的参考图'}
+                        onClick={() => void setKindSources(k, on ? plan[k].sources.filter((x) => x !== u) : [...plan[k].sources, u])}
+                        className={cn(
+                          'block rounded border-2 p-0',
+                          on ? 'border-blue-500' : 'border-transparent opacity-70 hover:opacity-100'
+                        )}
+                      >
+                        <img src={u} alt="" className="h-10 w-10 rounded object-cover" />
+                      </button>
+                      {on && (
+                        <button
+                          title="取消这张参考图（不会删掉产品图本身）"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void setKindSources(k, plan[k].sources.filter((x) => x !== u))
+                          }}
+                          className="absolute -right-1.5 -top-1.5 rounded-full bg-white p-0.5 text-slate-500 shadow ring-1 ring-slate-200 hover:text-rose-600"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
                       )}
-                    >
-                      <img src={u} alt="" className="h-10 w-10 rounded object-cover" />
-                    </button>
+                    </div>
                   )
                 })}
                 {sources.length === 0 && <span className="text-[11px] text-slate-400">先在左边加产品图</span>}
               </div>
+              {plan[k].sources.length > 0 && (
+                <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-400">
+                  <span>点缩略图加/减；× 取消这张参考</span>
+                  <button
+                    className="text-rose-500 hover:underline"
+                    onClick={() => void setKindSources(k, [])}
+                    title="清空后这张图会用全部产品图"
+                  >
+                    清空（用全部产品图）
+                  </button>
+                </div>
+              )}
 
               <input
                 value={plan[k].notes}
