@@ -116,13 +116,84 @@ function whitenNearBackground(
 }
 
 /**
+ * 连通式背景净化：只刷「从图片边缘能连通到」的浅色像素。
+ *
+ * 为什么需要：模型常给「米黄/浅灰 + 渐变」的底，review 某次就卡在
+ * 「背景非纯白 #FFFFFF，整体偏米黄并带渐变」。只清外圈清不到中间的渐变，
+ * 全图按亮度刷又会把产品里的浅色部分（白色/米色面料）一起吃掉。
+ * 从四条边做连通泛洪，只吃与边缘同属一片浅背景的像素，产品内部浅色区域不会被误伤。
+ */
+export function whitenConnectedBackground(
+  img: Jimp,
+  opts: { minLight?: number; maxChroma?: number; maxDist?: number } = {}
+): number {
+  const { width, height, data } = img.bitmap
+  const minLight = opts.minLight ?? 218
+  const maxChroma = opts.maxChroma ?? 32
+  const maxDist = opts.maxDist ?? 55
+  const bg = estimateBackgroundColor(img)
+  const visited = new Uint8Array(width * height)
+  const queue = new Int32Array(width * height)
+  let head = 0
+  let tail = 0
+
+  const qualifies = (idx: number): boolean => {
+    const i = idx * 4
+    if (data[i + 3] < 8) return true // 透明＝背景
+    const r = data[i]
+    const g = data[i + 1]
+    const b = data[i + 2]
+    if (Math.min(r, g, b) < minLight) return false
+    if (Math.max(r, g, b) - Math.min(r, g, b) > maxChroma) return false
+    const dr = r - bg.r
+    const dg = g - bg.g
+    const db = b - bg.b
+    return dr * dr + dg * dg + db * db <= maxDist * maxDist
+  }
+  const push = (idx: number) => {
+    if (visited[idx] || !qualifies(idx)) return
+    visited[idx] = 1
+    queue[tail++] = idx
+  }
+
+  for (let x = 0; x < width; x++) {
+    push(x)
+    push((height - 1) * width + x)
+  }
+  for (let y = 0; y < height; y++) {
+    push(y * width)
+    push(y * width + width - 1)
+  }
+
+  let n = 0
+  while (head < tail) {
+    const idx = queue[head++]
+    const i = idx * 4
+    data[i] = 255
+    data[i + 1] = 255
+    data[i + 2] = 255
+    data[i + 3] = 255
+    n++
+    const x = idx % width
+    const y = (idx - x) / width
+    if (x > 0) push(idx - 1)
+    if (x < width - 1) push(idx + 1)
+    if (y > 0) push(idx - width)
+    if (y < height - 1) push(idx + width)
+  }
+  return n
+}
+
+/**
  * 统一成纯白背景（主图 / 尺寸图共用）。
  *
- * 分三档，都是根据"背景有多白"来定策略，尽量只动背景不动产品：
+ * 分四档，都是根据"背景有多白"来定策略，尽量只动背景不动产品：
  *   · 背景已接近纯白（≥236）→ 只清理外圈，产品一个像素都不碰（最容易误伤的情况直接跳过）
  *   · 背景是浅灰（215-235）→ 外圈 + 以 12 的容差全图刷一遍。
  *     白色产品（255）与浅灰底（如 240）的距离是 26，远大于 12，所以不会被吃掉。
  *   · 背景是彩色/深色 → 只清理外圈（说明 AI 没按白底出图，改提示词或让用户用 AI 修改）
+ *   · 浅色但不纯（米黄/浅灰渐变，minC≥200）→ 再从边缘做一次连通泛洪，
+ *     把与边缘连成一片的浅色渐变全部刷成 #FFFFFF，产品内部的浅色区域保持不动。
  */
 export function normalizeWhiteBackground(img: Jimp, bandRatio = 0.10): void {
   const bg = estimateBackgroundColor(img)
@@ -136,6 +207,10 @@ export function normalizeWhiteBackground(img: Jimp, bandRatio = 0.10): void {
   if (lightGreyCast) {
     whitenNearBackground(img, bg, 12)
   }
+  // 浅色渐变底（米黄/浅灰）再过一遍连通泛洪：这是 ASI 目录审核最常卡的「背景不纯白」。
+  // 每次主图/尺寸图都跑：门槛（minLight=218 + 低彩度）保证深色/彩色底面一个像素都不动，
+  // 四角取样估出来的背景色可能是纯白（外圈已被清理），所以不能拿它来决定要不要跑。
+  whitenConnectedBackground(img)
 }
 
 /** Buffer 入口：读图 → 统一白底 → 统一 1200×1200（主图用） */
