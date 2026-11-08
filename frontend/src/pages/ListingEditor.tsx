@@ -733,10 +733,21 @@ export default function ListingEditor() {
     if (!product || !listing) return
     setSaving(true)
     try {
-      if (reviewDraft) {
-        // 保存到待审核记录（审核通过后才写回产品库），避免文案进产品库又没审
-        await api.patchReviewListing(reviewDraft.id, listing)
-        toast.success('已保存到「待审核」文案（通过审核后才进产品库）')
+      // 待审核版本：优先写回审核记录（覆盖原待审核版本），不碰产品库、不改审核状态。
+      // 草稿没加载成功时（例如刷新很快）再查一次，避免误写进产品库绕过审核。
+      let draft = reviewDraft
+      if (!draft && product.status === 'pending_review') {
+        try {
+          const r = await api.getReviewByProduct(product.id)
+          if (r.review) draft = { id: r.review.id, status: r.review.status }
+        } catch {
+          /* 没有审核记录就走产品库保存 */
+        }
+      }
+      if (draft) {
+        await api.patchReviewListing(draft.id, listing)
+        setReviewDraft(draft)
+        toast.success('已保存：覆盖了这条「待审核」文案（审核状态不变，通过后才进产品库）')
       } else {
         await api.updateProduct(product.id, { listing })
         toast.success('已保存')
@@ -750,6 +761,7 @@ export default function ListingEditor() {
       qc.invalidateQueries({ queryKey: ['products'] })
       qc.invalidateQueries({ queryKey: ['product', id] })
       qc.invalidateQueries({ queryKey: ['review-queue'] })
+      qc.invalidateQueries({ queryKey: ['listing-review-map'] })
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
@@ -947,13 +959,28 @@ export default function ListingEditor() {
   return (
     <div className="space-y-5">
       {product.status === 'pending_review' && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs text-rose-800">
-          <div className="flex items-center gap-2">
-            <ClipboardCheck className="h-3.5 w-3.5" />
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">
+          <div className="flex items-start gap-2">
+            <ClipboardCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              这条档案现在处于 <b>待审核</b>：核对完文案和图片后点上方「保存修改」，就会<b>原地变成正式产品</b>并进产品库。
-              也可以回<a href="/listing-reviews" className="mx-1 underline">英文链接待审核</a>批量通过。
+              正在编辑 <b>待审核</b> 版本{reviewDraft ? '（还没进产品库）' : ''}：改完点右边
+              <b>「保存修改（待审核版本）」</b>就覆盖这条待审核文案，<b>审核状态不变</b>；
+              审核中心点「通过」之后才会进产品库。编辑和通过/驳回是两条并行的线，互不影响。
             </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              size="sm"
+              className="h-7 bg-blue-600 text-xs hover:bg-blue-700"
+              onClick={() => void save()}
+              disabled={saving || !listing}
+            >
+              {saving ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
+              保存修改（待审核版本）
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => navigate('/listing-reviews')}>
+              去审核中心
+            </Button>
           </div>
         </div>
       )}
@@ -1056,11 +1083,17 @@ export default function ListingEditor() {
                   }
                   void save()
                 }}
-                disabled={saving || !dirty || unconfirmed}
-                title={unconfirmed ? '生成后请先逐项核对并点击"确认无误可保存"' : undefined}
+                disabled={saving || unconfirmed || (!dirty && !reviewDraft)}
+                title={
+                  unconfirmed
+                    ? '生成后请先逐项核对并点击"确认无误可保存"'
+                    : reviewDraft
+                      ? '保存会覆盖这条「待审核」文案，审核状态不变'
+                      : undefined
+                }
               >
                 {saving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Save className="mr-1 h-4 w-4" />}
-                {unconfirmed ? '请先确认' : dirty ? '保存修改' : '已保存'}
+                {unconfirmed ? '请先确认' : reviewDraft ? '保存修改（待审核版本）' : dirty ? '保存修改' : '已保存'}
               </Button>
               <Button
                 variant="default"
@@ -1239,7 +1272,9 @@ export default function ListingEditor() {
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] text-amber-900">
           <span className="font-medium">当前显示的是「待审核」的英文链接</span>
           <span>（{reviewDraft.status === 'pending' ? '还没审核，也还没进产品库' : '审核状态：' + reviewDraft.status}）</span>
-          <span className="text-amber-800">在这里改了保存，会存回这条待审核记录。</span>
+          <span className="text-amber-800">
+            编辑后点顶部「保存修改（待审核版本）」会覆盖这条待审核文案；审核状态不变，通过后才进产品库。
+          </span>
           <Button size="sm" variant="outline" className="ml-auto h-7 text-[11px]" onClick={() => navigate('/listing-reviews')}>
             去审核中心
           </Button>

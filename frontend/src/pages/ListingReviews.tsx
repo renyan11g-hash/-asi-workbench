@@ -292,7 +292,7 @@ export default function ListingReviews() {
       ) : (
       <SectionCard
         title="英文链接待审核"
-        hint="待审核 = 产品档案里「文案已生成、还没确认」的那些。点「打开」进完整编辑页，文案/图片/报价都能改；通过就进正式产品库。"
+        hint="待审核 = 文案已生成、还没确认。点「编辑」进完整编辑页（ASI 英文链接页），改完点页面顶部「保存修改（待审核版本）」就覆盖这条待审核文案；「通过/驳回」是并行的审核动作，和编辑互不影响，通过后才进正式产品库。"
         right={
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant="outline" className="border-orange-200 bg-orange-50 text-orange-700">
@@ -452,19 +452,26 @@ export default function ListingReviews() {
                     </td>
                     <td className="py-2">
                       <div className="flex flex-wrap items-center gap-1">
+                        {/* 编辑 = 直接进完整编辑页（ASI 英文链接页），在那边改完保存会覆盖待审核版本，
+                            审核状态不变；通过/驳回是并行环节，互不影响。 */}
                         <Button
                           size="sm"
                           variant="outline"
                           className="h-7 px-2 text-[11px]"
-                          onClick={() => {
-                            // 有审核记录就打开完整英文链接抽屉（全部字段都能看/改）；没有才去产品页
-                            const hit = reviewByProduct.get(r.id)
-                            if (hit) setReviewId(hit.id)
-                            else navigate(`/listing/${r.id}`)
-                          }}
+                          onClick={() => navigate(`/listing/${r.id}`)}
                         >
-                          {reviewByProduct.has(r.id) ? '查看/改完整文案' : '打开完整编辑页'}
+                          编辑
                         </Button>
+                        {reviewByProduct.has(r.id) && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-[11px] text-slate-600"
+                            onClick={() => setReviewId(reviewByProduct.get(r.id)!.id)}
+                          >
+                            查看
+                          </Button>
+                        )}
                         {tab === 'pending' ? (
                           <>
                             <Button

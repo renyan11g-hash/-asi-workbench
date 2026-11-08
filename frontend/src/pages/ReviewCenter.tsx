@@ -343,6 +343,17 @@ export function ReviewCenterPanel() {
                   </td>
                   <td className="py-2">
                     <div className="flex flex-wrap items-center gap-1">
+                      {r.productId && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() => navigate(`/listing/${r.productId}`)}
+                          title="进完整编辑页（ASI 英文链接页），保存会覆盖这条待审核版本"
+                        >
+                          编辑
+                        </Button>
+                      )}
                       <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setOpenId(r.id)}>
                         <Eye className="mr-1 h-3 w-3" /> 查看/改
                       </Button>
