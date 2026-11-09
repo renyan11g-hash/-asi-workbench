@@ -230,7 +230,7 @@ function MasterDataPanel() {
         const r = await api.updateMasterProduct(form.id, payload)
         toast.success(
           r.synced
-            ? `资料已更新：已同步 ${r.synced} 个产品的采购价/规格${r.repriced ? `，重算 ${r.repriced} 张价格表` : ''}`
+            ? `资料已更新：已同步 ${r.synced} 个产品的档案、英文链接、资料卡与评估草稿${r.repriced ? `，重算 ${r.repriced} 张价格表` : ''}`
             : '资料已更新'
         )
       } else {

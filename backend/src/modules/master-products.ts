@@ -15,9 +15,12 @@ import { z } from 'zod'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { dispImgIds, extractWpsCellImages } from '../services/cell-images'
-import { buildPriceGrid } from '../services/pricing'
+import { buildPriceGrid, convertUnits } from '../services/pricing'
+import { detectColors, detectMaterial, detectMaterials, translateColors } from '../constants/asi'
+import { runListingQc } from '../services/listing-qc'
+import { SPEC_KEYS, cleanValue, isKnown, specsSourceHash } from '../services/spec-fields'
 import { createTask, runTask, updateTask } from '../services/task-manager'
-import type { PriceRow, SourceInfo } from '../types'
+import type { Listing, PriceRow, SourceInfo } from '../types'
 import { insertProduct } from './products'
 import { loadSettings } from './settings'
 
@@ -214,6 +217,12 @@ export interface MasterSyncResult {
 
 interface LinkedProductRow {
   id: string
+  source_title: string | null
+  source_url: string | null
+  description: string | null
+  category: string | null
+  notes: string | null
+  images: string | null
   price_cny: number | null
   size_cn: string | null
   weight_g: number | null
@@ -228,10 +237,45 @@ interface LinkedProductRow {
   listing: string | null
 }
 
-/** 资料库里「有值」的字段才覆盖产品档案，空值保留产品原有数据（不会把已填的资料清空） */
-function mergeLinked(m: MasterProduct, r: LinkedProductRow) {
-  const text = (v: string | null | undefined, old: string | null) => ((v ?? '').trim() ? (v as string) : old ?? '')
+interface MergedLinked {
+  sourceTitle: string
+  sourceUrl: string
+  notes: string
+  images: string[]
+  priceCny: number | null
+  sizeCn: string
+  weightG: number | null
+  cartonLCm: number | null
+  cartonWCm: number | null
+  cartonHCm: number | null
+  pcsPerCarton: number | null
+  cartonGwKg: number | null
+  materialCn: string
+  colorsCn: string
+  supplier: string
+}
+
+function parseJson<T>(text: string | null | undefined, fallback: T): T {
+  try {
+    return text ? (JSON.parse(text) as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * 资料库是主数据：只要字段有值就覆盖产品档案；空值保留产品原有数据。
+ * 标题 / 链接 / 备注 / 图片也一起同步（以前只同步价格箱规，导致改了标题图片后产品页还是老的）。
+ */
+function mergeLinked(m: MasterProduct, r: LinkedProductRow): MergedLinked {
+  const text = (v: string | null | undefined, old: string | null) =>
+    (v ?? '').trim() ? (v as string) : old ?? ''
+  const oldImages = parseJson<string[]>(r.images, [])
   return {
+    sourceTitle: text(m.title, r.source_title),
+    sourceUrl: text(m.sourceUrl, r.source_url),
+    notes: text(m.notes, r.notes),
+    images: m.images?.length ? m.images : oldImages,
     priceCny: m.priceCny ?? r.price_cny,
     sizeCn: text(m.sizeCn, r.size_cn),
     weightG: m.weightG ?? r.weight_g,
@@ -244,6 +288,195 @@ function mergeLinked(m: MasterProduct, r: LinkedProductRow) {
     colorsCn: text(m.colorsCn, r.colors_cn),
     supplier: text(m.supplier, r.supplier),
   }
+}
+
+/** 同步后的完整 SourceInfo（Listing / 结构化资料 / 评估草稿都按它重算） */
+function sourceOfLinked(r: LinkedProductRow, next: MergedLinked): SourceInfo {
+  return {
+    sourceTitle: next.sourceTitle,
+    sourceUrl: next.sourceUrl,
+    description: r.description ?? '',
+    sourceKeywords: [],
+    amazonTitle: '',
+    priceCny: next.priceCny ?? 0,
+    priceMaxCny: null,
+    moq: 0,
+    supplier: next.supplier,
+    materialCn: next.materialCn,
+    colorsCn: next.colorsCn,
+    sizeCn: next.sizeCn,
+    weightG: next.weightG,
+    cartonLCm: next.cartonLCm,
+    cartonWCm: next.cartonWCm,
+    cartonHCm: next.cartonHCm,
+    pcsPerCarton: next.pcsPerCarton,
+    cartonGwKg: next.cartonGwKg,
+    images: next.images,
+    category: r.category ?? '',
+    notes: next.notes,
+  }
+}
+
+interface ListingSyncFlags {
+  costChanged: boolean
+  materialChanged: boolean
+  cartonChanged: boolean
+  now: string
+}
+
+function appendWarning(listing: Record<string, unknown>, text: string): void {
+  const warnings = Array.isArray(listing.warnings) ? (listing.warnings as unknown[]).map(String) : []
+  if (!warnings.includes(text)) warnings.push(text)
+  listing.warnings = warnings
+}
+
+/** 包装描述里那段外箱信息是可确定的，跟着箱规一起改；改不动就留原文并提示复核 */
+function syncPackaging(oldText: string, src: SourceInfo): string {
+  const text = String(oldText ?? '').trim()
+  if (!text) return text
+  if (!src.pcsPerCarton || !src.cartonLCm || !src.cartonWCm || !src.cartonHCm || !src.cartonGwKg) return text
+  const sentence = `${src.pcsPerCarton} pcs per carton, ${src.cartonLCm} x ${src.cartonWCm} x ${src.cartonHCm} cm, ${src.cartonGwKg} kg per carton`
+  const pattern =
+    /\d+\s*pcs per carton,\s*[\d.?]+\s*x\s*[\d.?]+\s*x\s*[\d.?]+\s*cm,\s*[\d.]+\s*kg per carton/i
+  return pattern.test(text) ? text.replace(pattern, sentence) : text
+}
+
+/**
+ * 一份 Listing 文本 → 用最新资料重算所有「可确定字段」：
+ * 尺寸/重量/箱规/颜色/材质/包装里的箱规。价格表在成本变化时按原档位重算（保留人工倍率/运输方式）。
+ * 文案措辞（标题/描述里的材质说法）无法安全字符串替换，材质变了会加一条英文 warning 提醒重新生成。
+ */
+function syncListingFields(
+  text: string | null,
+  src: SourceInfo,
+  flags: ListingSyncFlags
+): { text: string; rows: PriceRow[] | null } | null {
+  if (!text) return null
+  let listing: Record<string, unknown>
+  try {
+    listing = JSON.parse(text) as Record<string, unknown>
+  } catch {
+    return null
+  }
+  const units = convertUnits(src)
+  const next: Record<string, unknown> = {
+    ...listing,
+    productSizeInch: units.productSizeInch,
+    productSizeCm: units.productSizeCm,
+    unitWeightLb: units.unitWeightLb,
+    cartonSizeInch: units.cartonSizeInch,
+    cartonGwLb: units.cartonGwLb,
+  }
+  if (src.colorsCn.trim()) {
+    const colors = translateColors(src.colorsCn)
+    if (colors) {
+      next.colors = colors
+      next.colorChips = detectColors(src.colorsCn)
+    }
+  }
+  if (src.materialCn.trim()) {
+    next.material = detectMaterial(src.materialCn)
+    next.materials = detectMaterials(src.materialCn)
+  }
+  if (flags.cartonChanged) next.packaging = syncPackaging(String(listing.packaging ?? ''), src)
+  if (flags.materialChanged) {
+    appendWarning(
+      next,
+      `Source material changed on ${flags.now.slice(0, 10)}; regenerate the English copy if the title or description names the material.`
+    )
+  }
+
+  let rows: PriceRow[] | null = null
+  if (flags.costChanged) {
+    const re = repriceListingText(JSON.stringify(next), src)
+    if (re) {
+      try {
+        Object.assign(next, JSON.parse(re.text) as Record<string, unknown>)
+        rows = re.rows
+      } catch {
+        /* 价格表重算失败就保留原表 */
+      }
+    }
+  }
+  return { text: JSON.stringify(next), rows }
+}
+
+/** 结构化资料（14 项）里与资料库重叠的字段一起改；其余字段保留原值 */
+function syncProductSpecs(productId: string, src: SourceInfo, now: string): boolean {
+  const row = db.prepare('SELECT data FROM product_specs WHERE product_id = ?').get(productId) as unknown as
+    | { data: string }
+    | undefined
+  if (!row) return false
+  const data = parseJson<Record<string, unknown>>(row.data, {})
+  const set = (key: string, value: unknown) => {
+    const s = String(value ?? '').trim()
+    if (s) data[key] = cleanValue(s)
+  }
+  set('productName', src.sourceTitle)
+  set('material', src.materialCn)
+  set('productSize', src.sizeCn)
+  set('productWeight', src.weightG ? `${src.weightG}g` : '')
+  set('colors', src.colorsCn)
+  if (src.cartonLCm && src.cartonWCm && src.cartonHCm) {
+    set('cartonDimensions', `${src.cartonLCm} x ${src.cartonWCm} x ${src.cartonHCm} cm`)
+  }
+  set('unitsPerCarton', src.pcsPerCarton)
+  set('cartonGrossWeight', src.cartonGwKg ? `${src.cartonGwKg}kg` : '')
+  const unknown = SPEC_KEYS.filter((k) => !isKnown(data[k]))
+  db.prepare(
+    `UPDATE product_specs SET data = ?, unknown_fields = ?, source_hash = ?, updated_at = ? WHERE product_id = ?`
+  ).run(JSON.stringify(data), JSON.stringify(unknown), specsSourceHash(src), now, productId)
+  return true
+}
+
+/** 评估库草稿里也存了一份 source 快照，一起换成最新资料 */
+function syncEvalDraft(productId: string, source: SourceInfo, now: string): boolean {
+  const row = db.prepare('SELECT draft_id FROM products WHERE id = ?').get(productId) as unknown as
+    | { draft_id: string | null }
+    | undefined
+  if (!row?.draft_id) return false
+  const draft = db.prepare('SELECT content FROM drafts WHERE id = ?').get(row.draft_id) as unknown as
+    | { content: string }
+    | undefined
+  if (!draft) return false
+  const content = parseJson<Record<string, unknown>>(draft.content, {})
+  content.source = source
+  db.prepare('UPDATE drafts SET title = ?, content = ?, updated_at = ? WHERE id = ?').run(
+    source.sourceTitle.slice(0, 200) || '未命名产品',
+    JSON.stringify(content),
+    now,
+    row.draft_id
+  )
+  return true
+}
+
+/** 待审核版本的 source / 标题 / 链接 / 图片也换成本次同步后的资料 */
+function mergeReviewSource(
+  sourceText: string,
+  next: MergedLinked,
+  source: SourceInfo
+): string {
+  const src = parseJson<Record<string, unknown>>(sourceText, {})
+  return JSON.stringify({
+    ...src,
+    sourceTitle: source.sourceTitle,
+    sourceUrl: source.sourceUrl,
+    description: src.description ?? source.description,
+    priceCny: next.priceCny ?? 0,
+    sizeCn: next.sizeCn,
+    weightG: next.weightG,
+    cartonLCm: next.cartonLCm,
+    cartonWCm: next.cartonWCm,
+    cartonHCm: next.cartonHCm,
+    pcsPerCarton: next.pcsPerCarton,
+    cartonGwKg: next.cartonGwKg,
+    materialCn: next.materialCn,
+    colorsCn: next.colorsCn,
+    supplier: next.supplier,
+    notes: next.notes,
+    images: next.images,
+    category: src.category ?? source.category,
+  })
 }
 
 /**
@@ -279,41 +512,19 @@ function repriceListingText(
   }
 }
 
-/** 待审核版本的 source 也一起换成本次同步后的资料，避免重新生成又用回老采购价 */
-function mergeReviewSource(sourceText: string, next: ReturnType<typeof mergeLinked>): string {
-  try {
-    const src = JSON.parse(sourceText || '{}') as Record<string, unknown>
-    return JSON.stringify({
-      ...src,
-      priceCny: next.priceCny ?? 0,
-      sizeCn: next.sizeCn,
-      weightG: next.weightG,
-      cartonLCm: next.cartonLCm,
-      cartonWCm: next.cartonWCm,
-      cartonHCm: next.cartonHCm,
-      pcsPerCarton: next.pcsPerCarton,
-      cartonGwKg: next.cartonGwKg,
-      materialCn: next.materialCn,
-      colorsCn: next.colorsCn,
-    })
-  } catch {
-    return sourceText
-  }
-}
-
 /**
- * 资料库 → 产品档案（采购价/箱规联动）。
+ * 资料库 → 产品档案（全字段联动）。
  *
- * 产品档案里的采购价、箱规、每箱数、箱毛重是当初抓取/建档时抄下来的副本；
- * 之后在资料库里改了价，产品档案并不知道，价格表就会一直按老成本算。
- * 这里在资料保存后统一把它们同步过去，并且「成本真的变了」才重算价格表，
- * 避免每次保存都把人工调过的价格表重置一遍。
+ * 资料库是主数据：产品档案、结构化资料、评估草稿、已保存的英文链接、待审核文案里
+ * 凡是「抄了一份」的资料，都在这里一起更新。可确定字段（价格/尺寸/重量/箱规/颜色/材质/
+ * 包装里的箱规）直接重算；AI 写的文案措辞无法安全替换，材质变了会加一条 warning 提醒重新生成。
  */
 export function syncMasterToProducts(m: MasterProduct): MasterSyncResult {
   const out: MasterSyncResult = { synced: 0, repriced: 0 }
   let rows: LinkedProductRow[]
   try {
-    const sql = `SELECT id, price_cny, size_cn, weight_g, carton_l_cm, carton_w_cm, carton_h_cm,
+    const sql = `SELECT id, source_title, source_url, description, category, notes, images,
+                        price_cny, size_cn, weight_g, carton_l_cm, carton_w_cm, carton_h_cm,
                         pcs_per_carton, carton_gw_kg, material_cn, colors_cn, supplier, listing
                    FROM products
                   WHERE master_id = ?${m.sourceUrl ? " OR (source_url <> '' AND source_url = ?)" : ''}`
@@ -327,23 +538,41 @@ export function syncMasterToProducts(m: MasterProduct): MasterSyncResult {
   const now = new Date().toISOString()
   for (const r of rows) {
     const next = mergeLinked(m, r)
-    const numChanged = (a: number | null, b: number | null | undefined) =>
-      Number(a ?? 0) !== Number(b ?? 0)
-    // 只有影响报价的字段变了才重算价格表
+    const numChanged = (a: number | null, b: number | null | undefined) => Number(a ?? 0) !== Number(b ?? 0)
+    const strChanged = (a: string | null | undefined, b: string | null | undefined) =>
+      (a ?? '').trim() !== (b ?? '').trim()
+
     const costChanged =
       numChanged(r.price_cny, next.priceCny) ||
+      numChanged(r.weight_g, next.weightG) ||
+      numChanged(r.carton_gw_kg, next.cartonGwKg)
+    const cartonChanged =
       numChanged(r.carton_l_cm, next.cartonLCm) ||
       numChanged(r.carton_w_cm, next.cartonWCm) ||
       numChanged(r.carton_h_cm, next.cartonHCm) ||
-      numChanged(r.pcs_per_carton, next.pcsPerCarton) ||
-      numChanged(r.carton_gw_kg, next.cartonGwKg) ||
-      numChanged(r.weight_g, next.weightG)
+      numChanged(r.pcs_per_carton, next.pcsPerCarton)
+    const materialChanged = strChanged(r.material_cn, next.materialCn)
+    const colorsChanged = strChanged(r.colors_cn, next.colorsCn)
+    const sizeChanged = strChanged(r.size_cn, next.sizeCn)
+    const titleChanged = strChanged(r.source_title, next.sourceTitle)
+    const urlChanged = strChanged(r.source_url, next.sourceUrl)
+    const notesChanged = strChanged(r.notes, next.notes)
+    const imagesChanged = JSON.stringify(parseJson<string[]>(r.images, [])) !== JSON.stringify(next.images)
+    const supplierChanged = strChanged(r.supplier, next.supplier)
+    const specsChanged = materialChanged || colorsChanged || sizeChanged || costChanged || cartonChanged
+    const anyChanged =
+      specsChanged || titleChanged || urlChanged || notesChanged || imagesChanged || supplierChanged
 
     db.prepare(
-      `UPDATE products SET price_cny=?, size_cn=?, weight_g=?, carton_l_cm=?, carton_w_cm=?, carton_h_cm=?,
+      `UPDATE products SET source_title=?, source_url=?, notes=?, images=?,
+         price_cny=?, size_cn=?, weight_g=?, carton_l_cm=?, carton_w_cm=?, carton_h_cm=?,
          pcs_per_carton=?, carton_gw_kg=?, material_cn=?, colors_cn=?, supplier=?, master_id=?, updated_at=?
        WHERE id=?`
     ).run(
+      next.sourceTitle,
+      next.sourceUrl,
+      next.notes,
+      JSON.stringify(next.images),
       next.priceCny ?? null,
       next.sizeCn,
       next.weightG ?? null,
@@ -360,42 +589,87 @@ export function syncMasterToProducts(m: MasterProduct): MasterSyncResult {
       r.id
     )
     out.synced += 1
-    if (!costChanged) continue
+    if (!anyChanged) continue
 
-    const src = {
-      priceCny: next.priceCny ?? 0,
-      weightG: next.weightG,
-      cartonLCm: next.cartonLCm,
-      cartonWCm: next.cartonWCm,
-      cartonHCm: next.cartonHCm,
-      pcsPerCarton: next.pcsPerCarton,
-      cartonGwKg: next.cartonGwKg,
+    const src = sourceOfLinked(r, next)
+    const flags: ListingSyncFlags = {
+      costChanged: costChanged || cartonChanged,
+      materialChanged,
+      cartonChanged,
+      now,
     }
 
-    // ① 产品自己的文案（已保存的 / 已上架的）
-    const re = repriceListingText(r.listing, src)
-    if (re) {
-      db.prepare('UPDATE products SET listing=?, updated_at=? WHERE id=?').run(re.text, now, r.id)
-      out.repriced += 1
+    // ① 产品自己的英文链接（已保存的 / 已上架的）
+    const listingSync = syncListingFields(r.listing, src, flags)
+    if (listingSync) {
+      db.prepare('UPDATE products SET listing=?, updated_at=? WHERE id=?').run(listingSync.text, now, r.id)
+      if (flags.costChanged) out.repriced += 1
     }
 
-    // ② 还没审完的那份文案（价格表也存在待审核记录里）
+    // ② 产品结构化资料（14 项里和资料库重叠的字段）
+    syncProductSpecs(r.id, src, now)
+
+    // ③ 评估库草稿里存的 source 快照
+    syncEvalDraft(r.id, src, now)
+
+    // ④ 所有审核记录（待审核 / 已通过 / 已驳回）的 source、标题、链接、缩略图和可确定字段
     try {
       const reviews = db
         .prepare(
-          `SELECT id, listing, source FROM listing_reviews WHERE product_id = ? AND status = 'pending'`
+          `SELECT id, listing, source, status, title, source_url, image
+             FROM listing_reviews WHERE product_id = ?`
         )
-        .all(r.id) as unknown as Array<{ id: string; listing: string; source: string }>
+        .all(r.id) as unknown as Array<{
+        id: string
+        listing: string
+        source: string
+        status: string
+        title: string
+        source_url: string
+        image: string | null
+      }>
       for (const rv of reviews) {
-        const rr = repriceListingText(rv.listing, src)
-        if (!rr) continue
+        const ls = syncListingFields(rv.listing, src, flags)
+        let qcJson: string | null = null
+        if (rv.status === 'pending' && ls) {
+          try {
+            qcJson = JSON.stringify(runListingQc({ listing: JSON.parse(ls.text) as unknown as Listing }))
+          } catch {
+            qcJson = null
+          }
+        }
         db.prepare(
-          'UPDATE listing_reviews SET listing=?, price_grid=?, source=?, updated_at=? WHERE id=?'
-        ).run(rr.text, JSON.stringify(rr.rows), mergeReviewSource(rv.source, next), now, rv.id)
-        out.repriced += 1
+          `UPDATE listing_reviews SET title=?, source_url=?, image=?, source=?, listing=?,
+             price_grid=COALESCE(?, price_grid), qc=COALESCE(?, qc), updated_at=?
+           WHERE id=?`
+        ).run(
+          next.sourceTitle || rv.title,
+          next.sourceUrl || rv.source_url,
+          imagesChanged ? (next.images[0] ?? null) : rv.image,
+          mergeReviewSource(rv.source, next, src),
+          ls?.text ?? rv.listing,
+          ls?.rows ? JSON.stringify(ls.rows) : null,
+          qcJson,
+          now,
+          rv.id
+        )
+        if (ls?.rows) out.repriced += 1
       }
     } catch {
       /* 审核表结构异常不影响产品档案同步 */
+    }
+
+    // ⑤ 影响报价/材质/尺寸的改动会让旧的评估结论失真：标记回「待评估」，
+    //    旧评估内容仍保留（不删除），人工重新评估后会覆盖。
+    if (specsChanged) {
+      try {
+        db.prepare(
+          `UPDATE products SET eval_review='pending', eval_reviewed_at=NULL,
+             review_note='资料库已更新，需重新评估', updated_at=? WHERE id=?`
+        ).run(now, r.id)
+      } catch {
+        /* 老库没有这些列时忽略 */
+      }
     }
   }
   return out
