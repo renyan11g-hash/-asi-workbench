@@ -1057,7 +1057,30 @@ export function ProductImageStudio({
           </div>
 
           <div>
-            <div className="text-[12px] font-medium text-slate-700">每种图参考哪些产品图</div>
+            <div className="flex items-center justify-between">
+              <div className="text-[12px] font-medium text-slate-700">每种图参考哪些产品图 / 风格图</div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-[10px]"
+                disabled={busy === 'match' || !sources.length}
+                onClick={async () => {
+                  setBusy('match')
+                  try {
+                    await api.autoAssignImagePlan(productId)
+                    await load()
+                    toast.success('已让 AI 按正面/侧面/特写/场景自动分配每张图的参考图')
+                  } catch (err) {
+                    toast.error(getErrorMessage(err))
+                  } finally {
+                    setBusy(null)
+                  }
+                }}
+              >
+                {busy === 'match' ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Wand2 className="mr-1 h-3 w-3" />}
+                AI 自动挑产品图
+              </Button>
+            </div>
             <div className="mt-1 grid gap-2 lg:grid-cols-2">
               {(['main', 'dimension', 'detail', 'scene'] as const).map((k) => (
                 <div key={k} className="rounded-lg border border-slate-200 px-2 py-2">
@@ -1095,6 +1118,32 @@ export function ProductImageStudio({
                       )
                     })}
                     {sources.length === 0 && <span className="text-[10px] text-slate-400">先加产品图</span>}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-1">
+                    <span className="text-[10px] text-slate-400">风格参考：</span>
+                    {libraryRefs.slice(0, 10).map((r) => {
+                      const on = plan[k].refs.includes(r.id)
+                      return (
+                        <button
+                          key={`${k}-style-${r.id}`}
+                          title={`${r.title || r.category}${on ? '（已选）' : ''}`}
+                          onClick={() => {
+                            const base = plan[k].refs.filter((x) => x !== '__none__')
+                            const next = on ? base.filter((x) => x !== r.id) : [...base, r.id].slice(0, 2)
+                            void savePlan(k, { refs: next })
+                          }}
+                          className={cn('rounded border-2 p-0', on ? 'border-emerald-500' : 'border-transparent opacity-70')}
+                        >
+                          <img src={api.proxyImageUrl(r.url)} alt="" className="h-8 w-8 rounded object-cover" />
+                        </button>
+                      )
+                    })}
+                    {libraryRefs.length === 0 && <span className="text-[10px] text-slate-400">参考库为空</span>}
+                    {plan[k].refs.filter((x) => x !== '__none__').length > 0 && (
+                      <button className="text-[10px] text-slate-400 hover:underline" onClick={() => void savePlan(k, { refs: [] })}>
+                        自动
+                      </button>
+                    )}
                   </div>
                   <div className="mt-1 flex items-center gap-2">
                     <input
