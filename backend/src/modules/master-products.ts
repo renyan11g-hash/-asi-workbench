@@ -136,7 +136,9 @@ const masterSchema = z.object({
   cartonHCm: z.coerce.number().nullable().optional(),
   pcsPerCarton: z.coerce.number().nullable().optional(),
   cartonGwKg: z.coerce.number().nullable().optional(),
-  images: z.array(z.string().max(4000)).max(20).default([]),
+  // 图片数量不限（用户可能从 1688 存几十张多角度图）；只留一个防滥用的硬上限 300 张，
+  // 单条 URL 仍限长 4000，避免把整段 base64 塞进来。
+  images: z.array(z.string().max(4000)).max(300).default([]),
   notes: z.string().max(2000).default(''),
   supplier: z.string().max(200).default(''),
   materialCn: z.string().max(200).default(''),
@@ -1078,16 +1080,18 @@ function rowToInput(map: Map<ColKey, number[]>, row: unknown[], cellImages?: Map
     cartonGwKg: gw,
     images: (() => {
       const raw = get('imagesText')
-      // WPS 嵌入单元格图片：=DISPIMG("ID_xxx",1) → 从 xlsx 里解出来的 dataURL
+      // WPS 嵌入单元格图片：=DISPIMG("ID_xxx",1) → 从 xlsx 里解出来的 dataURL。
+      // 这类图是整段 base64（一张几十 KB），一条记录塞太多会把库撑爆，仍限 8 张。
       const fromCell = dispImgIds(raw)
         .map((id) => cellImages?.get(id))
         .filter((u): u is string => Boolean(u))
       if (fromCell.length) return fromCell.slice(0, 8)
+      // 普通图片网址：不限数量（多角度图越多，出图越不容易画错结构）
       return raw
         .split(/[\n\r|,，;；]+/)
         .map((s) => s.trim())
         .filter((s) => /^https?:\/\//i.test(s))
-        .slice(0, 8)
+        .slice(0, 300)
     })(),
     notes: get('notes'),
     supplier: get('supplier'),

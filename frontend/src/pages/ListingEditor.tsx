@@ -1231,8 +1231,8 @@ export default function ListingEditor() {
           </a>
         )}
         {images.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {images.slice(0, 8).map((src, i) => (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {images.slice(0, 16).map((src, i) => (
               <img
                 key={i}
                 src={api.proxyImageUrl(src)}
@@ -1241,6 +1241,11 @@ export default function ListingEditor() {
                 referrerPolicy="no-referrer"
               />
             ))}
+            {images.length > 16 && (
+              <span className="text-[11px] text-slate-400">
+                共 {images.length} 张，下面「产品图片」区可看全部
+              </span>
+            )}
           </div>
         )}
       </SectionCard>

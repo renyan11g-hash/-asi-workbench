@@ -334,7 +334,7 @@ function MasterDataPanel() {
       )
       if (f.images?.length || f.image) {
         const got = (f.images?.length ? f.images : [f.image]).filter((x): x is string => Boolean(x))
-        setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, ...got])).slice(0, 8) } : cur))
+        setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, ...got])) } : cur))
       }
       toast.success(r.message || '已抓取')
     } catch (err) {
@@ -353,7 +353,7 @@ function MasterDataPanel() {
     try {
       const r = await api.fetch1688Images(form.sourceUrl.trim())
       if (r.images?.length) {
-        setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, ...r.images])).slice(0, 8) } : cur))
+        setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, ...r.images])) } : cur))
         toast.success(r.message || `抓到 ${r.images.length} 张图`)
       } else {
         toast.warning(r.message || '没抓到图，可以手动粘贴图片地址')
@@ -372,7 +372,7 @@ function MasterDataPanel() {
       toast.error('图片地址要以 http 开头')
       return
     }
-    setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, u])).slice(0, 8) } : cur))
+    setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, u])) } : cur))
     setImgUrl('')
   }
 
@@ -399,7 +399,7 @@ function MasterDataPanel() {
       try {
         const r = await api.fetch1688Images(p.sourceUrl)
         if (r.images?.length) {
-          await api.updateMasterProduct(p.id, { images: r.images.slice(0, 8) })
+          await api.updateMasterProduct(p.id, { images: r.images })
           got += 1
         }
       } catch {
@@ -524,7 +524,7 @@ function MasterDataPanel() {
       {form && (
         <SectionCard
           title={form.id ? '编辑商品资料' : '新增商品资料'}
-          hint="箱规、每箱数、箱毛重是运费测算的关键；图片存 1~8 张，出图时作为参考图"
+          hint="箱规、每箱数、箱毛重是运费测算的关键；图片数量不限，出图时按需取用（多角度图越多，AI 越不容易画错结构）"
           right={
             <Button size="sm" variant="ghost" onClick={() => setForm(null)}>
               <X className="mr-1 h-3.5 w-3.5" /> 关闭
@@ -655,7 +655,7 @@ function MasterDataPanel() {
           {/* 图片 */}
           <div className="mt-3 rounded-lg border border-slate-200 p-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[12px] font-medium text-slate-700">商品图片（{form.images.length}/8）</span>
+              <span className="text-[12px] font-medium text-slate-700">商品图片（{form.images.length} 张 · 不限数量）</span>
               <Button size="sm" variant="outline" onClick={() => void grabImages()} disabled={fetching}>
                 {fetching ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="mr-1 h-3.5 w-3.5" />}
                 从 1688 抓图

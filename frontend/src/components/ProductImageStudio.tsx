@@ -8,6 +8,7 @@ import {
   Loader2,
   MessageSquare,
   RefreshCw,
+  Save,
   ShieldCheck,
   Sparkles,
   Star,
@@ -110,6 +111,10 @@ export function ProductImageStudio({
   const [withLogo, setWithLogo] = useState(true)
   const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState<'fetch' | 'gen' | 'match' | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [savingPlan, setSavingPlan] = useState(false)
+  /** 高级设置里有改了还没保存的注意点（刷新前要提醒，别把输入冲掉） */
+  const [planDirty, setPlanDirty] = useState(false)
   const [progress, setProgress] = useState('')
   const [showHistory, setShowHistory] = useState(false)
 
@@ -275,10 +280,73 @@ export function ProductImageStudio({
     setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], ...patch } }))
     try {
       const r = await api.saveImagePlan(productId, { kind, ...patch })
-      setPlan(normalizePlan(r.plan))
+      // 只覆盖刚保存的这一种：以前是整份 plan 替换，会把别的图刚输入还没保存的注意点冲掉
+      const next = normalizePlan(r.plan)
+      setPlan((cur) => ({ ...cur, [kind]: next[kind] }))
+      setPlanDirty(false)
     } catch (err) {
       setPlan((cur) => ({ ...cur, [kind]: prev }))
       toast.error(getErrorMessage(err))
+    }
+  }
+
+  /**
+   * 只刷新「产品图 / 参考图 / 每种图的配置 / 风格参考库」，不重置正在生成的东西。
+   * 用途：在上面的产品图区（或资料库）加了图，高级设置里的选择列表要立刻跟着变。
+   */
+  const refreshFromServer = useCallback(
+    async (silent = false) => {
+      if (silent && planDirty) return
+      setRefreshing(true)
+      try {
+        const [src, rf, pl, refLibrary, styleList, styleInfo] = await Promise.all([
+          api.getSourceImages(productId),
+          api.listRefImages(productId),
+          api.getImagePlan(productId),
+          api.listVisualRefs({ status: 'active', limit: 200 }),
+          api.listVisualStyles(),
+          api.getProductStyle(productId),
+        ])
+        setSources(src.images ?? [])
+        setRefs(rf.refs ?? [])
+        setPlan(normalizePlan(pl.plan))
+        setLibraryRefs(refLibrary)
+        setStyles(styleList.map((s) => ({ id: s.id, name: s.name, isDefault: s.isDefault })))
+        setMatch(styleInfo.match)
+        setSuggestion(styleInfo.suggestion ?? null)
+        setPlanDirty(false)
+        if (!silent) {
+          toast.success(`已刷新：产品图 ${(src.images ?? []).length} 张 · 风格参考图 ${refLibrary.length} 张`)
+        }
+      } catch (err) {
+        toast.error(getErrorMessage(err))
+      } finally {
+        setRefreshing(false)
+      }
+    },
+    [productId, planDirty]
+  )
+
+  /** 高级设置「保存」：四种图的参考产品图 / 风格参考图 / 注意点一起写回，不怕只改了没失焦 */
+  const saveAllPlan = async () => {
+    setSavingPlan(true)
+    try {
+      const kindsAll: KindKey[] = ['main', 'dimension', 'detail', 'scene']
+      for (const k of kindsAll) {
+        const cur = plan[k]
+        await api.saveImagePlan(productId, {
+          kind: k,
+          sources: cur.sources,
+          refs: cur.refs,
+          notes: cur.notes,
+        })
+      }
+      setPlanDirty(false)
+      toast.success('高级设置已保存（四种图的参考图 / 风格参考图 / 注意点）')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setSavingPlan(false)
     }
   }
 
@@ -994,17 +1062,63 @@ export function ProductImageStudio({
       </div>
 
       {/* 5. 高级设置：手动指定参考图 / 图种 / 生成前对话 */}
-      <details className="rounded-xl border border-slate-200 bg-white p-3">
-        <summary className="cursor-pointer text-[12px] font-medium text-slate-700">
-          高级设置（手动指定参考图 / 每种图的注意点 / 生成前对话）
+      <details
+        className="rounded-xl border border-slate-200 bg-white p-3"
+        onToggle={(e) => {
+          // 展开时自动同步一次：上面加过产品图/换了风格参考图，这里立刻是最新的
+          if ((e.currentTarget as HTMLDetailsElement).open) void refreshFromServer(true)
+        }}
+      >
+        <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-[12px] font-medium text-slate-700">
+          <span>高级设置（手动指定参考图 / 每种图的注意点 / 生成前对话）</span>
+          <span className="ml-auto flex items-center gap-1.5" onClick={(e) => e.preventDefault()}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[10px]"
+              disabled={refreshing}
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                if (planDirty && !window.confirm('有还没保存的注意点，刷新会丢掉，继续？')) return
+                void refreshFromServer()
+              }}
+              title="重新读取产品图 / 风格参考图 / 每种图的配置（在别处加了图就点这个）"
+            >
+              {refreshing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}
+              刷新
+            </Button>
+            <Button
+              size="sm"
+              className="h-6 px-2 text-[10px]"
+              disabled={savingPlan}
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                void saveAllPlan()
+              }}
+              title="把四种图的参考图 / 风格参考图 / 注意点一起保存"
+            >
+              {savingPlan ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
+              保存
+            </Button>
+          </span>
         </summary>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 px-2 py-1.5 text-[10px] text-slate-500">
+          <span>产品图 {sources.length} 张</span>
+          <span>·</span>
+          <span>风格参考图 {libraryRefs.length} 张</span>
+          {planDirty && <span className="font-medium text-amber-600">· 注意点有改动，记得点「保存」</span>}
+          <span className="text-slate-400">展开面板会自动同步一次；在别处加了图，点「刷新」即可</span>
+        </div>
 
         <div className="mt-3 space-y-3">
           <div className="grid gap-2 lg:grid-cols-2">
             <div>
               <div className="text-[12px] font-medium text-slate-700">风格参考图（从视觉风格中心选，可排除）</div>
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                {libraryRefs.slice(0, 18).map((r) => {
+              <div className="mt-1 flex max-h-40 flex-wrap gap-1.5 overflow-y-auto rounded border border-transparent p-0.5">
+                {libraryRefs.map((r) => {
                   const on = manualRefIds.includes(r.id)
                   return (
                     <button
@@ -1087,7 +1201,7 @@ export function ProductImageStudio({
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-[12px] font-medium text-slate-800">{KIND_LABEL[k]}</span>
                     <span className="text-[10px] text-slate-400">
-                      已选 {plan[k].sources.length ? `${plan[k].sources.length} 张` : '全部产品图'}
+                      {plan[k].sources.length ? `已选 ${plan[k].sources.length} 张` : `全部 ${sources.length} 张产品图`}
                     </span>
                     <Button
                       size="sm"
@@ -1101,8 +1215,8 @@ export function ProductImageStudio({
                       <MessageSquare className="mr-0.5 h-3 w-3" /> 先和 AI 对话
                     </Button>
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-1.5">
-                    {sources.slice(0, 12).map((u, i) => {
+                  <div className="mt-1 flex max-h-32 flex-wrap gap-1.5 overflow-y-auto rounded border border-transparent p-0.5">
+                    {sources.map((u, i) => {
                       const on = plan[k].sources.includes(u)
                       return (
                         <button
@@ -1119,9 +1233,9 @@ export function ProductImageStudio({
                     })}
                     {sources.length === 0 && <span className="text-[10px] text-slate-400">先加产品图</span>}
                   </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-1">
+                  <div className="mt-1 flex max-h-24 flex-wrap items-center gap-1 overflow-y-auto rounded border border-transparent p-0.5">
                     <span className="text-[10px] text-slate-400">风格参考：</span>
-                    {libraryRefs.slice(0, 10).map((r) => {
+                    {libraryRefs.map((r) => {
                       const on = plan[k].refs.includes(r.id)
                       return (
                         <button
@@ -1148,7 +1262,10 @@ export function ProductImageStudio({
                   <div className="mt-1 flex items-center gap-2">
                     <input
                       value={plan[k].notes}
-                      onChange={(e) => setPlan((cur) => ({ ...cur, [k]: { ...cur[k], notes: e.target.value } }))}
+                      onChange={(e) => {
+                        setPlanDirty(true)
+                        setPlan((cur) => ({ ...cur, [k]: { ...cur[k], notes: e.target.value } }))
+                      }}
                       onBlur={() => void savePlan(k, { notes: plan[k].notes })}
                       placeholder="这张图的注意点（对话后自动填入）"
                       className="h-7 flex-1 rounded border border-slate-200 px-2 text-[11px] outline-none focus:border-blue-400"
@@ -1157,8 +1274,7 @@ export function ProductImageStudio({
                       <button className="text-[10px] text-rose-500 hover:underline" onClick={() => void savePlan(k, { sources: [] })}>
                         清空
                       </button>
-                    )}
-                  </div>
+                    )}                  </div>
                   <label className="mt-1 inline-flex items-center gap-1 text-[10px] text-slate-500">
                     <input
                       type="checkbox"
