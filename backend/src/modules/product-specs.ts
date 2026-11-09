@@ -166,6 +166,7 @@ export function listProductCards(opts?: { includeTrashed?: boolean }): ProductCa
       priceMaxCny: null,
       moq: 0,
       supplier: '',
+      altSuppliers: '',
       materialCn: r.material_cn ?? '',
       colorsCn: r.colors_cn ?? '',
       sizeCn: r.size_cn ?? '',

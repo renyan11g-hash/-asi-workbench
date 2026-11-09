@@ -208,6 +208,8 @@ export interface SourceInfo {
   priceMaxCny: number | null
   moq: number
   supplier: string
+  /** 备选供应商（一个或多个，每行一个）：主供应商断货/涨价时替换用 */
+  altSuppliers?: string
   materialCn: string
   colorsCn: string
   sizeCn: string
@@ -696,6 +698,8 @@ export interface MasterProduct {
   images: string[]
   notes: string
   supplier: string
+  /** 备选供应商：一个或多个，每行一个 */
+  altSuppliers: string
   materialCn: string
   colorsCn: string
   createdAt: string

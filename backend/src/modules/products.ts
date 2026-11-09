@@ -31,6 +31,8 @@ export const sourceSchema = z.object({
   priceMaxCny: z.coerce.number().nullable().optional(),
   moq: z.coerce.number().nullable().optional(),
   supplier: z.string().default(''),
+  /** 备选供应商（每行一个） */
+  altSuppliers: z.string().default(''),
   materialCn: z.string().default(''),
   colorsCn: z.string().default(''),
   sizeCn: z.string().default(''),
@@ -75,6 +77,7 @@ export function toSourceInfo(s: SourceInput): SourceInfo {
     priceMaxCny: s.priceMaxCny ?? null,
     moq: Number(s.moq ?? 0),
     supplier: s.supplier ?? '',
+    altSuppliers: s.altSuppliers ?? '',
     materialCn: s.materialCn ?? '',
     colorsCn: s.colorsCn ?? '',
     sizeCn: s.sizeCn ?? '',
@@ -103,6 +106,7 @@ interface Row {
   price_max_cny: number | null
   moq: number | null
   supplier: string
+  alt_suppliers: string
   material_cn: string
   colors_cn: string
   size_cn: string
@@ -165,6 +169,7 @@ function rowToProduct(r: Row): Product {
       priceMaxCny: r.price_max_cny,
       moq: r.moq ?? 0,
       supplier: r.supplier,
+      altSuppliers: r.alt_suppliers ?? '',
       materialCn: r.material_cn,
       colorsCn: r.colors_cn,
       sizeCn: r.size_cn,
@@ -1147,7 +1152,7 @@ function updateProductRow(
 ): void {
   db.prepare(
     `UPDATE products SET source_title=?, source_url=?, description=?, source_keywords=?, amazon_title=?,
-      price_cny=?, price_max_cny=?, moq=?, supplier=?, material_cn=?, colors_cn=?, size_cn=?, weight_g=?,
+      price_cny=?, price_max_cny=?, moq=?, supplier=?, alt_suppliers=?, material_cn=?, colors_cn=?, size_cn=?, weight_g=?,
       carton_l_cm=?, carton_w_cm=?, carton_h_cm=?, pcs_per_carton=?, carton_gw_kg=?,
       images=?, category=?, notes=?, score=?, verdict=?, evaluation=?, listing=?, listing_title=?, status=?, updated_at=? WHERE id=?`
   ).run(
@@ -1160,6 +1165,7 @@ function updateProductRow(
     source.priceMaxCny ?? null,
     source.moq ?? null,
     source.supplier,
+    source.altSuppliers ?? '',
     source.materialCn,
     source.colorsCn,
     source.sizeCn,
@@ -1348,10 +1354,10 @@ export function insertProduct(input: {
   const id = randomUUID()
   db.prepare(
     `INSERT INTO products (id, code, draft_id, source_title, source_url, description, source_keywords, amazon_title,
-      price_cny, price_max_cny, moq, supplier, material_cn, colors_cn, size_cn, weight_g,
+      price_cny, price_max_cny, moq, supplier, alt_suppliers, material_cn, colors_cn, size_cn, weight_g,
       carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg,
       images, category, notes, score, verdict, evaluation, listing, listing_title, similar, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     nextProductCode(),
@@ -1365,6 +1371,7 @@ export function insertProduct(input: {
     s.priceMaxCny ?? null,
     s.moq ?? null,
     s.supplier,
+    s.altSuppliers ?? '',
     s.materialCn,
     s.colorsCn,
     s.sizeCn,
@@ -2480,11 +2487,11 @@ function insertAutoProduct(
   const now = new Date().toISOString()
   db.prepare(
     `INSERT INTO products (id, draft_id, source_title, source_url, description, source_keywords, amazon_title,
-      price_cny, price_max_cny, moq, supplier, material_cn, colors_cn, size_cn, weight_g,
+      price_cny, price_max_cny, moq, supplier, alt_suppliers, material_cn, colors_cn, size_cn, weight_g,
       carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg,
       images, category, notes, score, verdict, evaluation, listing, similar, status, created_at, updated_at,
       origin, selection_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     null,
@@ -2497,6 +2504,7 @@ function insertAutoProduct(
     source.priceMaxCny ?? null,
     source.moq ?? null,
     source.supplier,
+    source.altSuppliers ?? '',
     source.materialCn,
     source.colorsCn,
     source.sizeCn,

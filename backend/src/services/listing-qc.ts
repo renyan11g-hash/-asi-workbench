@@ -116,8 +116,26 @@ const CERT_WORDS = [
 const MEASURE_RE =
   /\b(\d+(?:\.\d+)?)\s*(oz|ounce|ounces|fl oz|lb|lbs|pound|pounds|inch|inches|cm|mm|ml|liter|liters|kg|pcs|pieces)\b/gi
 
-export interface QcInput {
-  listing: Partial<Listing> | null | undefined
+/**
+ * 卖家服务/物流话术（不是产品卖点）：1688 页面爱写，AI 有时会顺手带进英文文案。
+ * 只做提示，不自动删句子——删错会把正常描述一起删掉。
+ */
+const SERVICE_TALK: Array<{ label: string; re: RegExp }> = [
+  { label: 'fast/quick shipping', re: /\b(fast|quick|rapid|prompt)\s+(shipping|delivery|dispatch)\b/ },
+  { label: 'free/cheap shipping', re: /\b(free|cheap|low[- ]cost)\s+shipping\b/ },
+  { label: 'ocean/air freight', re: /\b(ocean|air|sea)\s+freight\b/ },
+  { label: 'free/fast samples', re: /\b(free|fast|quick|easy)\s+sampl/ },
+  { label: 'sample available', re: /\bsampl(e|es|ing)\s+(is\s+)?(available|welcome|supported)\b/ },
+  { label: 'low MOQ', re: /\b(low|small|minimum)\s+moq\b/ },
+  { label: 'factory direct', re: /\bfactory[- ]direct\b/ },
+  { label: 'OEM/ODM service', re: /\b(oem|odm)\b/ },
+  { label: 'price negotiable', re: /\bprice\s+(is\s+)?negotiable\b/ },
+  { label: 'dropshipping', re: /\bdropship/ },
+  { label: '24h dispatch', re: /\b24[- ]?h(our)?s?\s+(dispatch|delivery|shipping)\b/ },
+  { label: 'welcome to inquire', re: /\b(welcome|feel free)\s+to\s+(inquir|contact)/ },
+]
+
+export interface QcInput {  listing: Partial<Listing> | null | undefined
   source?: SourceInfo | null
   specs?: ProductSpecs | null
 }
@@ -171,6 +189,18 @@ export function runListingQc(input: QcInput): ListingQcReport {
       description.length <= LIMITS.description
         ? `${description.length} 字符`
         : `${description.length} 字符，超出 ${description.length - LIMITS.description} 个`,
+  })
+
+  // 卖家服务/物流话术：1688 页面最爱写「发货快、打样方便、厂家直销、OEM 欢迎」，
+  // 这些不是产品卖点，ASI 目录里出现只会显得外行。命中就提示改写。
+  const copyHay = `${title} ${summary} ${description}`.toLowerCase()
+  const serviceHits = SERVICE_TALK.filter((s) => s.re.test(copyHay)).map((s) => s.label)
+  checks.push({
+    key: 'noServiceTalk',
+    label: '只描述产品本身（不含发货/打样/起订量/Dropship 等卖家话术）',
+    ok: serviceHits.length === 0,
+    level: 'warn',
+    detail: serviceHits.length === 0 ? '未出现卖家服务话术' : `命中：${serviceHits.join('、')}，建议改写成产品卖点`,
   })
 
   const overCount = keywords.length > LIMITS.keywordMax

@@ -372,6 +372,8 @@ CREATE TABLE IF NOT EXISTS master_products (
   images TEXT NOT NULL DEFAULT '[]',
   notes TEXT NOT NULL DEFAULT '',
   supplier TEXT NOT NULL DEFAULT '',
+  -- 备选供应商：一个或多个（每行一个），用于主供应商没货/涨价时快速替换
+  alt_suppliers TEXT NOT NULL DEFAULT '',
   material_cn TEXT NOT NULL DEFAULT '',
   colors_cn TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -696,8 +698,14 @@ ensureColumn('eval_reviewed_at', 'eval_reviewed_at TEXT')
 // 产品资料库（master_products）导入后自动生成的产品档案，记下来源主数据 id，避免重复建档
 ensureColumn('master_id', 'master_id TEXT')
 
+// 备选供应商（一个或多个，每行一个）：资料库里录入后同步到产品档案，主供应商断货/涨价时直接换
+ensureColumn('alt_suppliers', "alt_suppliers TEXT NOT NULL DEFAULT ''")
+
 // 批量任务：记住上一次跑的是哪个阶段，暂停/中断后能一键接着跑
 ensureTableColumn('batch_jobs', 'last_stage', "last_stage TEXT NOT NULL DEFAULT ''")
+
+// 资料库老表补「备选供应商」列（表已存在时 CREATE TABLE 不会新增列）
+ensureTableColumn('master_products', 'alt_suppliers', "alt_suppliers TEXT NOT NULL DEFAULT ''")
 
 // 订单运营中心表兼容性检查
 function ensureTableColumn(tableName: string, name: string, ddl: string) {

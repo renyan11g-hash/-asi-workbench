@@ -38,6 +38,8 @@ type FormState = {
   materialCn: string
   colorsCn: string
   supplier: string
+  /** 备选供应商：一个或多个，每行一个 */
+  altSuppliers: string
   notes: string
   images: string[]
 }
@@ -56,6 +58,7 @@ const EMPTY: FormState = {
   materialCn: '',
   colorsCn: '',
   supplier: '',
+  altSuppliers: '',
   notes: '',
   images: [],
 }
@@ -76,6 +79,7 @@ function toForm(p: MasterProduct): FormState {
     materialCn: p.materialCn,
     colorsCn: p.colorsCn,
     supplier: p.supplier,
+    altSuppliers: p.altSuppliers ?? '',
     notes: p.notes,
     images: p.images ?? [],
   }
@@ -223,6 +227,7 @@ function MasterDataPanel() {
         materialCn: form.materialCn.trim(),
         colorsCn: form.colorsCn.trim(),
         supplier: form.supplier.trim(),
+        altSuppliers: form.altSuppliers.trim(),
         notes: form.notes.trim(),
         images: form.images.filter(Boolean),
       }
@@ -641,6 +646,20 @@ function MasterDataPanel() {
                 value={form.supplier}
                 onChange={(e) => set('supplier', e.target.value)}
               />
+            </Field>
+            {/* 备选供应商：主供应商断货/涨价时直接换，录一次后面都能查 */}
+            <Field label="备选供应商（一个或多个，每行一个）" full>
+              <textarea
+                rows={3}
+                className="w-full rounded border border-slate-200 px-2 py-1 text-[12px]"
+                placeholder={'主供应商之外可替代的厂家，一行一个，例如：\n东莞市XX礼品有限公司 王先生 13800138000\n义乌XX日用品厂 https://shop123.1688.com'}
+                value={form.altSuppliers}
+                onChange={(e) => set('altSuppliers', e.target.value)}
+              />
+              <div className="mt-0.5 text-[10px] text-slate-400">
+                已填 {form.altSuppliers.split('\n').map((s) => s.trim()).filter(Boolean).length} 家备选；
+                会同步到产品档案，主供应商没货时不用再翻聊天记录
+              </div>
             </Field>
             <Field label="备注" full>
               <textarea

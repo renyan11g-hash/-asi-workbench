@@ -13,6 +13,7 @@ function source(over: Partial<SourceInfo> = {}): SourceInfo {
     priceMaxCny: null,
     moq: 50,
     supplier: '',
+    altSuppliers: '',
     materialCn: '304不锈钢',
     colorsCn: '黑色/白色',
     sizeCn: '20oz',
@@ -177,5 +178,31 @@ describe('Listing 质量检查（程序规则）', () => {
     const report = runListingQc({ listing: listing(), source: source() })
     expect(report.needsAi).toBe(true)
     expect(report.aiChecked).toBe(false)
+  })
+
+  // 1688 页面里的「发货快、打样方便、厂家直销」不是产品卖点，不能带进英文文案
+  it('描述里出现发货/打样话术 → 提示改写', () => {
+    const report = runListingQc({
+      listing: listing({
+        description:
+          'Fast shipping and easy sampling for this stainless steel tumbler. Factory direct price with low MOQ.',
+      }),
+      source: source(),
+    })
+    const c = check(report, 'noServiceTalk')
+    expect(c.ok).toBe(false)
+    expect(c.level).toBe('warn')
+    expect(c.detail).toMatch(/shipping|sampl|factory|MOQ/i)
+  })
+
+  it('只描述产品本身 → 通过卖家话术检查', () => {
+    const report = runListingQc({
+      listing: listing({
+        description:
+          'A durable stainless steel tumbler with double wall vacuum insulation, built for commutes, desks and outdoor trips.',
+      }),
+      source: source(),
+    })
+    expect(check(report, 'noServiceTalk').ok).toBe(true)
   })
 })

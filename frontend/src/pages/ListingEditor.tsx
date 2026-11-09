@@ -1199,6 +1199,16 @@ export default function ListingEditor() {
             <div className="text-xs text-slate-500">供应商</div>
             <div className="mt-0.5 font-medium text-slate-800">{product.source.supplier || '—'}</div>
           </div>
+          {product.source.altSuppliers && (
+            <div className="sm:col-span-2 lg:col-span-4">
+              <div className="text-xs text-slate-500">
+                备选供应商（{product.source.altSuppliers.split('\n').map((s) => s.trim()).filter(Boolean).length} 家）
+              </div>
+              <div className="mt-0.5 whitespace-pre-wrap text-[12px] font-medium text-slate-700">
+                {product.source.altSuppliers}
+              </div>
+            </div>
+          )}
           <div>
             <div className="text-xs text-slate-500">类目</div>
             <div className="mt-0.5 font-medium text-slate-800">{product.source.category || '—'}</div>

@@ -164,6 +164,7 @@ const master: MasterProduct = {
   images: ['https://new.example/a.jpg', 'https://new.example/b.jpg'],
   notes: '新备注：杯口有硅胶圈',
   supplier: '新供应商',
+  altSuppliers: '东莞市备用礼品厂 王先生 13800138000\n义乌替补日用厂',
   materialCn: '不锈钢',
   colorsCn: '黑色/银色',
   createdAt: NOW,
@@ -182,6 +183,7 @@ describe('资料库改一条，所有区块同步', () => {
     expect(p.notes).toBe(master.notes)
     expect(JSON.parse(String(p.images))).toEqual(master.images)
     expect(p.material_cn).toBe('不锈钢')
+    expect(String(p.alt_suppliers)).toContain('东莞市备用礼品厂')
     expect(p.colors_cn).toBe('黑色/银色')
     expect(p.price_cny).toBe(12)
     expect(p.size_cn).toBe('12*3*0.5')

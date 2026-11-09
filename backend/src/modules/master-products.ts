@@ -40,6 +40,8 @@ export interface MasterProduct {
   images: string[]
   notes: string
   supplier: string
+  /** 备选供应商：一个或多个，每行一个（主供应商断货/涨价时用来替换） */
+  altSuppliers: string
   materialCn: string
   colorsCn: string
   createdAt: string
@@ -62,6 +64,7 @@ interface Row {
   images: string
   notes: string
   supplier: string
+  alt_suppliers: string
   material_cn: string
   colors_cn: string
   created_at: string
@@ -94,6 +97,7 @@ function rowToMaster(r: Row): MasterProduct {
     images: parseImages(r.images),
     notes: r.notes,
     supplier: r.supplier,
+    altSuppliers: r.alt_suppliers ?? '',
     materialCn: r.material_cn,
     colorsCn: r.colors_cn,
     createdAt: r.created_at,
@@ -141,6 +145,8 @@ const masterSchema = z.object({
   images: z.array(z.string().max(4000)).max(300).default([]),
   notes: z.string().max(2000).default(''),
   supplier: z.string().max(200).default(''),
+  /** 备选供应商：每行一个（允许多个），也兼容逗号/顿号分隔 */
+  altSuppliers: z.string().max(4000).default(''),
   materialCn: z.string().max(200).default(''),
   colorsCn: z.string().max(200).default(''),
 })
@@ -154,8 +160,8 @@ function insertMaster(input: MasterInput): string {
   db.prepare(
     `INSERT INTO master_products (id, offer_id, source_url, title, price_cny, size_cn, weight_g,
       carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg, images, notes,
-      supplier, material_cn, colors_cn, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      supplier, alt_suppliers, material_cn, colors_cn, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     offerId,
@@ -172,6 +178,7 @@ function insertMaster(input: MasterInput): string {
     JSON.stringify(input.images ?? []),
     input.notes,
     input.supplier,
+    input.altSuppliers ?? '',
     input.materialCn,
     input.colorsCn,
     now,
@@ -186,7 +193,7 @@ function updateMaster(id: string, input: MasterInput): MasterSyncResult {
   db.prepare(
     `UPDATE master_products SET offer_id=?, source_url=?, title=?, price_cny=?, size_cn=?, weight_g=?,
       carton_l_cm=?, carton_w_cm=?, carton_h_cm=?, pcs_per_carton=?, carton_gw_kg=?, images=?, notes=?,
-      supplier=?, material_cn=?, colors_cn=?, updated_at=? WHERE id=?`
+      supplier=?, alt_suppliers=?, material_cn=?, colors_cn=?, updated_at=? WHERE id=?`
   ).run(
     offerIdOf(input.sourceUrl) || null,
     input.sourceUrl,
@@ -202,6 +209,7 @@ function updateMaster(id: string, input: MasterInput): MasterSyncResult {
     JSON.stringify(input.images ?? []),
     input.notes,
     input.supplier,
+    input.altSuppliers ?? '',
     input.materialCn,
     input.colorsCn,
     new Date().toISOString(),
@@ -236,6 +244,7 @@ interface LinkedProductRow {
   material_cn: string | null
   colors_cn: string | null
   supplier: string | null
+  alt_suppliers: string | null
   listing: string | null
 }
 
@@ -255,6 +264,7 @@ interface MergedLinked {
   materialCn: string
   colorsCn: string
   supplier: string
+  altSuppliers: string
 }
 
 function parseJson<T>(text: string | null | undefined, fallback: T): T {
@@ -289,6 +299,7 @@ function mergeLinked(m: MasterProduct, r: LinkedProductRow): MergedLinked {
     materialCn: text(m.materialCn, r.material_cn),
     colorsCn: text(m.colorsCn, r.colors_cn),
     supplier: text(m.supplier, r.supplier),
+    altSuppliers: text(m.altSuppliers, r.alt_suppliers),
   }
 }
 
@@ -304,6 +315,7 @@ function sourceOfLinked(r: LinkedProductRow, next: MergedLinked): SourceInfo {
     priceMaxCny: null,
     moq: 0,
     supplier: next.supplier,
+    altSuppliers: next.altSuppliers,
     materialCn: next.materialCn,
     colorsCn: next.colorsCn,
     sizeCn: next.sizeCn,
@@ -475,6 +487,7 @@ function mergeReviewSource(
     materialCn: next.materialCn,
     colorsCn: next.colorsCn,
     supplier: next.supplier,
+    altSuppliers: next.altSuppliers,
     notes: next.notes,
     images: next.images,
     category: src.category ?? source.category,
@@ -527,7 +540,7 @@ export function syncMasterToProducts(m: MasterProduct): MasterSyncResult {
   try {
     const sql = `SELECT id, source_title, source_url, description, category, notes, images,
                         price_cny, size_cn, weight_g, carton_l_cm, carton_w_cm, carton_h_cm,
-                        pcs_per_carton, carton_gw_kg, material_cn, colors_cn, supplier, listing
+                        pcs_per_carton, carton_gw_kg, material_cn, colors_cn, supplier, alt_suppliers, listing
                    FROM products
                   WHERE master_id = ?${m.sourceUrl ? " OR (source_url <> '' AND source_url = ?)" : ''}`
     rows = (m.sourceUrl
@@ -568,7 +581,7 @@ export function syncMasterToProducts(m: MasterProduct): MasterSyncResult {
     db.prepare(
       `UPDATE products SET source_title=?, source_url=?, notes=?, images=?,
          price_cny=?, size_cn=?, weight_g=?, carton_l_cm=?, carton_w_cm=?, carton_h_cm=?,
-         pcs_per_carton=?, carton_gw_kg=?, material_cn=?, colors_cn=?, supplier=?, master_id=?, updated_at=?
+         pcs_per_carton=?, carton_gw_kg=?, material_cn=?, colors_cn=?, supplier=?, alt_suppliers=?, master_id=?, updated_at=?
        WHERE id=?`
     ).run(
       next.sourceTitle,
@@ -586,6 +599,7 @@ export function syncMasterToProducts(m: MasterProduct): MasterSyncResult {
       next.materialCn,
       next.colorsCn,
       next.supplier,
+      next.altSuppliers,
       m.id,
       now,
       r.id
@@ -729,6 +743,7 @@ export function ensureProductFromMaster(m: MasterProduct): { productId: string; 
     priceMaxCny: null,
     moq: 0,
     supplier: m.supplier,
+    altSuppliers: m.altSuppliers,
     materialCn: m.materialCn,
     colorsCn: m.colorsCn,
     sizeCn: m.sizeCn,
@@ -890,6 +905,7 @@ const COLUMNS: Array<{ key: keyof MasterProduct | 'imagesText'; label: string }>
   { key: 'materialCn', label: '材质' },
   { key: 'colorsCn', label: '颜色' },
   { key: 'supplier', label: '供应商' },
+  { key: 'altSuppliers', label: '备选供应商(多个换行)' },
   { key: 'notes', label: '备注' },
   { key: 'imagesText', label: '图片(多张换行)' },
 ]
@@ -952,6 +968,12 @@ const HEADER_ALIASES: Record<string, ColKey> = {
   材质: 'materialCn',
   颜色: 'colorsCn',
   供应商: 'supplier',
+  '备选供应商(多个换行)': 'altSuppliers',
+  备选供应商: 'altSuppliers',
+  备用供应商: 'altSuppliers',
+  候选供应商: 'altSuppliers',
+  供应商储备: 'altSuppliers',
+  备选厂家: 'altSuppliers',
   备注: 'notes',
   '图片(多张换行)': 'imagesText',
   图片: 'imagesText',
@@ -1095,6 +1117,7 @@ function rowToInput(map: Map<ColKey, number[]>, row: unknown[], cellImages?: Map
     })(),
     notes: get('notes'),
     supplier: get('supplier'),
+    altSuppliers: get('altSuppliers'),
     materialCn: get('materialCn'),
     colorsCn: get('colorsCn'),
   } as MasterInput
