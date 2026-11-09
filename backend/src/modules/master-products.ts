@@ -671,6 +671,16 @@ export function syncMasterToProducts(m: MasterProduct): MasterSyncResult {
         /* 老库没有这些列时忽略 */
       }
     }
+
+    // ⑥ 产品图/标题/材质/颜色变了，之前缓存的「AI 识图 + 风格匹配」结果就过期了：
+    //    清掉缓存，下次出图会按新资料重新识别（视觉风格配置本身不受影响）。
+    if (titleChanged || imagesChanged || materialChanged || colorsChanged) {
+      try {
+        db.prepare('DELETE FROM product_visual_profiles WHERE product_id = ?').run(r.id)
+      } catch {
+        /* 表不存在时忽略 */
+      }
+    }
   }
   return out
 }

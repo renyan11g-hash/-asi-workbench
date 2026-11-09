@@ -18,6 +18,11 @@ function seed() {
   db.prepare('DELETE FROM product_specs WHERE product_id = ?').run(PID)
   db.prepare('DELETE FROM listing_reviews WHERE product_id = ?').run(PID)
   db.prepare('DELETE FROM drafts WHERE id = ?').run(DRAFT_ID)
+  db.prepare('DELETE FROM product_visual_profiles WHERE product_id = ?').run(PID)
+  db.prepare(
+    `INSERT INTO product_visual_profiles (product_id, data, style_id, style_reason, ref_ids, model, created_at, updated_at)
+     VALUES (?, '{}', NULL, '旧识别', '[]', '', ?, ?)`
+  ).run(PID, NOW, NOW)
 
   db.prepare(
     `INSERT INTO products
@@ -250,5 +255,12 @@ describe('资料库改一条，所有区块同步', () => {
       expect(l.productSizeInch).toBe('4.72" L x 1.18" W x 0.20" H')
       expect(l.colors).toBe('Black/Silver')
     }
+  })
+
+  test('图片/标题/材质/颜色变了 → 清掉产品识图与风格匹配缓存，下次按新资料重认', () => {
+    const row = db
+      .prepare('SELECT COUNT(*) AS n FROM product_visual_profiles WHERE product_id = ?')
+      .get(PID) as { n: number }
+    expect(row.n).toBe(0)
   })
 })
