@@ -1234,7 +1234,8 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   }
   if (!dimSpec) {
     const legacy = parseDimensions(source, listingSizeInch)
-    if (legacy) dimSpec = { ...legacy, depthIn: legacy.depthIn ?? null, legend: '源自资料库尺寸，仅供参考' }
+    // 资料库解析出来的尺寸只用来画宽/高两条线，不加图例（避免把“仅供参考”之类文字画到图上）
+    if (legacy) dimSpec = { ...legacy, depthIn: legacy.depthIn ?? null }
   }
 
   // ---------- 视觉匹配：自动识别产品 → 匹配已保存风格 → 选参考图 ----------

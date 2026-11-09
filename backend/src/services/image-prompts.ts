@@ -157,7 +157,7 @@ ${opts?.productInfo ? `\nSTRUCTURED PRODUCT DATA (read this before writing promp
 ${logoDirective}
 ${opts?.styleRefCount ? `STYLE REFERENCES: style references, when provided for an image, are its LAST reference image(s) (up to 2) — composition, layout, lighting, background treatment. They may be DIFFERENT products. Never copy their product; only borrow the photographic style. Different images in the set may have no style reference at all.` : ''}
 IMAGE SET REQUESTED: ${[opts?.withDetail !== false ? 'detail' : '', opts?.withScene !== false ? 'scene' : ''].filter(Boolean).join(' + ') || 'main + dimension'}
-MAIN STYLE: ${opts?.mainStyle === 'combo' ? 'combo (hero + selling-point close-up insets, still pure white)' : 'white (single hero + colour variants)'}
+MAIN STYLE: ${opts?.mainStyle === 'combo' ? 'combo (hero + selling-point close-up insets, still pure white; if the reference photos show both a CLOSED and an OPEN/UNFOLDED state of the same product, present both states side by side as the hero — never invent a state that is not photographed)' : 'white (single hero + colour variants)'}
 REAL-WORLD USE: before writing the scene prompts, decide from the facts above how a US end user actually uses this product
 (who they are, where and with what, how big it is). Put that thinking into the scene prompts themselves — concrete place,
 action and props — not into separate commentary.
