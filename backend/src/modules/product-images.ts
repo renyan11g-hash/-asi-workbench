@@ -273,6 +273,22 @@ function archiveImage(imageId: string): void {
   )
 }
 
+/**
+ * 历史版本 → 当前版本。
+ * 同图种同槽位只能有一张「当前图」：把其它未归档的归档掉（不删除），再把目标图解档。
+ * 导出是为了单测能直接验证「不会出现两张当前图」。
+ */
+export function restoreImageVersion(productId: string, imageId: string): ProductImage[] {
+  const image = findImage(productId, imageId)
+  const now = new Date().toISOString()
+  const siblings = listImages(productId).filter(
+    (i) => i.kind === image.kind && i.slot === image.slot && !i.archived && i.id !== image.id
+  )
+  for (const s of siblings) archiveImage(s.id)
+  db.prepare('UPDATE product_images SET archived = 0, updated_at = ? WHERE id = ?').run(now, image.id)
+  return listImages(productId)
+}
+
 function insertImageRecord(record: ProductImage, withLogo: boolean): void {
   db.prepare(
     `INSERT INTO product_images
@@ -1670,6 +1686,16 @@ productImagesRouter.post('/intro-suggestions', async (req: Request, res: Respons
 productImagesRouter.get('/product/:productId', async (req: Request, res: Response) => {
   const productId = String(req.params.productId)
   res.json({ images: listImages(productId) })
+})
+
+// ---------- 历史版本：恢复成当前版本 ----------
+// 版本化策略是「归档不删除」：重新生成只会把旧图 archived=1 保留下来。
+// 历史版本要能看、也要能反悔——恢复时把同图种同槽位的其它未归档图归档，再把这张解档，
+// 保证「一种图同一槽位只有一张当前图」，历史记录仍然完整。
+productImagesRouter.post('/:imageId/restore', async (req: Request, res: Response) => {
+  const body = z.object({ productId: z.string().min(1) }).parse(req.body ?? {})
+  const images = restoreImageVersion(body.productId, String(req.params.imageId))
+  res.json({ ok: true, image: images.find((i) => i.id === String(req.params.imageId)) ?? null, images })
 })
 
 // ---------- 读取图片文件 ----------

@@ -6,8 +6,10 @@ import {
   ImagePlus,
   Link2,
   Loader2,
+  Maximize2,
   MessageSquare,
   RefreshCw,
+  RotateCcw,
   Save,
   ShieldCheck,
   Sparkles,
@@ -20,6 +22,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { api, getErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { ImageCapabilities, ProductImage, ShotPlan, StyleMatch, VisualRef } from '@/types'
@@ -110,13 +113,15 @@ export function ProductImageStudio({
   const [mainMode, setMainMode] = useState<'ai' | 'compose'>('ai')
   const [withLogo, setWithLogo] = useState(true)
   const [notes, setNotes] = useState('')
-  const [busy, setBusy] = useState<'fetch' | 'gen' | 'match' | null>(null)
+  const [busy, setBusy] = useState<'fetch' | 'gen' | 'match' | 'restore' | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [savingPlan, setSavingPlan] = useState(false)
   /** 高级设置里有改了还没保存的注意点（刷新前要提醒，别把输入冲掉） */
   const [planDirty, setPlanDirty] = useState(false)
   const [progress, setProgress] = useState('')
   const [showHistory, setShowHistory] = useState(false)
+  /** 大图查看器：当前图和历史版本共用（历史版本可在这里一键恢复） */
+  const [viewer, setViewer] = useState<ProductImage | null>(null)
 
   // 尺寸输入（后端存 inch，这里用字符串便于清空）
   const [dimForm, setDimForm] = useState({ lengthIn: '', widthIn: '', heightIn: '', thicknessIn: '' })
@@ -467,6 +472,21 @@ export function ProductImageStudio({
     } finally {
       setBusy(null)
       setProgress('')
+    }
+  }
+
+  /** 历史版本恢复成当前版本：同图种同槽位的当前图会转为历史，不删除 */
+  const restoreVersion = async (img: ProductImage) => {
+    setBusy('restore')
+    try {
+      const imgs = await api.restoreProductImage(productId, img.id)
+      setImages(imgs)
+      setViewer(null)
+      toast.success('已恢复为当前版本；原来的当前图已转入历史版本（没有删除）')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -942,7 +962,17 @@ export function ProductImageStudio({
                   {g.items.map((img) => (
                     <div key={img.id} className="w-44">
                       <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white">
-                        <img src={api.productImageUrl(img.productId, img.file)} alt="" className="aspect-square w-full object-contain" />
+                        <button
+                          type="button"
+                          onClick={() => setViewer(img)}
+                          title="点开看大图（含当时用的参考图与提示词）"
+                          className="group block w-full cursor-zoom-in"
+                        >
+                          <img src={api.productImageUrl(img.productId, img.file)} alt="" className="aspect-square w-full object-contain" />
+                          <span className="pointer-events-none absolute inset-0 hidden items-center justify-center bg-slate-900/35 text-[11px] font-medium text-white group-hover:flex">
+                            <Maximize2 className="mr-1 h-3.5 w-3.5" /> 查看大图
+                          </span>
+                        </button>
                         {img.feedback?.verdict === 'like' && (
                           <span className="absolute left-1 top-1 rounded bg-emerald-600/90 px-1 text-[10px] text-white">已确认</span>
                         )}
@@ -1046,14 +1076,44 @@ export function ProductImageStudio({
 
         {showHistory && archived.length > 0 && (
           <div className="mt-3 border-t border-slate-100 pt-2">
-            <div className="text-[11px] text-slate-500">历史版本（{archived.length} 张，不会被删除）</div>
+            <div className="text-[11px] text-slate-500">
+              历史版本（{archived.length} 张，不会被删除）· 点图片看大图，也可以在查看器里恢复成当前版本
+            </div>
             <div className="mt-1 flex flex-wrap gap-2">
               {archived.map((img) => (
-                <div key={img.id} className="w-24 opacity-70">
-                  <img src={api.productImageUrl(img.productId, img.file)} alt="" className="aspect-square w-full rounded border border-slate-200 object-contain" />
-                  <div className="truncate text-[9px] text-slate-400">
-                    {KIND_LABEL[img.kind] ?? img.kind} · {new Date(img.createdAt).toLocaleDateString()}
+                <div key={img.id} className="w-28">
+                  <button
+                    type="button"
+                    onClick={() => setViewer(img)}
+                    title="点开看大图"
+                    className="group relative block w-full cursor-zoom-in overflow-hidden rounded border border-slate-200 bg-white"
+                  >
+                    <img
+                      src={api.productImageUrl(img.productId, img.file)}
+                      alt=""
+                      className="aspect-square w-full object-contain opacity-80 transition-opacity group-hover:opacity-100"
+                    />
+                    <span className="pointer-events-none absolute inset-0 hidden items-center justify-center bg-slate-900/35 text-[10px] font-medium text-white group-hover:flex">
+                      <Maximize2 className="mr-1 h-3 w-3" /> 查看
+                    </span>
+                  </button>
+                  <div className="mt-0.5 truncate text-[9px] text-slate-500">
+                    {KIND_LABEL[img.kind] ?? img.kind} ·{' '}
+                    {new Date(img.createdAt).toLocaleString('zh-CN', {
+                      month: '2-digit',
+                      day: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
                   </div>
+                  <button
+                    className="mt-0.5 inline-flex items-center gap-0.5 text-[9px] text-slate-500 hover:text-emerald-700 disabled:opacity-50"
+                    disabled={busy === 'restore'}
+                    onClick={() => void restoreVersion(img)}
+                    title="把这张恢复成当前版本（现在这张会转入历史版本）"
+                  >
+                    <RotateCcw className="h-2.5 w-2.5" /> 恢复为当前
+                  </button>
                 </div>
               ))}
             </div>
@@ -1454,6 +1514,92 @@ export function ProductImageStudio({
           </div>
         </div>
       )}
+
+      {/* 大图查看器：当前图与历史版本共用；历史版本可以在这里直接恢复成当前版本 */}
+      <Dialog
+        open={Boolean(viewer)}
+        onOpenChange={(open) => {
+          if (!open) setViewer(null)
+        }}
+      >
+        <DialogContent className="max-w-4xl">
+          {viewer && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-[15px]">
+                  {KIND_LABEL[viewer.kind] ?? viewer.kind}
+                  <span
+                    className={cn(
+                      'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                      viewer.archived ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                    )}
+                  >
+                    {viewer.archived ? '历史版本' : '当前版本'}
+                  </span>
+                </DialogTitle>
+                <DialogDescription className="text-[11px]">
+                  {new Date(viewer.createdAt).toLocaleString('zh-CN')} 生成 · 风格
+                  {viewer.styleName ? `「${viewer.styleName}」` : '未套用'} · 提示词版本 {viewer.promptVersion || '-'}
+                  {' · '}参考图 {viewer.refsUsed?.product?.length ?? 0} 张
+                  {viewer.refsUsed?.style?.length ? ` + 风格图 ${viewer.refsUsed.style.length} 张` : ''}
+                  {viewer.refsUsed?.logo ? ' + 品牌 Logo' : ''}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="flex max-h-[65vh] items-center justify-center overflow-auto rounded-lg border border-slate-200 bg-white p-1">
+                <img
+                  src={api.productImageUrl(viewer.productId, viewer.file)}
+                  alt=""
+                  className="max-h-[64vh] w-auto max-w-full object-contain"
+                />
+              </div>
+
+              <details className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
+                <summary className="cursor-pointer text-[11px] text-slate-600">当时发给模型的提示词</summary>
+                <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-relaxed text-slate-500">
+                  {viewer.prompt}
+                </pre>
+              </details>
+
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <a
+                  href={api.productImageUrl(viewer.productId, viewer.file)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mr-auto inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-800"
+                >
+                  <Maximize2 className="h-3 w-3" /> 新窗口打开原图
+                </a>
+                {viewer.archived ? (
+                  <Button size="sm" disabled={busy === 'restore'} onClick={() => void restoreVersion(viewer)}>
+                    {busy === 'restore' ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    恢复为当前版本
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const img = viewer
+                      setViewer(null)
+                      void regenerate(img)
+                    }}
+                  >
+                    <RefreshCw className="mr-1 h-3.5 w-3.5" /> 重新生成这张
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={() => setViewer(null)}>
+                  关闭
+                </Button>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

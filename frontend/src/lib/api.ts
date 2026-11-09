@@ -1833,6 +1833,15 @@ export const api = {
     return data.image
   },
 
+  /** 历史版本：把某张归档图恢复成当前版本（同图种同槽位的当前图会转为历史，不删除） */
+  async restoreProductImage(productId: string, imageId: string): Promise<ProductImage[]> {
+    const { data } = await apiClient.post<{ image: ProductImage; images: ProductImage[] }>(
+      `/product-images/${imageId}/restore`,
+      { productId }
+    )
+    return data.images
+  },
+
   /** 满意度反馈（可同时收藏进优秀作品库） */
   async submitImageFeedback(
     productId: string,
