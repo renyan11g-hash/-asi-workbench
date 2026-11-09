@@ -52,6 +52,7 @@ const NAV_GROUPS: Array<{
     title: '其他',
     items: [
       { to: '/order-center', label: '订单运营中心', icon: ShoppingBag },
+      { to: '/visual-styles', label: '视觉风格中心', icon: Sparkles },
       { to: '/settings', label: '设置', icon: SettingsIcon },
     ],
   },
@@ -64,6 +65,7 @@ const TITLES: Record<string, { title: string; sub: string }> = {
   '/master-data': { title: '产品资料库', sub: '批量导入产品资料（导入即进系统）、每产品一张资料卡、批量推进到产品评估' },
   '/evaluations': { title: '评估库', sub: '所有评估过的产品都在这：看优缺点与改善建议，批量决定通过（自动去生成文案）还是待定' },
   '/listing-reviews': { title: 'listing 待审核中心', sub: '批量生成的草稿 + 流水线里待审核的文案，都在这一页审：通过进预产品库，驳回可改' },
+  '/visual-styles': { title: '视觉风格中心', sub: '参考图库 + AI 学到的风格配置：出图时自动匹配，日常不用再找参考图、重写提示词' },
   '/library': { title: '预产品库', sub: '审核通过、已发 GLS 编号的产品；可导出上传 ASI，也可挑出来送进 RPA 档案库换号' },
   '/rpa': { title: 'RPA 档案库', sub: '从预产品库挑出来、人工重新赋号的产品（旧 GLS 号留存、不再复用）' },
   '/order-center': { title: '订单运营中心', sub: '客户、询盘、订单、供应商沟通与邮件草稿一站式管理' },

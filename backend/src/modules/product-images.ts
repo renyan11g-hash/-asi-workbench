@@ -9,7 +9,36 @@ import { AiError, callChat, callChatJson } from '../services/ai'
 import { editImage, generateImage, ImageRef, ImageSettings, testImageConnection } from '../services/image-gen'
 import { buildImagePromptSet, buildIntroSuggestions, translateImageEditInstruction } from '../services/image-prompts'
 import { overlayDimensions } from '../services/dimension-overlay'
-import { finalizeMainImage } from '../services/image-post'
+import { composeWhiteMain, finalizeMainImage } from '../services/image-post'
+import {
+  budgetRefs,
+  capabilitiesFor,
+  guardPrompt,
+  planShotSet,
+  promptVersionOf,
+  sourceToPlanInput,
+} from '../services/image-fidelity'
+import {
+  autoMatchProduct,
+  collectGeneratedImage,
+  dimensionSpecOf,
+  getCachedMatch,
+  getDimensions,
+  getVisualRef,
+  getVisualStyle,
+  listVisualStyles,
+  matchStyleLocal,
+  pickRefsForStyle,
+  recordImageFeedback,
+  saveDimensions,
+  styleBlockOf,
+  visualRefBuffer,
+  type ProductIdentification,
+  type StyleMatch,
+  type VisualRef,
+  type VisualStyle,
+} from '../services/visual-styles'
+import { fetchImageBuffer } from '../services/image-store'
 import Jimp from 'jimp'
 import { ProductImage, ProductImageKind, SourceInfo } from '../types'
 import { reviewProductImage } from '../services/image-review'
@@ -191,6 +220,13 @@ interface ImageRow {
   dimension_spec: string | null
   with_logo: number | null
   review: string | null
+  refs_used: string | null
+  style_id: string | null
+  style_name: string | null
+  prompt_version: string | null
+  archived: number | null
+  parent_id: string | null
+  feedback: string | null
   created_at: string
   updated_at: string
 }
@@ -207,16 +243,63 @@ function rowToImage(r: ImageRow): ProductImage {
     file: r.file,
     dimensionSpec: r.dimension_spec ? JSON.parse(r.dimension_spec) : null,
     review: r.review ? (JSON.parse(r.review) as ProductImage['review']) : null,
+    refsUsed: JSON.parse(r.refs_used || '[]'),
+    styleId: r.style_id ?? null,
+    styleName: r.style_name ?? '',
+    promptVersion: r.prompt_version ?? '',
+    archived: r.archived === 1,
+    parentId: r.parent_id ?? null,
+    feedback: r.feedback ? JSON.parse(r.feedback) : null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
 }
 
-function listImages(productId: string): ProductImage[] {
+function listImages(productId: string, opts: { includeArchived?: boolean } = {}): ProductImage[] {
   const rows = db
-    .prepare('SELECT * FROM product_images WHERE product_id = ? ORDER BY created_at ASC')
+    .prepare(
+      `SELECT * FROM product_images WHERE product_id = ? ${opts.includeArchived === false ? 'AND archived = 0' : ''}
+       ORDER BY created_at ASC`
+    )
     .all(productId) as unknown as ImageRow[]
   return rows.map(rowToImage)
+}
+
+/** 归档旧版本（不删图、不覆盖历史）：重新生成/重新编辑时旧图保留可回溯 */
+function archiveImage(imageId: string): void {
+  db.prepare('UPDATE product_images SET archived = 1, updated_at = ? WHERE id = ?').run(
+    new Date().toISOString(),
+    imageId
+  )
+}
+
+function insertImageRecord(record: ProductImage, withLogo: boolean): void {
+  db.prepare(
+    `INSERT INTO product_images
+      (id, product_id, kind, slot, prompt, history, file, dimension_spec, with_logo, review,
+       refs_used, style_id, style_name, prompt_version, archived, parent_id, feedback, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    record.id,
+    record.productId,
+    record.kind,
+    record.slot,
+    record.prompt,
+    JSON.stringify(record.history),
+    record.file,
+    record.dimensionSpec ? JSON.stringify(record.dimensionSpec) : null,
+    withLogo ? 1 : 0,
+    record.review ? JSON.stringify(record.review) : null,
+    JSON.stringify(record.refsUsed ?? []),
+    record.styleId ?? null,
+    record.styleName ?? '',
+    record.promptVersion ?? '',
+    record.archived ? 1 : 0,
+    record.parentId ?? null,
+    record.feedback ? JSON.stringify(record.feedback) : null,
+    record.createdAt,
+    record.updatedAt
+  )
 }
 
 function findImage(productId: string, imageId: string): ProductImage {
@@ -330,12 +413,19 @@ const generateSchema = z.object({
     })
     .optional(),
   productId: z.string().optional(),
-  /** 尺寸图标注（inch）；不传则从 listing.productSizeInch/source.sizeCn 解析 */
+  /** 尺寸图标注（inch）；不传则用「产品确认尺寸」，再退回 listing/source 解析 */
   dimensions: z
     .object({
-      widthIn: z.coerce.number().positive(),
-      heightIn: z.coerce.number().positive(),
+      widthIn: z.coerce.number().positive().nullable().optional(),
+      heightIn: z.coerce.number().positive().nullable().optional(),
       depthIn: z.coerce.number().positive().nullable().optional(),
+      /** 长（底部标注）= lengthIn ?? widthIn；宽=widthIn；高=heightIn；厚度进图例 */
+      lengthIn: z.coerce.number().positive().nullable().optional(),
+      thicknessIn: z.coerce.number().positive().nullable().optional(),
+      extra: z
+        .array(z.object({ label: z.string().max(24), value: z.coerce.number().positive() }))
+        .max(6)
+        .optional(),
     })
     .optional(),
   /** 只生成指定角色（默认全部 5 张） */
@@ -347,6 +437,16 @@ const generateSchema = z.object({
   notes: z.string().max(2000).optional(),
   /** 主图是否融合品牌 Logo（默认 true；false=干净产品图，禁止出现任何 Logo） */
   withLogo: z.boolean().optional(),
+  /** 自动模式：自动识别产品 → 匹配视觉风格 → 选参考图 → 配图组（用户不用每次找参考图） */
+  auto: z.boolean().optional(),
+  /** 手动指定风格（覆盖自动匹配） */
+  styleId: z.string().max(120).optional(),
+  /** 手动指定风格参考图（visual_refs.id），空=用自动匹配到的 */
+  styleRefIds: z.array(z.string().max(120)).max(10).optional(),
+  /** 本次完全不使用风格参考图（保真优先，干净出图） */
+  noStyleRefs: z.boolean().optional(),
+  /** 主图出图方式：ai=模型生成（默认）；compose=原图直出换白底（保真优先、不花钱） */
+  mainMode: z.enum(['ai', 'compose']).optional(),
 })
 
 /** 把任意图片地址读成 data URL（模型一定读得到；外链防盗链/过期都不影响出图） */
@@ -361,6 +461,9 @@ async function refToDataUrl(u: string): Promise<string> {
     if (!m) throw new Error('图片地址无法识别')
     return toJpegDataUrl(readImageFile(decodeURIComponent(m[1]), decodeURIComponent(m[2])), 1200, 84)
   }
+  // 视觉风格中心的参考图（真身存 DB）
+  const vm = /^\/api\/visual-styles\/refs\/([^/?#]+)\/image/.exec(u)
+  if (vm) return toJpegDataUrl(visualRefBuffer(decodeURIComponent(vm[1])), 1200, 84)
   const remote = await fetchRemoteImage(u, { timeoutMs: 9000 })
   return toJpegDataUrl(remote.buffer, 1200, 84)
 }
@@ -402,8 +505,7 @@ async function runAi<T>(fn: () => Promise<T>): Promise<T> {  try {
   }
 }
 
-/** 解析尺寸图标注用的 inch 尺寸：优先 listing 英制尺寸，其次 sizeCn（1688 尺寸默认按 cm 换算） */
-function parseDimensions(source: SourceInfo, listingSizeInch?: string) {
+/** 解析尺寸图标注用的 inch 尺寸：优先 listing 英制尺寸，其次 sizeCn（1688 尺寸默认按 cm 换算） */function parseDimensions(source: SourceInfo, listingSizeInch?: string) {
   // 1) listing.productSizeInch（AI 生成 + 人工核对，如 39.37" W x 15.75" H / 11.81" Diameter）
   const inchText = (listingSizeInch ?? '').trim()
   if (inchText) {
@@ -427,13 +529,60 @@ function parseDimensions(source: SourceInfo, listingSizeInch?: string) {
   }
 }
 
+/* ---------- 出图元数据（每张图用了哪些参考图 / 命中哪个风格） ---------- */
+
+interface RefsUsedStyle {
+  id: string
+  url: string
+  title: string
+  category: string
+}
+
+interface RefsUsed {
+  kind: string
+  product: string[]
+  style: RefsUsedStyle[]
+  logo: boolean
+  styleId: string | null
+  styleName: string
+  mainMode: string | null
+}
+
+const round1 = (n: number) => (Math.round(n * 10) / 10).toFixed(1)
+
+function safeStyle(id: string): VisualStyle | null {
+  try {
+    return getVisualStyle(id)
+  } catch {
+    return null
+  }
+}
+
+function safeRef(id: string): VisualRef | null {
+  try {
+    return getVisualRef(id)
+  } catch {
+    return null
+  }
+}
+
+/** 单张图的额外要求：插在保真护栏之前，护栏永远保持在 prompt 末尾 */
+function withExtraRequirement(prompt: string, extra: string): string {
+  if (!extra.trim()) return prompt
+  const marker = '\n\nPRODUCT FIDELITY (non-negotiable'
+  const at = prompt.indexOf(marker)
+  const block = `\n\nADDITIONAL REQUIREMENT (this image only): ${extra.trim()}`
+  return at >= 0 ? `${prompt.slice(0, at)}${block}${prompt.slice(at)}` : `${prompt}${block}`
+}
+
 // ---------- 每种图的出图计划（参考哪些产品图 + 生成前对话） ----------
 export interface KindPlan {
   /** 这张图参考的产品图（产品真身：1688 抓的 / 人工上传的） */
   sources: string[]
   /**
    * 这张图额外参考的「风格参考图」（只学构图/排版/光线/场景，绝不许改产品）。
-   * 空数组 = 沿用该产品全部参考图（默认行为）；选了就只送选中的，最多 2 张。
+   * 可存两种值：参考图地址（每产品参考图）或 visual_refs.id（视觉风格中心）；
+   * 空数组 = 沿用自动匹配到的风格参考图；['__none__'] = 这张图明确不用风格参考图。
    */
   refs: string[]
   notes: string
@@ -493,12 +642,13 @@ function savePlan(productId: string, kind: string, patch: Partial<KindPlan>): Re
   db.prepare(
     `INSERT INTO product_image_plan (product_id, kind, sources, refs, notes, chat, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(product_id, kind) DO UPDATE SET sources=excluded.sources, refs=excluded.refs, notes=excluded.notes, chat=excluded.chat, updated_at=excluded.updated_at`
+     ON CONFLICT(product_id, kind) DO UPDATE SET sources=excluded.sources, refs=excluded.refs,
+       notes=excluded.notes, chat=excluded.chat, updated_at=excluded.updated_at`
   ).run(
     productId,
     kind,
     JSON.stringify(next.sources),
-    JSON.stringify(next.refs ?? []),
+    JSON.stringify(next.refs),
     next.notes,
     JSON.stringify(next.chat),
     now
@@ -519,7 +669,7 @@ productImagesRouter.put('/product/:productId/plan', (req: Request, res: Response
     .object({
       kind: z.enum(KINDS),
       sources: z.array(z.string().max(8_000_000)).max(100).optional(),
-      /** 这张图额外参考的「风格参考图」（只学风格，最多 2 张会真正送模型） */
+      /** 这张图额外参考的「风格参考图」（只学风格；地址或 visual_refs.id，最多 2 张会真正送模型） */
       refs: z.array(z.string().max(8_000_000)).max(100).optional(),
       notes: z.string().max(3000).optional(),
       chat: z
@@ -535,6 +685,52 @@ productImagesRouter.put('/product/:productId/plan', (req: Request, res: Response
     chat: body.chat?.map((c) => ({ role: c.role, content: c.content, at: c.at ?? new Date().toISOString() })),
   })
   res.json({ plan })
+})
+
+/* ---------------- 模型能力 / 确认尺寸 / 自动匹配预览 ---------------- */
+
+/** 当前图像模型到底支不支持多参考图（不靠猜，界面直接显示能力与上限） */
+productImagesRouter.get('/capabilities', (_req: Request, res: Response) => {
+  const s = loadSettings()
+  res.json({ capabilities: capabilitiesFor(s.imageBaseUrl, s.imageModel) })
+})
+
+productImagesRouter.get('/product/:productId/dimensions', (req: Request, res: Response) => {
+  const id = String(req.params.productId)
+  res.json({ dimensions: getDimensions(id) })
+})
+
+/** 保存产品确认尺寸（长/宽/高/厚度 + 其他）：尺寸图只标这里的数据 */
+productImagesRouter.put('/product/:productId/dimensions', (req: Request, res: Response) => {
+  const id = String(req.params.productId)
+  const body = z
+    .object({
+      lengthIn: z.coerce.number().positive().nullable().optional(),
+      widthIn: z.coerce.number().positive().nullable().optional(),
+      heightIn: z.coerce.number().positive().nullable().optional(),
+      thicknessIn: z.coerce.number().positive().nullable().optional(),
+      extra: z
+        .array(z.object({ label: z.string().max(24), value: z.coerce.number().positive() }))
+        .max(6)
+        .optional(),
+    })
+    .parse(req.body ?? {})
+  const dimensions = saveDimensions(id, body)
+  res.json({ dimensions, dimensionSpec: dimensionSpecOf(dimensions) })
+})
+
+/**
+ * 当前产品的视觉匹配状态 + 建议图组（只读缓存，不调 AI）。
+ * 用户点「重新识别」才会走 POST /api/visual-styles/product/:id/match。
+ */
+productImagesRouter.get('/product/:productId/style', async (req: Request, res: Response) => {
+  const id = String(req.params.productId)
+  const p = findProduct(id)
+  const match = getCachedMatch(id)
+  const dimensions = getDimensions(id)
+  const spec = dimensionSpecOf(dimensions)
+  const suggestion = planShotSet(sourceToPlanInput(p.source, { hasDimensions: Boolean(spec) }))
+  res.json({ match, dimensions, dimensionSpec: spec, suggestion })
 })
 
 /**
@@ -1011,10 +1207,83 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
     throw new AppError(400, '请提供 productId 或 source')
   }
 
-  const dims = body.dimensions ?? parseDimensions(source, listingSizeInch)
-  // 四种模式：主图 1 张、尺寸图 1 张、细节图+场景图合计 2~3 张。
-  // 默认给一套完整组合（主图 + 尺寸图 + 2 张细节 + 1 张场景 = 3 张细节/场景，符合上限）。
-  const rawKinds = body.kinds ?? ['main', 'dimension', 'detail', 'detail', 'scene']
+  // ---------- 尺寸：确认尺寸优先（长/宽/高/厚度），其次请求体，最后才解析 listing/source ----------
+  let dimSpec: { widthIn: number; heightIn: number; depthIn: number | null; legend?: string } | null = null
+  if (productId !== 'preview') {
+    if (body.dimensions) saveDimensions(productId, body.dimensions)
+    const saved = dimensionSpecOf(getDimensions(productId))
+    if (saved) dimSpec = saved
+  }
+  if (!dimSpec && body.dimensions) {
+    const d = body.dimensions
+    const bottom = d.lengthIn ?? d.widthIn
+    if (bottom && d.heightIn) {
+      const parts: string[] = []
+      if (d.lengthIn) parts.push(`L ${round1(d.lengthIn)}"`)
+      if (d.widthIn) parts.push(`W ${round1(d.widthIn)}"`)
+      if (d.heightIn) parts.push(`H ${round1(d.heightIn)}"`)
+      if (d.thicknessIn) parts.push(`T ${round1(d.thicknessIn)}"`)
+      for (const e of d.extra ?? []) parts.push(`${e.label} ${round1(e.value)}"`)
+      dimSpec = {
+        widthIn: bottom,
+        heightIn: d.heightIn,
+        depthIn: d.lengthIn && d.widthIn && d.widthIn !== d.lengthIn ? d.widthIn : (d.depthIn ?? null),
+        legend: parts.join('   ') || undefined,
+      }
+    }
+  }
+  if (!dimSpec) {
+    const legacy = parseDimensions(source, listingSizeInch)
+    if (legacy) dimSpec = { ...legacy, depthIn: legacy.depthIn ?? null, legend: '源自资料库尺寸，仅供参考' }
+  }
+
+  // ---------- 视觉匹配：自动识别产品 → 匹配已保存风格 → 选参考图 ----------
+  let match: StyleMatch | null = productId !== 'preview' ? getCachedMatch(productId) : null
+  const fallbackIdent: ProductIdentification = {
+    category: source.category || '',
+    categoryEn: '',
+    colors: [],
+    structure: '',
+    material: source.materialCn || '',
+    accessories: [],
+    usageScenes: [],
+    confidence: 'low',
+    source: 'fallback',
+    note: '',
+  }
+  if (body.auto && productId !== 'preview') {
+    if (!match) {
+      // 先用资料库字段本地匹配（不调视觉模型，出图响应不被 100 秒代理超时卡住），
+      // 同时后台补一次 AI 识图，结果落库供下次更准。
+      const local = matchStyleLocal(source, fallbackIdent, listVisualStyles({ status: 'active' }))
+      match = {
+        identification: fallbackIdent,
+        style: local.style,
+        reason: local.reason,
+        refs: pickRefsForStyle(local.style, fallbackIdent, 2),
+        cached: false,
+      }
+      void autoMatchProduct({ settings, productId, source, force: true }).catch(() => {
+        /* 后台识别失败不影响本次出图 */
+      })
+    }
+  }
+  const manualStyle = body.styleId ? safeStyle(body.styleId) : null
+  const style = manualStyle ?? match?.style ?? null
+  const styleBlock = styleBlockOf(style)
+  const identification: ProductIdentification = match?.identification ?? fallbackIdent
+  // 风格参考图：手动指定 > 自动匹配 > 按风格/品类从参考库挑；最多 2 张，永远排在产品图之后
+  const baseStyleRefs: VisualRef[] = body.styleRefIds?.length
+    ? body.styleRefIds
+        .map((id) => safeRef(id))
+        .filter((r): r is VisualRef => Boolean(r))
+    : match?.refs?.length
+      ? match.refs
+      : pickRefsForStyle(style, identification, 2)
+
+  // ---------- 图片组合：自动模式按产品特点配图，不再机械固定 5 张 ----------
+  const suggestion = planShotSet(sourceToPlanInput(source, { hasDimensions: Boolean(dimSpec) }))
+  const rawKinds = body.kinds ?? (body.auto ? suggestion.kinds : ['main', 'dimension', 'detail', 'detail', 'scene'])
   // 细节/场景合计超过 3 张就截断（硬上限）
   const detailSceneCap = 3
   let detailScene = 0
@@ -1031,6 +1300,7 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
   }
   if (!kinds.length) kinds.push('main')
   const mainStyle = body.mainStyle ?? 'white'
+  const caps = capabilitiesFor(settings.imageBaseUrl, settings.imageModel)
 
   const logo = readLogo()
   // 主图 Logo 开关：默认加 Logo；用户明确选择不加时不传 Logo 参考图（还省 1 张输入费）
@@ -1044,22 +1314,48 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
     .map((r) => r.url)
     .filter(isImageRef)
 
-  // 每种图各自的参考图来自「出图计划」：用户为这张图单独挑的产品图；
+  // 每种图各自的参考图来自「出图计划」：用户为这张图单独挑的产品图/风格参考图；
   // 没挑就用产品图兜底（主图多给几张，便于看清结构和颜色）。
   const plan = productId !== 'preview' ? readPlan(productId) : ({} as Record<string, KindPlan>)
+
+  /** 这张图参考哪些产品图（产品真身） */
   const urlsForKind = (kind: string): string[] => {
     const picked = (plan[kind]?.sources ?? []).filter((u) => productUrls.includes(u))
     return picked.length ? picked : productUrls.slice(0, kind === 'main' ? 4 : 2)
   }
+
   /**
    * 这张图用哪些「风格参考图」：
-   *   · 该图种单独选过 → 只送选中的（最多 2 张），不同图种可以学不同风格；
-   *   · 一张没选 → 沿用全部参考图（和以前一样，所有图种共用）。
+   *   · 该图种单独选过 → 地址或视觉库 id，只送选中的（最多 2 张），不同图种可以学不同风格；
+   *   · ['__none__'] → 明确不用风格参考图（保真优先）；
+   *   · 一张没选 → 用自动匹配到的风格参考图；没有风格就用每产品参考图。
    */
   const styleRefsForKind = (kind: string): string[] => {
-    const picked = (plan[kind]?.refs ?? []).filter((u) => styleRefs.includes(u))
-    return picked.length ? picked : styleRefs
+    if (body.noStyleRefs) return []
+    const picked = plan[kind]?.refs ?? []
+    if (picked.includes('__none__')) return []
+    const selected: string[] = []
+    for (const v of picked) {
+      if (isImageRef(v)) selected.push(v)
+      else {
+        const r = safeRef(v)
+        if (r && r.status === 'active') selected.push(r.url)
+      }
+    }
+    if (selected.length) return selected.slice(0, 2)
+    const auto = baseStyleRefs.map((r) => r.url)
+    const pool = auto.length ? auto : styleRefs
+    return pool.slice(0, 2)
   }
+
+  /** 风格参考图 → 可展示的元数据（存进 refs_used，界面能看出用了哪几张） */
+  const styleMetaFor = (usedUrls: string[]): RefsUsed['style'] =>
+    usedUrls.map((u) => {
+      const lib = baseStyleRefs.find((r) => r.url === u)
+      return lib
+        ? { id: lib.id, url: lib.url, title: lib.title, category: lib.category }
+        : { id: '', url: u, title: '产品参考图', category: 'showcase' }
+    })
 
   // 生图前先读产品资料（特点/颜色/材质/场景），拼成事实清单交给提示词编排
   const productInfo = buildProductInfoBlock(source, listingSizeInch)
@@ -1113,26 +1409,31 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
     }
     for (const k of ['main', 'dimension', 'detail', 'scene']) {
       if (kinds.includes(k as ProductImageKind) && !kindRefs[k].length) {
+        // 原图直出主图只吃产品原图；如果连产品图都读不出来，同样没法保真
         throw new AppError(
           400,
           `「${kindLabelOf(k)}」的产品参考图一张都读不出来（链接可能已失效）：请到产品图区点「修复破损图」或重新抓取/上传产品图后再生成`
         )
       }
     }
-    const styleDataUrls = await resolveUrls(styleRefs)
 
     // 1) 文本模型产出全部图片的 Prompt（带产品事实清单 + 真实参考图；用户注意点融入编排）
-    const ps =
-      promptSet ??
-      (promptSet = await runAi(() =>
-        buildImagePromptSet({ ...source, images: kindRefs.main.slice(0, 6) }, settings, allNotes, withLogo, {
-          productInfo,
-          styleRefCount: Math.min(styleDataUrls.length, 2),
-          mainStyle,
-          withDetail: kinds.includes('detail'),
-          withScene: kinds.includes('scene'),
-        })
-      ))
+    //    只出「原图直出」主图时完全不需要文本模型：不花 prompt 编排的钱，也避免没配 AI Key 时直接失败
+    const onlyCompose = kinds.every((k) => k === 'main' && body.mainMode === 'compose')
+    const mainStyleRefCount = Math.min(styleRefsForKind('main').length, 2)
+    const ps: Awaited<ReturnType<typeof buildImagePromptSet>> | null = onlyCompose
+      ? null
+      : (promptSet ??= await runAi(() =>
+          buildImagePromptSet({ ...source, images: kindRefs.main.slice(0, 6) }, settings, allNotes, withLogo, {
+            productInfo,
+            styleRefCount: mainStyleRefCount,
+            mainStyle,
+            withDetail: kinds.includes('detail'),
+            withScene: kinds.includes('scene'),
+            styleBlock,
+            styleName: style?.name,
+          })
+        ))
 
     // 2) 逐张生成（任务重试时跳过已完成的，续跑剩余的）
     for (const kind of kinds) {
@@ -1140,46 +1441,85 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
       const existing = created.filter((c) => c.kind === kind).length
       const slot = isMulti ? existing + 1 : 0
       if (created.some((c) => c.kind === kind && c.slot === slot)) continue
-      const prompt =
-        kind === 'main'
-          ? ps.main
-          : kind === 'dimension'
-            ? ps.dimension
-            : kind === 'scene'
-              ? (ps.scene[slot - 1] ?? ps.scene[0] ?? ps.detail[0] ?? ps.main)
-              : (ps.detail[slot - 1] ?? ps.detail[0] ?? ps.main)
 
-      // 产品图放前面（事实），风格参考图放最后 2 张（模型通常把靠后的图当风格参考）
-      const styleDataUrlsForKind = await resolveUrls(styleRefsForKind(kind), 2)
+      // 每张图独立分配参考图 + 独立拼保真护栏（实际发给模型的就是这段 prompt）
+      const useCompose = kind === 'main' && body.mainMode === 'compose'
+      const productSrcUrls = urlsForKind(kind)
+      const styleSrcUrls = styleRefsForKind(kind)
+      const styleDataUrlsForKind = useCompose ? [] : await resolveUrls(styleSrcUrls, 2)
+      const budget = budgetRefs(caps, {
+        product: kindRefs[kind].length,
+        style: styleDataUrlsForKind.length,
+        logo: kind === 'main' && Boolean(logo) && withLogo && !useCompose,
+      })
+      const used: RefsUsed = {
+        kind,
+        product: productSrcUrls.slice(0, budget.product),
+        style: styleMetaFor(styleSrcUrls.slice(0, budget.style)),
+        logo: budget.logo && Boolean(logo),
+        styleId: style?.id ?? null,
+        styleName: style?.name ?? '',
+        mainMode: kind === 'main' ? (body.mainMode ?? 'ai') : null,
+      }
+      // 产品图放前面（事实），风格参考图放最后 1-2 张，Logo 最末（提示词里 Logo 是最后一张）
       const refsWithStyle: ImageRef[] = [
-        ...kindRefs[kind].map((u) => ({ url: u }) as ImageRef),
-        ...(kind === 'main' && logo && withLogo ? [{ buffer: logo } as ImageRef] : []),
-        ...styleDataUrlsForKind.map((u) => ({ url: u }) as ImageRef),
+        ...kindRefs[kind].slice(0, budget.product).map((u) => ({ url: u }) as ImageRef),
+        ...styleDataUrlsForKind.slice(0, budget.style).map((u) => ({ url: u }) as ImageRef),
+        ...(budget.logo && logo ? [{ buffer: logo } as ImageRef] : []),
       ]
+      const basePrompt = useCompose
+        ? 'ORIGINAL PRODUCT PHOTO COMPOSITED ONTO A PURE WHITE BACKGROUND — no generative redraw, the product pixels come from the real supplier photo.'
+        : kind === 'main'
+          ? (ps as NonNullable<typeof ps>).main
+          : kind === 'dimension'
+            ? (ps as NonNullable<typeof ps>).dimension
+            : kind === 'scene'
+              ? ((ps as NonNullable<typeof ps>).scene[slot - 1] ??
+                (ps as NonNullable<typeof ps>).scene[0] ??
+                (ps as NonNullable<typeof ps>).detail[0] ??
+                (ps as NonNullable<typeof ps>).main)
+              : ((ps as NonNullable<typeof ps>).detail[slot - 1] ??
+                (ps as NonNullable<typeof ps>).detail[0] ??
+                (ps as NonNullable<typeof ps>).main)
+      const prompt = guardPrompt(basePrompt, {
+        kind,
+        withStyleRefs: used.style.length > 0,
+        withLogo: kind === 'main' && withLogo && !useCompose,
+      })
 
-      let buf = await runAi(() => generateImage(settings, prompt, refsWithStyle))
-
-      // 主图：外圈刷成纯白。生图模型常给一点点灰底/渐变，而 ASI 目录要求纯白背景。
-      // 只清理外圈（提示词保证那里是空白边距），不会动到产品本身的浅色边缘。
-      if (kind === 'main') buf = await finalizeMainImage(buf)
-
-      // 尺寸图：程序化叠加 inch 标注
-      let dimensionSpec: ProductImage['dimensionSpec'] = null
-      if (kind === 'dimension' && dims) {
-        const spec = { widthIn: dims.widthIn, heightIn: dims.heightIn, depthIn: dims.depthIn ?? null }
-        buf = await overlayDimensions(buf, spec)
-        dimensionSpec = spec
+      let buf: Buffer
+      if (useCompose) {
+        // 保真优先：不重新画，直接拿实拍原图换纯白底（产品像素一个都不改，且不花出图费）
+        const first = kindRefs[kind][0]
+        const parsed = first ? dataUrlToBuffer(first) : null
+        if (!parsed) throw new AppError(400, '原图直出需要至少一张可读的产品图；先抓取或上传产品图')
+        buf = await composeWhiteMain(parsed.buffer)
+        // 原图直出只用到产品图，风格参考图和 Logo 都没有送进模型，记录里如实清空
+        used.style = []
+        used.logo = false
+        used.mainMode = 'compose'
+      } else {
+        buf = await runAi(() => generateImage(settings, prompt, refsWithStyle))
+        // 主图：外圈刷成纯白。生图模型常给一点点灰底/渐变，而 ASI 目录要求纯白背景。
+        // 只清理外圈（提示词保证那里是空白边距），不会动到产品本身的浅色边缘。
+        if (kind === 'main') buf = await finalizeMainImage(buf)
       }
 
-      // 同角色同槽位替换：先删旧记录与旧文件（含 DB blob），避免多次生成后重复堆积
-      for (const old of listImages(productId).filter((i) => i.kind === kind && i.slot === slot)) {
-        try {
-          fs.unlinkSync(path.join(productDir(productId), old.file))
-        } catch {
-          /* 旧文件可能已不存在 */
+      // 尺寸图：程序化叠加 inch 标注（长/宽/高/厚度全部来自用户确认的数据）
+      let dimensionSpec: ProductImage['dimensionSpec'] = null
+      if (kind === 'dimension' && dimSpec) {
+        const spec = {
+          widthIn: dimSpec.widthIn,
+          heightIn: dimSpec.heightIn,
+          depthIn: dimSpec.depthIn,
         }
-        db.prepare('DELETE FROM product_images WHERE id = ?').run(old.id)
-        db.prepare('DELETE FROM image_blobs WHERE key = ?').run(`${productId}/${path.basename(old.file)}`)
+        buf = await overlayDimensions(buf, { ...spec, legend: dimSpec.legend ?? null })
+        dimensionSpec = { ...spec, legend: dimSpec.legend ?? null }
+      }
+
+      // 同角色同槽位：旧版本归档（不删、不覆盖），历史可回溯
+      for (const old of listImages(productId).filter((i) => i.kind === kind && i.slot === slot && !i.archived)) {
+        archiveImage(old.id)
       }
       const file = saveImageFile(productId, buf)
       const id = randomUUID()
@@ -1192,29 +1532,23 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
         history: [],
         file,
         dimensionSpec,
-        withLogo,
+        withLogo: kind === 'main' ? withLogo : false,
+        refsUsed: used,
+        styleId: style?.id ?? null,
+        styleName: style?.name ?? '',
+        promptVersion: promptVersionOf(prompt),
+        archived: false,
+        parentId: null,
+        feedback: null,
         createdAt: now(),
         updatedAt: now(),
       }
-      db.prepare(
-        `INSERT INTO product_images (id, product_id, kind, slot, prompt, history, file, dimension_spec, with_logo, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        record.id,
-        record.productId,
-        record.kind,
-        record.slot,
-        record.prompt,
-        JSON.stringify(record.history),
-        record.file,
-        record.dimensionSpec ? JSON.stringify(record.dimensionSpec) : null,
-        withLogo ? 1 : 0,
-        record.createdAt,
-        record.updatedAt
-      )
+      insertImageRecord(record, withLogo)
 
       // 3) 自动审查：拿生成图对照原产品图，按 8 项硬指标体检（不通过就把问题记下来）
-      try {
+      //    原图直出（compose）本身就是产品原图，不需要也不应该再花一次视觉审查的钱。
+      if (!useCompose) {
+        try {
         const parsedListing = productId !== 'preview' ? findProduct(productId).listing : null
         const expectColors = String(parsedListing?.colors || source.colorsCn || '')
           .split(/[/,，、]/)
@@ -1236,8 +1570,9 @@ productImagesRouter.post('/generate', async (req: Request, res: Response) => {
           record.review = review
           db.prepare('UPDATE product_images SET review=? WHERE id=?').run(JSON.stringify(review), record.id)
         }
-      } catch {
-        /* 审查失败不影响出图结果 */
+        } catch {
+          /* 审查失败不影响出图结果 */
+        }
       }
 
       created.push(record)
@@ -1289,23 +1624,32 @@ productImagesRouter.post('/chat', async (req: Request, res: Response) => {
     buf = await overlayDimensions(buf, image.dimensionSpec)
   }
 
-  // 3) 新版本覆盖保存（保留历史链）
+  // 3) 新版本单独落一条记录，旧图归档（保留文件与历史，不覆盖）
   const file = saveImageFile(body.productId, buf)
+  const now = new Date().toISOString()
   const history = [
     ...image.history,
-    { role: 'user' as const, content: body.message, at: new Date().toISOString() },
-    { role: 'assistant' as const, content: reply, at: new Date().toISOString() },
+    { role: 'user' as const, content: body.message, at: now },
+    { role: 'assistant' as const, content: reply, at: now },
   ]
-  db.prepare('UPDATE product_images SET file=?, prompt=?, history=?, updated_at=? WHERE id=?').run(
+  const next: ProductImage = {
+    ...image,
+    id: randomUUID(),
     file,
-    editPrompt,
-    JSON.stringify(history),
-    new Date().toISOString(),
-    image.id
-  )
+    prompt: editPrompt,
+    history,
+    dimensionSpec: image.dimensionSpec,
+    parentId: image.id,
+    archived: false,
+    promptVersion: promptVersionOf(editPrompt),
+    createdAt: now,
+    updatedAt: now,
+  }
+  insertImageRecord(next, image.withLogo === true)
+  archiveImage(image.id)
 
   res.json({
-    image: { ...image, file, prompt: editPrompt, history, updatedAt: new Date().toISOString() },
+    image: next,
     reply,
     url: `/api/product-images/${body.productId}/${file}`,
   })
@@ -1366,41 +1710,132 @@ productImagesRouter.delete('/product/:productId/all', async (req: Request, res: 
   res.json({ ok: true })
 })
 
-// ---------- 重新生成单张（同 Prompt 换种子） ----------
+// ---------- 重新生成单张（只重跑这一张，其他满意的图保留不动） ----------
 productImagesRouter.post('/:imageId/regenerate', async (req: Request, res: Response) => {
   const imageId = String(req.params.imageId)
-  const body = z.object({ productId: z.string().min(1) }).parse(req.body ?? {})
+  const body = z
+    .object({
+      productId: z.string().min(1),
+      /** 这张图额外的修改要求（中文也可以，会拼进 prompt 的 ADDITIONAL REQUIREMENT） */
+      notes: z.string().max(1500).optional(),
+      instruction: z.string().max(1500).optional(),
+    })
+    .parse(req.body ?? {})
   const settings = loadSettings()
   const image = findImage(body.productId, imageId)
-
   const logo = readLogo()
-  let buf: Buffer
-  if (image.kind === 'main' && logo && image.withLogo !== false) {
-    // 带 Logo 的主图：用旧图 + Logo 编辑重生成
-    buf = await runAi(() =>
-      editImage(settings, image.prompt, [
-        { buffer: readImageFile(body.productId, image.file) },
-        { buffer: logo },
-      ])
-    )
-  } else {
-    buf = await runAi(() => generateImage(settings, image.prompt))
+  const extra = (body.instruction ?? body.notes ?? '').trim()
+
+  // 用当时这张图真实用过的参考图重跑（产品图在前、风格参考图在后），旧记录已保存 refs_used
+  const refs: ImageRef[] = []
+  const used = image.refsUsed
+  if (used?.product?.length) {
+    for (const u of used.product) refs.push({ url: u })
   }
-  // 重生成主图同样统一成纯白背景
-  if (image.kind === 'main') buf = await finalizeMainImage(buf)
+  for (const s of used?.style ?? []) {
+    try {
+      if (s.id) refs.push({ buffer: visualRefBuffer(s.id) })
+      else if (/^(https?:\/\/|data:image\/)/i.test(s.url)) refs.push({ url: s.url })
+    } catch {
+      /* 风格图被删了就不带 */
+    }
+  }
+  const logoUsed = used?.logo ?? (image.kind === 'main' && image.withLogo === true)
+  if (logo && logoUsed) refs.push({ buffer: logo })
+
+  const prompt = withExtraRequirement(image.prompt, extra)
+  const useCompose = image.kind === 'main' && used?.mainMode === 'compose'
+
+  let buf: Buffer
+  if (useCompose) {
+    const first = used?.product?.[0]
+    if (!first) throw new AppError(400, '原图直出缺少产品图，无法重跑')
+    buf = await composeWhiteMain(await fetchImageBuffer(first))
+  } else if (refs.length) {
+    buf = await runAi(() => generateImage(settings, prompt, refs))
+    if (image.kind === 'main') buf = await finalizeMainImage(buf)
+  } else if (image.kind === 'main' && logo && logoUsed) {
+    // 老记录没有 refs_used：沿用旧的「当前图 + Logo」编辑方式
+    buf = await runAi(() =>
+      editImage(settings, prompt, [{ buffer: readImageFile(body.productId, image.file) }, { buffer: logo }])
+    )
+    buf = await finalizeMainImage(buf)
+  } else {
+    buf = await runAi(() => generateImage(settings, prompt))
+    if (image.kind === 'main') buf = await finalizeMainImage(buf)
+  }
+
   if (image.kind === 'dimension' && image.dimensionSpec) {
     buf = await overlayDimensions(buf, image.dimensionSpec)
   }
 
   const file = saveImageFile(body.productId, buf)
-  db.prepare('UPDATE product_images SET file=?, updated_at=? WHERE id=?').run(
+  const now = new Date().toISOString()
+  const next: ProductImage = {
+    ...image,
+    id: randomUUID(),
     file,
+    prompt,
+    dimensionSpec: image.dimensionSpec,
+    parentId: image.id,
+    archived: false,
+    promptVersion: promptVersionOf(prompt),
+    feedback: null,
+    createdAt: now,
+    updatedAt: now,
+  }
+  insertImageRecord(next, image.withLogo === true)
+  archiveImage(image.id)
+  res.json({ image: next, url: `/api/product-images/${body.productId}/${file}` })
+})
+
+// ---------- 单张图片满意度反馈（满意/不满意/加入优秀作品库） ----------
+productImagesRouter.post('/:imageId/feedback', async (req: Request, res: Response) => {
+  const imageId = String(req.params.imageId)
+  const body = z
+    .object({
+      productId: z.string().min(1),
+      verdict: z.enum(['like', 'dislike']),
+      reasons: z.array(z.string().max(60)).max(10).optional(),
+      note: z.string().max(1000).optional(),
+      /** 勾选后把这版图收藏进视觉参考库（优秀作品） */
+      addToLibrary: z.boolean().optional(),
+      category: z.string().max(40).optional(),
+    })
+    .parse(req.body ?? {})
+  const image = findImage(body.productId, imageId)
+  const p = findProduct(body.productId)
+  const styleName = image.styleName || ''
+  const feedback = recordImageFeedback({
+    imageId: image.id,
+    productId: body.productId,
+    verdict: body.verdict,
+    reasons: body.reasons,
+    note: body.note,
+    styleId: image.styleId,
+    styleName,
+    promptVersion: image.promptVersion,
+    productCategory: p.source.category || p.source.sourceTitle.slice(0, 40),
+  })
+  db.prepare('UPDATE product_images SET feedback = ?, updated_at = ? WHERE id = ?').run(
+    JSON.stringify({ verdict: body.verdict, reasons: body.reasons ?? [], note: body.note ?? '', at: new Date().toISOString() }),
     new Date().toISOString(),
     image.id
   )
-  res.json({
-    image: { ...image, file, updatedAt: new Date().toISOString() },
-    url: `/api/product-images/${body.productId}/${file}`,
-  })
+  let ref: VisualRef | null = null
+  if (body.addToLibrary) {
+    try {
+      ref = await collectGeneratedImage({
+        productId: body.productId,
+        imageId: image.id,
+        category: body.category,
+        note: body.note,
+        verdict: 'good',
+      })
+    } catch {
+      /* 收藏失败不影响反馈本身 */
+    }
+  }
+  res.json({ ok: true, feedback, ref })
 })
 

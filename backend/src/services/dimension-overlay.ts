@@ -23,6 +23,8 @@ interface OverlaySpec {
   widthIn: number
   heightIn: number
   depthIn: number | null
+  /** 底部图例（程序绘制）：长/宽/高/厚度等确认尺寸，如 L 12.0" W 8.0" H 15.0" T 2.0" */
+  legend?: string | null
 }
 
 const LINE_W = 6
@@ -36,6 +38,12 @@ let fontPromise: Promise<any> | null = null
 function getFont(): Promise<any> {
   if (!fontPromise) fontPromise = Jimp.loadFont(Jimp.FONT_SANS_64_BLACK)
   return fontPromise
+}
+
+let smallFontPromise: Promise<any> | null = null
+function getSmallFont(): Promise<any> {
+  if (!smallFontPromise) smallFontPromise = Jimp.loadFont(Jimp.FONT_SANS_32_BLACK)
+  return smallFontPromise
 }
 
 /** 画一条加粗线段（Bresenham + 方形笔刷），坐标自动裁剪到画布内 */
@@ -87,9 +95,9 @@ function drawArrow(img: Jimp, x: number, y: number, dir: 'l' | 'r' | 'u' | 'd'):
   }
 }
 
-/** 把文字渲染到透明小图上并重新着色为 INK，返回图与尺寸 */
-async function renderText(text: string): Promise<{ img: Jimp; w: number; h: number }> {
-  const font = await getFont()
+/** 把文字渲染到透明小图上并重新着色为 INK，返回图与尺寸（small=true 用 32px 字体画图例） */
+async function renderText(text: string, small = false): Promise<{ img: Jimp; w: number; h: number }> {
+  const font = await (small ? getSmallFont() : getFont())
   const tw = Math.ceil(Jimp.measureText(font, text)) + 8
   const th = Math.ceil(Jimp.measureTextHeight(font, text, tw)) + 8
   const t = new Jimp(tw, th, 0x00000000)
@@ -148,6 +156,10 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
   hText.img.rotate(90, true) // 顺时针 90°：文字自上而下
   const hw = hText.img.bitmap.width
   const hh = hText.img.bitmap.height
+  // 长/宽/高/厚度图例（可选）：由程序绘制，数字只来自用户确认的尺寸数据
+  const legendText = spec.legend?.trim() ? await renderText(spec.legend.trim(), true) : null
+  const legendGap = legendText ? Math.round(S * 0.010) : 0
+  const legendH = legendText ? legendText.h + legendGap : 0
 
   const gap = Math.round(S * 0.030) // 线到产品框的间距
   const basePad = Math.round(S * 0.030) // 画布最外边距
@@ -156,7 +168,7 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
   const padLeft = basePad + depthPad
   const padTop = basePad + depthPad
   const padRight = gap + 8 + hw + basePad
-  const padBottom = gap + 8 + wText.h + basePad
+  const padBottom = gap + 8 + wText.h + legendH + basePad
 
   const availW = S - padLeft - padRight
   const availH = S - padTop - padBottom
@@ -180,14 +192,21 @@ export async function overlayDimensions(input: Buffer, spec: OverlaySpec): Promi
   const bottom = destY + Math.round(raw.bottom * scale)
 
   // 5) 底部：宽度线（落在产品框下方的白边里）
-  const yW = Math.min(bottom + gap, S - basePad - 8 - wText.h)
+  const yW = Math.min(bottom + gap, S - basePad - 8 - wText.h - legendH)
   drawLine(canvas, left, yW, right, yW)
   drawArrow(canvas, left, yW, 'l')
   drawArrow(canvas, right, yW, 'r')
   {
     const tx = clamp(Math.round((left + right) / 2 - wText.w / 2), 2, S - wText.w - 2)
-    const ty = clamp(yW + 8, 2, S - wText.h - 2)
+    const ty = clamp(yW + 8, 2, S - wText.h - legendH - 2)
     canvas.composite(wText.img, tx, ty)
+  }
+
+  // 5.1) 图例：长/宽/高/厚度等确认尺寸，程序绘制，保证数字准确
+  if (legendText) {
+    const lx = clamp(Math.round((S - legendText.w) / 2), 2, S - legendText.w - 2)
+    const ly = clamp(yW + 8 + wText.h + legendGap, 2, S - legendText.h - 2)
+    canvas.composite(legendText.img, lx, ly)
   }
 
   // 6) 右侧：高度线（落在产品框右侧的白边里，文字旋转 90°）

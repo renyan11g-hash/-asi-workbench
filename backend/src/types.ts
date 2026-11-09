@@ -563,7 +563,30 @@ export interface ProductImage {
     heightIn: number
     /** 深/厚（可选） */
     depthIn: number | null
+    /** 底部图例（长/宽/高/厚度，程序绘制；老记录没有这个字段） */
+    legend?: string | null
   } | null
+  /** 这张图实际用了哪些参考图（产品图 / 风格参考图 / Logo），用于界面追溯 */
+  refsUsed?: {
+    kind: string
+    product: string[]
+    style: Array<{ id: string; url: string; title: string; category: string }>
+    logo: boolean
+    styleId: string | null
+    styleName: string
+    mainMode: string | null
+  } | null
+  /** 命中的视觉风格（无则为空） */
+  styleId?: string | null
+  styleName?: string
+  /** 提示词版本（反馈追溯用） */
+  promptVersion?: string
+  /** 旧版本归档（重新生成/重新编辑后，旧图保留可回溯） */
+  archived?: boolean
+  /** 版本链：上一版图片 id */
+  parentId?: string | null
+  /** 最新一次人工反馈 */
+  feedback?: { verdict: 'like' | 'dislike'; reasons: string[]; note: string; at: string } | null
   createdAt: string
   updatedAt: string
 }

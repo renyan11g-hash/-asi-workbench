@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
-  ImageOff,
+  ChevronDown,
+  ChevronUp,
   ImagePlus,
   Link2,
   Loader2,
@@ -9,15 +10,18 @@ import {
   RefreshCw,
   ShieldCheck,
   Sparkles,
-  Upload,
+  Star,
+  ThumbsDown,
+  ThumbsUp,
+  Trash2,
+  Wand2,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { api, getErrorMessage } from '@/lib/api'
-import { filesToDataUrls } from '@/lib/image-file'
 import { cn } from '@/lib/utils'
-import type { ProductImage } from '@/types'
+import type { ImageCapabilities, ProductImage, ShotPlan, StyleMatch, VisualRef } from '@/types'
 
 const KIND_LABEL: Record<string, string> = {
   main: '主图',
@@ -27,14 +31,50 @@ const KIND_LABEL: Record<string, string> = {
   intro: '细节图',
 }
 
+const REASON_FALLBACK = [
+  { key: 'product_detail', label: '产品细节错误' },
+  { key: 'product_color', label: '产品颜色错误' },
+  { key: 'composition', label: '构图不协调' },
+  { key: 'background', label: '背景不合适' },
+  { key: 'texture', label: '质感不足' },
+  { key: 'scene', label: '场景不真实' },
+  { key: 'layout', label: '排版不精致' },
+]
+
+type KindKey = 'main' | 'dimension' | 'detail' | 'scene'
+type KindPlanState = {
+  sources: string[]
+  refs: string[]
+  notes: string
+  chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
+}
+
+const EMPTY_PLAN: Record<KindKey, KindPlanState> = {
+  main: { sources: [], refs: [], notes: '', chat: [] },
+  dimension: { sources: [], refs: [], notes: '', chat: [] },
+  detail: { sources: [], refs: [], notes: '', chat: [] },
+  scene: { sources: [], refs: [], notes: '', chat: [] },
+}
+
+function normalizePlan(raw: unknown): Record<KindKey, KindPlanState> {
+  const p = (raw ?? {}) as Record<string, Partial<KindPlanState> | undefined>
+  const pick = (k: KindKey): KindPlanState => ({
+    sources: Array.isArray(p[k]?.sources) ? (p[k]?.sources as string[]) : [],
+    refs: Array.isArray(p[k]?.refs) ? (p[k]?.refs as string[]) : [],
+    notes: typeof p[k]?.notes === 'string' ? (p[k]?.notes as string) : '',
+    chat: Array.isArray(p[k]?.chat) ? (p[k]?.chat as KindPlanState['chat']) : [],
+  })
+  return { main: pick('main'), dimension: pick('dimension'), detail: pick('detail'), scene: pick('scene') }
+}
+
 /**
  * 产品图片工作台。
  *
- * 左半边是「喂给 AI 的事实」：
- *   产品图 = 产品真身图（1688 抓 / 人工上传），生成时作为事实基准；
- *   参考图 = 别人家的优秀图，只学构图/光线/场景，严禁改我们的产品。
- * 右半边是「生成什么」：主图 1、尺寸图 1、细节图+场景图合计 2~3，可选卖点组合主图。
- * 生成完每张图自动做 8 项一致性审查，结果直接标在图上；每张图仍可与 AI 对话修改。
+ * 默认走「简单模式」：上传/抓取 1688 产品图 → AI 自动识别 → 自动匹配已保存的视觉风格
+ * → 自动配一套图 → 人工确认（满意/不满意/重生成/收藏）。
+ *
+ * 高级操作（手动指定产品图、图种、风格参考图、注意点、生成前对话）都收在「高级设置」里，
+ * 日常不需要点。每张图都能看到：用了哪些参考图、实际发给模型的提示词、命中的风格版本。
  */
 export function ProductImageStudio({
   productId,
@@ -46,97 +86,112 @@ export function ProductImageStudio({
   const [sources, setSources] = useState<string[]>([])
   const [refs, setRefs] = useState<Array<{ id: string; url: string }>>([])
   const [images, setImages] = useState<ProductImage[]>([])
+  const [plan, setPlan] = useState<Record<KindKey, KindPlanState>>(EMPTY_PLAN)
   const [loading, setLoading] = useState(true)
 
+  // 自动匹配状态
+  const [match, setMatch] = useState<StyleMatch | null>(null)
+  const [suggestion, setSuggestion] = useState<ShotPlan | null>(null)
+  const [caps, setCaps] = useState<ImageCapabilities | null>(null)
+  const [libraryRefs, setLibraryRefs] = useState<VisualRef[]>([])
+  const [styles, setStyles] = useState<Array<{ id: string; name: string; isDefault: boolean }>>([])
+  const [feedbackReasons, setFeedbackReasons] = useState(REASON_FALLBACK)
+
   // 生成设置
+  const [auto, setAuto] = useState(true)
+  const [manualStyleId, setManualStyleId] = useState('')
+  const [manualRefIds, setManualRefIds] = useState<string[]>([])
+  const [noStyleRefs, setNoStyleRefs] = useState(false)
   const [want, setWant] = useState({ main: true, dimension: true, detail: true, scene: true })
   const [detailCount, setDetailCount] = useState(1)
   const [sceneCount, setSceneCount] = useState(1)
   const [mainStyle, setMainStyle] = useState<'white' | 'combo'>('white')
+  const [mainMode, setMainMode] = useState<'ai' | 'compose'>('ai')
   const [withLogo, setWithLogo] = useState(true)
   const [notes, setNotes] = useState('')
-  const [busy, setBusy] = useState<'fetch' | 'gen' | null>(null)
+  const [busy, setBusy] = useState<'fetch' | 'gen' | 'match' | null>(null)
   const [progress, setProgress] = useState('')
-  /** 当前「Ctrl+V 粘贴」的目标区域：产品图 / 参考图 */
-  const [pasteZone, setPasteZone] = useState<'source' | 'ref'>('source')
-  const [uploading, setUploading] = useState(false)
-  const [mirroring, setMirroring] = useState(false)
-  const [failedUrls, setFailedUrls] = useState<Array<{ url: string; error: string }>>([])
+  const [showHistory, setShowHistory] = useState(false)
 
-  // 手动粘贴
+  // 尺寸输入（后端存 inch，这里用字符串便于清空）
+  const [dimForm, setDimForm] = useState({ lengthIn: '', widthIn: '', heightIn: '', thicknessIn: '' })
+  const [extraDim, setExtraDim] = useState<Array<{ label: string; value: number }>>([])
+  const [newDimLabel, setNewDimLabel] = useState('')
+  const [newDimValue, setNewDimValue] = useState('')
+
+  // 手动粘贴产品图
   const [sourcePaste, setSourcePaste] = useState('')
   const [showSourcePaste, setShowSourcePaste] = useState(false)
-  const [refPaste, setRefPaste] = useState('')
-  const [fetchedInfo, setFetchedInfo] = useState<{ added: number; total: number; message: string } | null>(null)
 
-  // 每种图各自的参考图（产品图）/ 风格参考图 / 注意点 / 生成前对话
-  type KindKey = 'main' | 'dimension' | 'detail' | 'scene'
-  type KindPlanState = {
-    sources: string[]
-    refs: string[]
-    notes: string
-    chat: Array<{ role: 'user' | 'assistant'; content: string; at: string }>
-  }
-  /** 接口返回的计划可能缺字段（老数据没有 refs），统一补全再进 state */
-  const normalizePlan = (p: Record<string, Partial<KindPlanState>> | undefined): Record<KindKey, KindPlanState> => ({
-    main: { sources: p?.main?.sources ?? [], refs: p?.main?.refs ?? [], notes: p?.main?.notes ?? '', chat: p?.main?.chat ?? [] },
-    dimension: {
-      sources: p?.dimension?.sources ?? [],
-      refs: p?.dimension?.refs ?? [],
-      notes: p?.dimension?.notes ?? '',
-      chat: p?.dimension?.chat ?? [],
-    },
-    detail: {
-      sources: p?.detail?.sources ?? [],
-      refs: p?.detail?.refs ?? [],
-      notes: p?.detail?.notes ?? '',
-      chat: p?.detail?.chat ?? [],
-    },
-    scene: {
-      sources: p?.scene?.sources ?? [],
-      refs: p?.scene?.refs ?? [],
-      notes: p?.scene?.notes ?? '',
-      chat: p?.scene?.chat ?? [],
-    },
-  })
-  const [plan, setPlan] = useState<Record<KindKey, KindPlanState>>(() => normalizePlan(undefined))
+  // 生成前对话
   const [chatKind, setChatKind] = useState<KindKey | null>(null)
   const [chatInput, setChatInput] = useState('')
   const [chatBusy, setChatBusy] = useState(false)
-  const [autoPicking, setAutoPicking] = useState(false)
+
+  // 反馈
+  const [dislikeImage, setDislikeImage] = useState<ProductImage | null>(null)
+  const [dislikeReasons, setDislikeReasons] = useState<string[]>([])
+  const [dislikeNote, setDislikeNote] = useState('')
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [src, rf, imgs, pl] = await Promise.all([
+      const [src, rf, imgs, pl, styleInfo, cap, refLibrary, styleList, meta] = await Promise.all([
         api.getSourceImages(productId),
         api.listRefImages(productId),
         api.listProductImages(productId),
         api.getImagePlan(productId),
+        api.getProductStyle(productId),
+        api.getImageCapabilities(),
+        api.listVisualRefs({ status: 'active', limit: 200 }),
+        api.listVisualStyles(),
+        api.getVisualMeta(),
       ])
       setSources(src.images ?? [])
       setRefs(rf.refs ?? [])
       setImages(imgs ?? [])
-      const p = pl.plan ?? {}
-      setPlan(normalizePlan(p as Record<string, Partial<KindPlanState>>))
-    } catch {
-      /* 单个接口失败不阻塞页面 */
+      setPlan(normalizePlan(pl.plan))
+      setMatch(styleInfo.match)
+      setSuggestion(styleInfo.suggestion ?? null)
+      const d = styleInfo.dimensions
+      setDimForm({
+        lengthIn: d.lengthIn != null ? String(d.lengthIn) : '',
+        widthIn: d.widthIn != null ? String(d.widthIn) : '',
+        heightIn: d.heightIn != null ? String(d.heightIn) : '',
+        thicknessIn: d.thicknessIn != null ? String(d.thicknessIn) : '',
+      })
+      setExtraDim(d.extra ?? [])
+      setCaps(cap)
+      setLibraryRefs(refLibrary)
+      setStyles(styleList.map((s) => ({ id: s.id, name: s.name, isDefault: s.isDefault })))
+      setFeedbackReasons(meta.feedbackReasons?.length ? meta.feedbackReasons : REASON_FALLBACK)
+      if (styleInfo.suggestion) {
+        setWant({
+          main: true,
+          dimension: styleInfo.suggestion.kinds.includes('dimension'),
+          detail: styleInfo.suggestion.kinds.includes('detail'),
+          scene: styleInfo.suggestion.kinds.includes('scene'),
+        })
+        setDetailCount(Math.max(0, styleInfo.suggestion.detailCount))
+        setSceneCount(Math.max(0, styleInfo.suggestion.sceneCount))
+      }
+    } catch (err) {
+      toast.error(getErrorMessage(err))
     } finally {
       setLoading(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  /** 细节 + 场景合计不能超过 3 张（主图/尺寸图各 1 张另算） */
   const detailSceneTotal = (want.detail ? detailCount : 0) + (want.scene ? sceneCount : 0)
   const over = detailSceneTotal > 3
 
   const kinds = useMemo(() => {
-    const list: Array<'main' | 'dimension' | 'detail' | 'scene'> = []
+    const list: KindKey[] = []
     if (want.main) list.push('main')
     if (want.dimension) list.push('dimension')
     if (want.detail) for (let i = 0; i < detailCount; i++) list.push('detail')
@@ -144,20 +199,33 @@ export function ProductImageStudio({
     return list
   }, [want, detailCount, sceneCount])
 
+  const saveDims = async (patch?: Partial<Record<'lengthIn' | 'widthIn' | 'heightIn' | 'thicknessIn', string>>) => {
+    const numOrNull = (v: string) => {
+      const n = Number(v)
+      return Number.isFinite(n) && n > 0 ? n : null
+    }
+    const form = { ...dimForm, ...(patch ?? {}) }
+    try {
+      await api.saveProductDimensions(productId, {
+        lengthIn: numOrNull(form.lengthIn),
+        widthIn: numOrNull(form.widthIn),
+        heightIn: numOrNull(form.heightIn),
+        thicknessIn: numOrNull(form.thicknessIn),
+        extra: extraDim,
+      })
+      toast.success('尺寸已保存（尺寸图按这个数据标注）')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
   const fetchFrom1688 = async () => {
     setBusy('fetch')
-    setFetchedInfo(null)
-    setFailedUrls([])
     try {
       const r = await api.fetchSourceImages(productId)
       setSources(r.images ?? [])
-      setFetchedInfo({ added: r.added, total: r.total, message: r.message })
-      setFailedUrls(r.failed ?? [])
-      if (r.added > 0)
-        toast.success(
-          `从 1688 抓到 ${r.added} 张产品图（共 ${r.total} 张）${r.mirrored ? `，${r.mirrored} 张已存到服务器` : ''}`
-        )
-      else toast.warning(r.message || '没有抓到新图：可以手动粘贴图片地址，或直接 Ctrl+V 粘贴图片')
+      if (r.added > 0) toast.success(`从 1688 抓到 ${r.added} 张产品图（共 ${r.total} 张）`)
+      else toast.warning(r.message || '没有抓到新图：可以手动粘贴图片地址')
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
@@ -174,146 +242,46 @@ export function ProductImageStudio({
       toast.error('没识别到图片地址（要以 http(s):// 开头）')
       return
     }
-    setUploading(true)
     try {
       const r = await api.addSourceImages(productId, urls)
       setSources(r.images ?? [])
       setSourcePaste('')
-      setFailedUrls(r.failed ?? [])
-      toast.success(`已添加 ${urls.length} 张产品图，其中 ${r.mirrored} 张已下载到服务器`)
-      if (r.failed?.length) toast.warning(`${r.failed.length} 张下载失败：${r.failed[0].error}`)
+      toast.success(`已添加产品图，共 ${(r.images ?? []).length} 张`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  const reidentify = async () => {
+    setBusy('match')
+    try {
+      const m = await api.matchProductStyle(productId, true)
+      setMatch(m)
+      toast.success(
+        m.style
+          ? `识别为「${m.identification.category || '未命名品类'}」，匹配风格「${m.style.name}」`
+          : `识别为「${m.identification.category || '未命名品类'}」；参考库还没有风格配置`
+      )
+      void load()
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
-      setUploading(false)
+      setBusy(null)
     }
   }
 
-  const addRefs = async (payload: { urls?: string[]; images?: string[] }) => {
+  const savePlan = async (kind: KindKey, patch: Partial<KindPlanState>) => {
+    const prev = plan[kind]
+    setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], ...patch } }))
     try {
-      const r = await api.addRefImages(productId, payload)
-      setRefs(r.refs ?? [])
-      setRefPaste('')
-      if (r.added) toast.success(`已添加 ${r.added} 张参考图（已存到服务器）`)
-      if (r.failed?.length) toast.warning(`${r.failed.length} 张参考图下载失败：${r.failed[0].error}`)
+      const r = await api.saveImagePlan(productId, { kind, ...patch })
+      setPlan(normalizePlan(r.plan))
     } catch (err) {
+      setPlan((cur) => ({ ...cur, [kind]: prev }))
       toast.error(getErrorMessage(err))
     }
   }
 
-  /** 粘贴 / 拖入 / 选择文件：压缩后直接上传，不需要任何看图插件 */
-  const handleFiles = async (files: File[], zone: 'source' | 'ref') => {
-    const imgs = files.filter((f) => f.type.startsWith('image/'))
-    if (!imgs.length) {
-      toast.error('没读到图片：先截图/复制图片，再点这里按 Ctrl+V')
-      return
-    }
-    setUploading(true)
-    try {
-      const dataUrls = await filesToDataUrls(imgs)
-      if (!dataUrls.length) {
-        toast.error('图片读取失败，换一张试试（PNG / JPG 最稳）')
-        return
-      }
-      if (zone === 'ref') {
-        await addRefs({ images: dataUrls })
-        return
-      }
-      const r = await api.addSourceImages(productId, dataUrls)
-      setSources(r.images ?? [])
-      toast.success(`已加入 ${dataUrls.length} 张产品图，并已存到服务器`)
-      if (r.failed?.length) toast.warning(`${r.failed.length} 张下载失败：${r.failed[0].error}`)
-    } catch (err) {
-      toast.error(getErrorMessage(err))
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  // 全局 Ctrl+V：图片直接进「当前选中的区域」（默认产品图）
-  const handleFilesRef = useRef<(files: File[], zone: 'source' | 'ref') => void>(() => {})
-  handleFilesRef.current = (files, zone) => void handleFiles(files, zone)
-  useEffect(() => {
-    const onPaste = (e: ClipboardEvent) => {
-      const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
-      if (!files.length) return
-      e.preventDefault()
-      handleFilesRef.current(files, pasteZone)
-    }
-    document.addEventListener('paste', onPaste)
-    return () => document.removeEventListener('paste', onPaste)
-  }, [pasteZone])
-
-  /** 修复破损图：把外链图下载到我们自己的存储 */
-  const mirrorAll = async () => {
-    setMirroring(true)
-    try {
-      const r = await api.mirrorSourceImages(productId)
-      setSources(r.images ?? [])
-      setFailedUrls(r.failed ?? [])
-      if (r.mirrored) toast.success(`已把 ${r.mirrored} 张外链图下载到服务器，以后不会再破损`)
-      if (r.failed?.length) toast.warning(`${r.failed.length} 张下载失败：${r.failed[0].error}`)
-      else if (!r.mirrored) toast.info('没有需要转存的外链图')
-    } catch (err) {
-      toast.error(getErrorMessage(err))
-    } finally {
-      setMirroring(false)
-    }
-  }
-
-  const removeRef = async (id: string) => {
-    try {
-      await api.deleteRefImage(id)
-      setRefs((cur) => cur.filter((x) => x.id !== id))
-    } catch (err) {
-      toast.error(getErrorMessage(err))
-    }
-  }
-
-  const mirrorOne = async (u: string) => {
-    try {
-      const r = await api.mirrorSourceImages(productId, [u])
-      setSources(r.images ?? [])
-      const f = r.failed ?? []
-      if (f.length) toast.error(`这张图下载失败：${f[0].error}`)
-      else toast.success('已下载到我们自己的服务器')
-    } catch (err) {
-      toast.error(getErrorMessage(err))
-    }
-  }
-
-  const externalCount = sources.filter((u) => /^https?:\/\//i.test(u)).length
-  const localCount = sources.filter((u) => u.startsWith('/api/')).length
-  const inlineCount = sources.filter((u) => u.startsWith('data:image/')).length
-
-  /** 保存某种图选中的产品参考图（空数组=用全部产品图） */
-  const setKindSources = async (kind: KindKey, next: string[]) => {
-    // 先本地更新，界面立刻有反馈；接口失败再回滚提示
-    const prev = plan[kind].sources
-    setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], sources: next } }))
-    try {
-      const r = await api.saveImagePlan(productId, { kind, sources: next })
-      setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], ...(r.plan[kind] ?? {}) } }))
-    } catch (err) {
-      setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], sources: prev } }))
-      toast.error(getErrorMessage(err))
-    }
-  }
-
-  /** 保存某种图选中的「风格参考图」（空数组=沿用全部参考图，最多 2 张） */
-  const setKindRefs = async (kind: KindKey, next: string[]) => {
-    const prev = plan[kind].refs
-    setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], refs: next } }))
-    try {
-      const r = await api.saveImagePlan(productId, { kind, refs: next })
-      setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], ...(r.plan[kind] ?? {}) } }))
-    } catch (err) {
-      setPlan((cur) => ({ ...cur, [kind]: { ...cur[kind], refs: prev } }))
-      toast.error(getErrorMessage(err))
-    }
-  }
-
-  /** 生成前对话：把用户这句话发给 AI，AI 回复构图建议并把注意点写进这张图的 notes */
   const sendChat = async () => {
     if (!chatKind || !chatInput.trim()) return
     const kind = chatKind
@@ -331,7 +299,11 @@ export function ProductImageStudio({
         ...cur,
         [kind]: {
           ...cur[kind],
-          chat: [...cur[kind].chat, { role: 'user', content: msg, at: now }, ...(r.reply ? [{ role: 'assistant' as const, content: r.reply, at: now }] : [])],
+          chat: [
+            ...cur[kind].chat,
+            { role: 'user', content: msg, at: now },
+            ...(r.reply ? [{ role: 'assistant' as const, content: r.reply, at: now }] : []),
+          ],
           notes: r.plan?.[kind]?.notes ?? cur[kind].notes,
         },
       }))
@@ -342,29 +314,12 @@ export function ProductImageStudio({
     }
   }
 
-  /** AI 自动挑图：认图后按用途分配四种图的参考图 */
-  const autoPick = async () => {
-    setAutoPicking(true)
-    try {
-      const r = await api.autoAssignImagePlan(productId)
-      const p = r.plan ?? {}
-      setPlan(normalizePlan(p as Record<string, Partial<KindPlanState>>))
-      const n = (k: 'main' | 'dimension' | 'detail' | 'scene') => r.picks?.[k]?.length ?? 0
-      toast.success(
-        `AI 挑好了：主图 ${n('main')} 张 / 尺寸图 ${n('dimension')} 张 / 细节图 ${n('detail')} 张 / 场景图 ${n('scene')} 张`
-      )
-    } catch (err) {
-      toast.error(getErrorMessage(err))
-    } finally {
-      setAutoPicking(false)
-    }
-  }
-
-  const generate = async () => {    if (!kinds.length) {
+  const generate = async () => {
+    if (!auto && !kinds.length) {
       toast.error('至少选一种图')
       return
     }
-    if (over) {
+    if (!auto && over) {
       toast.error('细节图 + 场景图合计最多 3 张')
       return
     }
@@ -372,24 +327,131 @@ export function ProductImageStudio({
       toast.error('还没有产品图：先「从 1688 抓取」或手动粘贴产品图，AI 得有实物参考才画得准')
       return
     }
+    if (mainMode === 'compose' && withLogo) {
+      toast.warning('原图直出不会自动加 Logo（不重绘产品）；需要 Logo 请用 AI 生成主图')
+    }
     setBusy('gen')
-    setProgress('正在提交生成任务…')
+    setProgress('正在保存尺寸并提交生成任务…')
     try {
+      await api.saveProductDimensions(productId, {
+        lengthIn: Number(dimForm.lengthIn) > 0 ? Number(dimForm.lengthIn) : null,
+        widthIn: Number(dimForm.widthIn) > 0 ? Number(dimForm.widthIn) : null,
+        heightIn: Number(dimForm.heightIn) > 0 ? Number(dimForm.heightIn) : null,
+        thicknessIn: Number(dimForm.thicknessIn) > 0 ? Number(dimForm.thicknessIn) : null,
+        extra: extraDim,
+      })
+      // 先单独跑「识别 + 匹配风格」：这一步可能调视觉模型，放在出图请求之外，
+      // 避免 Render 100 秒代理超时；结果会落库缓存，出图接口直接命中。
+      if (auto) {
+        setProgress('AI 正在识别产品、匹配视觉风格…')
+        try {
+          const m = await api.matchProductStyle(productId, false)
+          setMatch(m)
+        } catch {
+          /* 识别失败不阻塞出图：后端会按资料库字段兜底匹配 */
+        }
+      }
+      setProgress('正在提交生成任务…')
       const imgs = await api.generateProductImages(
         productId,
         (p, elapsed) => setProgress(p ? `${p}（已耗时 ${elapsed} 秒）` : `生成中…（已耗时 ${elapsed} 秒）`),
         notes,
-        kinds,
+        auto ? undefined : kinds,
         withLogo,
-        mainStyle
+        mainStyle,
+        {
+          auto,
+          styleId: manualStyleId || undefined,
+          styleRefIds: manualRefIds.length ? manualRefIds : undefined,
+          noStyleRefs,
+          mainMode,
+          dimensions: {
+            lengthIn: Number(dimForm.lengthIn) > 0 ? Number(dimForm.lengthIn) : null,
+            widthIn: Number(dimForm.widthIn) > 0 ? Number(dimForm.widthIn) : null,
+            heightIn: Number(dimForm.heightIn) > 0 ? Number(dimForm.heightIn) : null,
+            thicknessIn: Number(dimForm.thicknessIn) > 0 ? Number(dimForm.thicknessIn) : null,
+            extra: extraDim,
+          },
+        }
       )
       setImages(imgs ?? [])
-      toast.success(`已生成 ${imgs.length} 张（含自动审查）`)
+      toast.success(`已生成 ${imgs.length} 张（每张都带产品保真审查）`)
+      void load()
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
       setBusy(null)
       setProgress('')
+    }
+  }
+
+  const regenerate = async (img: ProductImage) => {
+    const note = window.prompt('这张图要怎么改？（可留空，只换一版；旧版会保留在历史版本里）', '')
+    if (note === null) return
+    setBusy('gen')
+    setProgress(`正在重跑这张${KIND_LABEL[img.kind] ?? '图'}…`)
+    try {
+      await api.regenerateProductImage(productId, img.id, note || undefined)
+      toast.success('已重跑并保留旧版本')
+      await load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setBusy(null)
+      setProgress('')
+    }
+  }
+
+  const like = async (img: ProductImage) => {
+    try {
+      await api.submitImageFeedback(productId, img.id, { verdict: 'like' })
+      setImages((cur) =>
+        cur.map((i) =>
+          i.id === img.id ? { ...i, feedback: { verdict: 'like', reasons: [], note: '', at: new Date().toISOString() } } : i
+        )
+      )
+      toast.success('已记下满意；如果觉得这张可以当模板，点「加入优秀作品库」')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  const collect = async (img: ProductImage) => {
+    try {
+      const category =
+        img.kind === 'main' ? 'main' : img.kind === 'dimension' ? 'dimension' : img.kind === 'scene' ? 'scene' : 'detail'
+      await api.collectGeneratedRef({ productId, imageId: img.id, category, verdict: 'good' })
+      toast.success('已加入优秀作品库，下次学习风格/出图会自动用上')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  const submitDislike = async () => {
+    if (!dislikeImage) return
+    try {
+      await api.submitImageFeedback(productId, dislikeImage.id, {
+        verdict: 'dislike',
+        reasons: dislikeReasons,
+        note: dislikeNote.trim(),
+        addToLibrary: false,
+      })
+      setImages((cur) =>
+        cur.map((i) =>
+          i.id === dislikeImage.id
+            ? {
+                ...i,
+                feedback: { verdict: 'dislike', reasons: dislikeReasons, note: dislikeNote.trim(), at: new Date().toISOString() },
+              }
+            : i
+        )
+      )
+      setDislikeImage(null)
+      setDislikeReasons([])
+      setDislikeNote('')
+      toast.success('已记下问题，反馈会汇总到视觉风格中心')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
     }
   }
 
@@ -399,145 +461,130 @@ export function ProductImageStudio({
     if (r.ok)
       return (
         <span className="inline-flex items-center gap-0.5 text-[10px] text-emerald-600">
-          <ShieldCheck className="h-3 w-3" /> 审查通过
+          <ShieldCheck className="h-3 w-3" /> 保真审查通过
         </span>
       )
     return (
-      <span
-        className="inline-flex items-center gap-0.5 text-[10px] text-amber-700"
-        title={r.issues.join('\n')}
-      >
+      <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-700" title={r.issues.join('\n')}>
         <AlertTriangle className="h-3 w-3" /> {r.issues.length} 项待修
       </span>
     )
   }
 
+  const current = images.filter((i) => !i.archived)
+  const archived = images.filter((i) => i.archived)
   const grouped = useMemo(() => {
-    const order: ProductImageKindKey[] = ['main', 'dimension', 'detail', 'scene', 'intro']
+    const order: Array<ProductImage['kind']> = ['main', 'dimension', 'detail', 'scene', 'intro']
     return order
-      .map((k) => ({ kind: k, items: images.filter((i) => i.kind === k) }))
+      .map((k) => ({ kind: k, items: current.filter((i) => i.kind === k) }))
       .filter((g) => g.items.length > 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [images])
+
+  const shownRefs = manualRefIds.length
+    ? libraryRefs.filter((r) => manualRefIds.includes(r.id))
+    : (match?.refs ?? [])
 
   return (
     <div className="space-y-4">
-      {/* 1. 产品图 / 参考图 */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div
-          className={cn(
-            'rounded-xl border bg-white p-3 transition',
-            pasteZone === 'source' ? 'border-blue-400 ring-1 ring-blue-200' : 'border-slate-200'
-          )}
-          onClick={() => setPasteZone('source')}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault()
-            setPasteZone('source')
-            void handleFiles(Array.from(e.dataTransfer.files), 'source')
-          }}
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <div className="text-[13px] font-semibold text-slate-800">
-                产品图（产品真身）
-                {pasteZone === 'source' && (
-                  <span className="ml-1.5 rounded bg-blue-50 px-1 py-0.5 text-[10px] font-normal text-blue-600">
-                    Ctrl+V / 拖拽图片粘到这里
-                  </span>
-                )}
-              </div>
-              <div className="text-[11px] text-slate-500">AI 只照着这些图画，是产品事实的唯一来源</div>
+      {/* 1. 自动匹配状态：AI 识别 → 风格 → 参考图 */}
+      <div className="rounded-xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-medium text-white">
+            <Sparkles className="h-3 w-3" /> 自动模式
+          </span>
+          <span className="text-[13px] font-semibold text-slate-800">上传原图 → 自动识别 → 匹配风格 → 生成</span>
+          <label className="ml-auto inline-flex items-center gap-1 text-[11px] text-slate-600">
+            <input type="checkbox" className="h-3.5 w-3.5" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
+            自动配图/自动套风格
+          </label>
+          <Button size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy === 'match'} onClick={() => void reidentify()}>
+            {busy === 'match' ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Wand2 className="mr-1 h-3 w-3" />}
+            重新识别
+          </Button>
+        </div>
+
+        <div className="mt-2 grid gap-2 lg:grid-cols-3">
+          <div className="rounded-lg border border-slate-200 bg-white p-2">
+            <div className="text-[10px] uppercase tracking-wide text-slate-400">AI 识别</div>
+            {match ? (
+              <>
+                <div className="mt-0.5 text-[12px] font-medium text-slate-800">
+                  {match.identification.category || '未命名品类'}
+                  {match.identification.categoryEn ? ` · ${match.identification.categoryEn}` : ''}
+                </div>
+                <div className="mt-0.5 line-clamp-2 text-[10px] leading-relaxed text-slate-500">
+                  {[
+                    match.identification.material,
+                    match.identification.colors.join('/'),
+                    match.identification.accessories.length ? `配件：${match.identification.accessories.join('、')}` : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ') || '按资料库字段匹配'}
+                </div>
+              </>
+            ) : (
+              <div className="mt-0.5 text-[11px] text-slate-400">生成时会自动识别；也可点「重新识别」先看结果</div>
+            )}
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-2">
+            <div className="text-[10px] uppercase tracking-wide text-slate-400">匹配风格</div>
+            <div className="mt-0.5 text-[12px] font-medium text-slate-800">
+              {manualStyleId
+                ? styles.find((s) => s.id === manualStyleId)?.name ?? '手动指定'
+                : match?.style?.name ?? '暂无风格配置'}
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <label className="cursor-pointer">
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => {
-                    const fs = Array.from(e.target.files ?? [])
-                    e.target.value = ''
-                    void handleFiles(fs, 'source')
-                  }}
-                />
-                <span className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-[12px] text-slate-700 hover:border-blue-300">
-                  {uploading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1 h-3.5 w-3.5" />}
-                  上传
-                </span>
-              </label>
-              <Button size="sm" variant="outline" disabled={busy === 'fetch'} onClick={() => void fetchFrom1688()}>
-                {busy === 'fetch' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
-                从 1688 抓取
-              </Button>
+            <div className="mt-0.5 line-clamp-2 text-[10px] leading-relaxed text-slate-500">
+              {match?.reason ?? '先去「视觉风格中心」收藏参考图并学习一条风格'}
             </div>
           </div>
-
-          {sources.length > 0 && (
-            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-              <span>共 {sources.length} 张</span>
-              {localCount > 0 && <span className="text-emerald-600">已存服务器 {localCount}</span>}
-              {(externalCount > 0 || inlineCount > 0) && (
-                <span className="text-amber-700">
-                  {externalCount > 0 && <>外链 {externalCount}（链接失效就会破损）</>}
-                  {externalCount > 0 && inlineCount > 0 && ' · '}
-                  {inlineCount > 0 && <>base64 大图 {inlineCount} 张</>}
-                  <button
-                    className="ml-1 text-blue-600 hover:underline disabled:text-slate-400"
-                    disabled={mirroring}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      void mirrorAll()
-                    }}
-                  >
-                    {mirroring ? '正在下载…' : '一键修复/转存'}
-                  </button>
-                </span>
-              )}
+          <div className="rounded-lg border border-slate-200 bg-white p-2">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] uppercase tracking-wide text-slate-400">本次风格参考图</div>
+              <div className="text-[10px] text-slate-400">{shownRefs.length} 张（最多 2 张送模型）</div>
             </div>
-          )}
-
-          {failedUrls.length > 0 && (
-            <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] text-rose-700">
-              有 {failedUrls.length} 张图没下载成功（链接可能已失效或被防盗链拦）：{failedUrls[0].error}
-              <button className="ml-1 underline" onClick={() => void mirrorAll()}>
-                重试
-              </button>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {shownRefs.length === 0 && <span className="text-[10px] text-slate-400">无（只用产品图，保真优先）</span>}
+              {shownRefs.slice(0, 6).map((r) => (
+                <img key={r.id} src={api.proxyImageUrl(r.url)} alt="" title={r.title || r.category} className="h-8 w-8 rounded border border-slate-200 object-cover" />
+              ))}
             </div>
-          )}
+          </div>
+        </div>
+        {caps && (
+          <div className="mt-1.5 text-[10px] text-slate-400">
+            图像模型：{caps.provider} · {caps.model} · {caps.multiRef ? `最多 ${caps.maxRefs} 张参考图` : '仅支持单参考图'}
+            {caps.supportsEdit ? ' · 支持指令编辑' : ''}
+          </div>
+        )}
+      </div>
 
-          {fetchedInfo && (
-            <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-blue-800">
-              本次新增 {fetchedInfo.added} 张，现有 {fetchedInfo.total} 张
-              {fetchedInfo.message ? `（${fetchedInfo.message}）` : ''}
+      {/* 2. 产品图 + 确认尺寸 */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-xl border border-slate-200 bg-white p-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[13px] font-semibold text-slate-800">产品图（唯一事实来源）</div>
+              <div className="text-[11px] text-slate-500">AI 只照这些图画；颜色/结构/配件不许改</div>
             </div>
-          )}
-
+            <Button size="sm" variant="outline" disabled={busy === 'fetch'} onClick={() => void fetchFrom1688()}>
+              {busy === 'fetch' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+              从 1688 抓取
+            </Button>
+          </div>
           <div className="mt-2 flex min-h-[80px] flex-wrap gap-2">
             {sources.length === 0 ? (
               <div className="flex w-full flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 py-6 text-[11px] text-slate-400">
                 <ImagePlus className="mb-1 h-5 w-5" />
-                还没有产品图：点「从 1688 抓取」、「上传」，或直接 Ctrl+V 粘贴图片
+                还没有产品图：点「从 1688 抓取」，或手动粘贴图片地址
               </div>
             ) : (
               sources.map((u, i) => (
                 <div key={`${i}-${u.slice(0, 24)}`} className="relative">
-                  <Thumb url={u} className="h-16 w-16" onRetry={() => void mirrorOne(u)} />
-                  {/^https?:\/\//i.test(u) && (
-                    <button
-                      className="absolute inset-x-0 bottom-0 bg-amber-500/90 text-center text-[9px] leading-4 text-white"
-                      title="这张还是外链，点一下下载到我们自己服务器"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void mirrorOne(u)
-                      }}
-                    >
-                      外链·点转存
-                    </button>
-                  )}
+                  <img src={api.proxyImageUrl(u)} alt="" className="h-16 w-16 rounded border border-slate-200 object-cover" />
                   <button
                     className="absolute -right-1 -top-1 rounded-full bg-white p-0.5 text-slate-500 shadow hover:text-rose-600"
-                    title="从产品图里删掉这张（不在生成时作为参考）"
+                    title="从产品图里删掉这张"
                     onClick={async () => {
                       if (!window.confirm('从产品图里删掉这张？删除后 AI 生图就不会再参考它。')) return
                       try {
@@ -555,7 +602,6 @@ export function ProductImageStudio({
               ))
             )}
           </div>
-
           <div className="mt-2">
             {showSourcePaste ? (
               <div className="space-y-1.5">
@@ -586,250 +632,90 @@ export function ProductImageStudio({
           </div>
         </div>
 
-        <div
-          className={cn(
-            'rounded-xl border bg-white p-3 transition',
-            pasteZone === 'ref' ? 'border-blue-400 ring-1 ring-blue-200' : 'border-slate-200'
-          )}
-          onClick={() => setPasteZone('ref')}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault()
-            setPasteZone('ref')
-            void handleFiles(Array.from(e.dataTransfer.files), 'ref')
-          }}
-        >
-          <div className="flex items-start justify-between gap-2">
+        <div className="rounded-xl border border-slate-200 bg-white p-3">
+          <div className="flex items-center justify-between">
             <div>
-              <div className="text-[13px] font-semibold text-slate-800">
-                参考图（只学风格）
-                {pasteZone === 'ref' && (
-                  <span className="ml-1.5 rounded bg-blue-50 px-1 py-0.5 text-[10px] font-normal text-blue-600">
-                    Ctrl+V / 拖拽图片粘到这里
-                  </span>
-                )}
-              </div>
-              <div className="text-[11px] text-slate-500">学构图/排版/光线/场景，绝不会改你的产品</div>
+              <div className="text-[13px] font-semibold text-slate-800">确认尺寸（英寸）</div>
+              <div className="text-[11px] text-slate-500">尺寸图只标你填的数字；没填就不出尺寸图</div>
             </div>
-            <label className="cursor-pointer">
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  const fs = Array.from(e.target.files ?? [])
-                  e.target.value = ''
-                  void handleFiles(fs, 'ref')
-                }}
-              />
-              <span className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-[12px] text-slate-700 hover:border-blue-300">
-                {uploading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1 h-3.5 w-3.5" />}
-                上传
-              </span>
-            </label>
+            <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void saveDims()}>
+              保存
+            </Button>
           </div>
-
-          <div className="mt-2 flex min-h-[80px] flex-wrap gap-2">
-            {refs.length === 0 ? (
-              <div className="flex w-full flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 py-6 text-[11px] text-slate-400">
-                还没有参考图（可选）。上传、拖入或 Ctrl+V 粘贴行业好图，AI 只学它的风格，不改你的产品
-              </div>
-            ) : (
-              refs.map((r) => (
-                <div key={r.id} className="relative">
-                  <Thumb url={r.url} className="h-16 w-16" />
+          <div className="mt-2 grid grid-cols-2 gap-1.5">
+            {(
+              [
+                ['lengthIn', '长 Length'],
+                ['widthIn', '宽 Width'],
+                ['heightIn', '高 Height'],
+                ['thicknessIn', '厚度 Thickness'],
+              ] as Array<['lengthIn' | 'widthIn' | 'heightIn' | 'thicknessIn', string]>
+            ).map(([key, label]) => (
+              <label key={key} className="text-[11px]">
+                <span className="text-slate-500">{label}</span>
+                <input
+                  value={dimForm[key]}
+                  onChange={(e) => setDimForm({ ...dimForm, [key]: e.target.value })}
+                  onBlur={() => void saveDims({ [key]: dimForm[key] })}
+                  inputMode="decimal"
+                  placeholder="0.0"
+                  className="mt-0.5 h-7 w-full rounded border border-slate-200 px-1.5 text-[11px] outline-none focus:border-blue-400"
+                />
+              </label>
+            ))}
+          </div>
+          {extraDim.length > 0 && (
+            <div className="mt-1.5 space-y-1">
+              {extraDim.map((e, i) => (
+                <div key={`${e.label}-${i}`} className="flex items-center gap-1 text-[10px] text-slate-600">
+                  <span className="flex-1 truncate">
+                    {e.label}：{e.value} in
+                  </span>
                   <button
-                    className="absolute -right-1 -top-1 rounded-full bg-white p-0.5 text-slate-500 shadow hover:text-rose-600"
-                    onClick={() => void removeRef(r.id)}
-                    title="删除这张参考图"
+                    className="text-rose-500 hover:underline"
+                    onClick={() => setExtraDim((cur) => cur.filter((_, idx) => idx !== i))}
                   >
-                    <X className="h-3 w-3" />
+                    删除
                   </button>
                 </div>
-              ))
-            )}
-          </div>
-
-          <div className="mt-2 flex gap-1.5">
+              ))}
+            </div>
+          )}
+          <div className="mt-1.5 flex gap-1">
             <input
-              value={refPaste}
-              onChange={(e) => setRefPaste(e.target.value)}
-              placeholder="粘贴参考图地址（http(s)://…）"
-              className="h-7 flex-1 rounded border border-slate-200 px-2 text-[11px] outline-none focus:border-blue-400"
+              value={newDimLabel}
+              onChange={(e) => setNewDimLabel(e.target.value)}
+              placeholder="其他尺寸名（如 Handle）"
+              className="h-7 flex-1 rounded border border-slate-200 px-1.5 text-[11px]"
+            />
+            <input
+              value={newDimValue}
+              onChange={(e) => setNewDimValue(e.target.value)}
+              placeholder="in"
+              inputMode="decimal"
+              className="h-7 w-16 rounded border border-slate-200 px-1.5 text-[11px]"
             />
             <Button
               size="sm"
+              variant="outline"
               className="h-7 text-[11px]"
               onClick={() => {
-                const u = refPaste.trim()
-                if (!/^https?:\/\//i.test(u)) {
-                  toast.error('参考图地址要以 http(s):// 开头')
+                const v = Number(newDimValue)
+                if (!newDimLabel.trim() || !Number.isFinite(v) || v <= 0) {
+                  toast.error('填尺寸名和数字')
                   return
                 }
-                void addRefs({ urls: [u] })
+                setExtraDim((cur) => [...cur, { label: newDimLabel.trim(), value: v }].slice(0, 6))
+                setNewDimLabel('')
+                setNewDimValue('')
               }}
             >
-              添加
+              加
             </Button>
           </div>
-          <p className="mt-1.5 text-[10px] leading-relaxed text-amber-700">
-            参考图只提供构图/光线/场景，AI 不得修改产品的结构、外形、颜色、材质、配件、比例、功能和纹理。
+          <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+            底部长、右侧高、左斜宽；厚度和其他尺寸由程序画在图例里，保证数字准确。
           </p>
-        </div>
-      </div>
-
-      {/* 2. 每种图各自的参考图与生成前对话 */}
-      <div className="rounded-xl border border-slate-200 bg-white p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <div className="text-[13px] font-semibold text-slate-800">每张图参考哪些图（产品图 + 风格参考图）</div>
-            <div className="text-[11px] text-slate-500">
-              四种图分别选自己的产品图和风格参考图：产品图是事实基准（只照着选中的画），风格参考图只学构图/光线/场景。
-              产品图一张都不选 = 用全部产品图；风格参考图一张都不选 = 沿用全部参考图。生成前可以先和 AI 对话确认怎么拍。
-            </div>
-          </div>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={autoPicking || !sources.length}
-            onClick={() => void autoPick()}
-            title="让 AI 看一遍产品图，按正面/侧面对比/特写/场景自动分配四种图的参考图"
-          >
-            {autoPicking ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
-            AI 自动挑图
-          </Button>
-        </div>
-
-        <div className="mt-2 grid gap-2 lg:grid-cols-2">
-          {(['main', 'dimension', 'detail', 'scene'] as const).map((k) => (
-            <div key={k} className="rounded-lg border border-slate-200 px-2 py-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[12px] font-medium text-slate-800">{KIND_LABEL[k]}</span>
-                <span
-                  className="text-[11px] text-slate-400"
-                  title="产品图不限数量，出图时每张图最多送 6 张给模型（按选择顺序取前 6 张）；风格参考图只学构图/光线/场景，最多送 2 张"
-                >
-                  产品图 {plan[k].sources.length ? `${plan[k].sources.length} 张` : `全部 ${sources.length} 张`}
-                  {' · '}
-                  风格参考 {plan[k].refs.length ? `${plan[k].refs.length} 张` : refs.length ? '全部' : '无'}
-                </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto h-6 px-2 text-[11px]"
-                  onClick={() => {
-                    setChatKind(k)
-                    setChatInput('')
-                  }}
-                >
-                  <MessageSquare className="mr-0.5 h-3 w-3" /> 先和 AI 对话
-                </Button>
-              </div>
-
-              <div className="mt-1 max-h-52 overflow-y-auto pr-1">
-                <div className="flex flex-wrap gap-1.5">
-                  {sources.map((u, i) => {
-                    const on = plan[k].sources.includes(u)
-                    return (
-                      <div key={`${k}-${i}`} className="relative">
-                        <button
-                          title={on ? '已选为这张图的参考图（点右上角 × 取消）' : '点一下，作为这张图的参考图'}
-                          onClick={() => void setKindSources(k, on ? plan[k].sources.filter((x) => x !== u) : [...plan[k].sources, u])}
-                          className={cn(
-                            'block rounded border-2 p-0',
-                            on ? 'border-blue-500' : 'border-transparent opacity-70 hover:opacity-100'
-                          )}
-                        >
-                          <Thumb url={u} className="h-10 w-10" />
-                        </button>
-                        {on && (
-                          <button
-                            title="取消这张参考图（不会删掉产品图本身）"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              void setKindSources(k, plan[k].sources.filter((x) => x !== u))
-                            }}
-                            className="absolute -right-1.5 -top-1.5 rounded-full bg-white p-0.5 text-slate-500 shadow ring-1 ring-slate-200 hover:text-rose-600"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        )}
-                      </div>
-                    )
-                  })}
-                  {sources.length === 0 && <span className="text-[11px] text-slate-400">先在左边加产品图</span>}
-                </div>
-              </div>
-              {plan[k].sources.length > 0 && (
-                <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-400">
-                  <span>点缩略图加/减；× 取消这张参考</span>
-                  <button
-                    className="text-rose-500 hover:underline"
-                    onClick={() => void setKindSources(k, [])}
-                    title="清空后这张图会用全部产品图"
-                  >
-                    清空（用全部产品图）
-                  </button>
-                </div>
-              )}
-
-              {/* 风格参考图（只学构图/光线/场景，绝不改产品）：和产品图一样，每种图可以单独挑 */}
-              <div className="mt-1.5 rounded border border-dashed border-slate-200 px-1.5 py-1">
-                <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-400">
-                  <span>
-                    风格参考图（只学风格）：
-                    {plan[k].refs.length ? `已选 ${plan[k].refs.length} 张` : refs.length ? '默认全部（最多 2 张）' : '还没有参考图'}
-                  </span>
-                  {plan[k].refs.length > 0 && (
-                    <button
-                      className="text-rose-500 hover:underline"
-                      onClick={() => void setKindRefs(k, [])}
-                      title="清空后这张图会沿用全部参考图"
-                    >
-                      清空（用全部参考图）
-                    </button>
-                  )}
-                </div>
-                {refs.length > 0 && (
-                  <div className="mt-1 flex flex-wrap gap-1.5">
-                    {refs.map((rf) => {
-                      const onRef = plan[k].refs.includes(rf.url)
-                      return (
-                        <button
-                          key={`${k}-ref-${rf.id}`}
-                          title={onRef ? '这张图会参考它的风格（点一下取消）' : '点一下，让这张图参考它的风格'}
-                          onClick={() =>
-                            void setKindRefs(k, onRef ? plan[k].refs.filter((x) => x !== rf.url) : [...plan[k].refs, rf.url])
-                          }
-                          className={cn(
-                            'block rounded border-2 p-0',
-                            onRef ? 'border-emerald-500' : 'border-transparent opacity-70 hover:opacity-100'
-                          )}
-                        >
-                          <Thumb url={rf.url} className="h-9 w-9" />
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <input
-                value={plan[k].notes}
-                onChange={(e) => setPlan((cur) => ({ ...cur, [k]: { ...cur[k], notes: e.target.value } }))}
-                onBlur={async () => {
-                  try {
-                    await api.saveImagePlan(productId, { kind: k, notes: plan[k].notes })
-                  } catch {
-                    /* 静默失败，下次保存会带上 */
-                  }
-                }}
-                placeholder="这张图的注意点（对话后自动填入，也可手改）"
-                className="mt-1 h-7 w-full rounded border border-slate-200 px-2 text-[11px] outline-none focus:border-blue-400"
-              />
-            </div>
-          ))}
         </div>
       </div>
 
@@ -837,56 +723,72 @@ export function ProductImageStudio({
       <div className="rounded-xl border border-slate-200 bg-white p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-[13px] font-semibold text-slate-800">生成哪些图</div>
-          <span className={cn('text-[11px]', over ? 'text-rose-600' : 'text-slate-400')}>
-            主图 1 张 · 尺寸图 1 张 · 细节图 + 场景图合计 {detailSceneTotal} 张（上限 3）
-          </span>
+          {suggestion && (
+            <span className="text-[11px] text-slate-500">
+              建议：{suggestion.kinds.map((k) => KIND_LABEL[k]).join(' + ')}
+            </span>
+          )}
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-[12px]">
-          {(
-            [
-              ['main', '主图'],
-              ['dimension', '尺寸图'],
-              ['detail', '细节图'],
-              ['scene', '场景图'],
-            ] as Array<['main' | 'dimension' | 'detail' | 'scene', string]>
-          ).map(([key, label]) => (
-            <label key={key} className="inline-flex items-center gap-1">
-              <input
-                type="checkbox"
-                className="h-3.5 w-3.5"
-                checked={want[key]}
-                onChange={(e) => setWant({ ...want, [key]: e.target.checked })}
-              />
-              {label}
-            </label>
-          ))}
-          <span className="text-slate-300">|</span>
-          <label className="inline-flex items-center gap-1">
-            细节张数
-            <select
-              value={detailCount}
-              onChange={(e) => setDetailCount(Number(e.target.value))}
-              className="h-6 rounded border border-slate-200 px-1 text-[11px]"
-            >
-              <option value={0}>0</option>
-              <option value={1}>1</option>
-              <option value={2}>2</option>
-            </select>
-          </label>
-          <label className="inline-flex items-center gap-1">
-            场景张数
-            <select
-              value={sceneCount}
-              onChange={(e) => setSceneCount(Number(e.target.value))}
-              className="h-6 rounded border border-slate-200 px-1 text-[11px]"
-            >
-              <option value={0}>0</option>
-              <option value={1}>1</option>
-              <option value={2}>2</option>
-            </select>
-          </label>
-        </div>
+        {auto ? (
+          <div className="mt-1 rounded-lg bg-slate-50 p-2 text-[11px] leading-relaxed text-slate-600">
+            {suggestion
+              ? suggestion.reasons.map((r, i) => <div key={i}>· {r}</div>)
+              : '按产品特点自动配图：主图 + 尺寸图（有确认尺寸时）+ 细节图 + 场景图'}
+            <div className="mt-1 text-slate-400">想自己选图种？取消上面「自动配图」。</div>
+          </div>
+        ) : (
+          <>
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-[12px]">
+              {(
+                [
+                  ['main', '主图'],
+                  ['dimension', '尺寸图'],
+                  ['detail', '细节图'],
+                  ['scene', '场景图'],
+                ] as Array<['main' | 'dimension' | 'detail' | 'scene', string]>
+              ).map(([key, label]) => (
+                <label key={key} className="inline-flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5"
+                    checked={want[key]}
+                    onChange={(e) => setWant({ ...want, [key]: e.target.checked })}
+                  />
+                  {label}
+                </label>
+              ))}
+              <span className="text-slate-300">|</span>
+              <label className="inline-flex items-center gap-1">
+                细节张数
+                <select
+                  value={detailCount}
+                  onChange={(e) => setDetailCount(Number(e.target.value))}
+                  className="h-6 rounded border border-slate-200 px-1 text-[11px]"
+                >
+                  <option value={0}>0</option>
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                </select>
+              </label>
+              <label className="inline-flex items-center gap-1">
+                场景张数
+                <select
+                  value={sceneCount}
+                  onChange={(e) => setSceneCount(Number(e.target.value))}
+                  className="h-6 rounded border border-slate-200 px-1 text-[11px]"
+                >
+                  <option value={0}>0</option>
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                </select>
+              </label>
+            </div>
+            <div className={cn('mt-1 text-[11px]', over ? 'text-rose-600' : 'text-slate-400')}>
+              细节图 + 场景图合计 {detailSceneTotal} 张（上限 3）
+            </div>
+          </>
+        )}
 
         <div className="mt-2 flex flex-wrap items-center gap-3 text-[12px]">
           <label className="inline-flex items-center gap-1">
@@ -901,8 +803,23 @@ export function ProductImageStudio({
             </select>
           </label>
           <label className="inline-flex items-center gap-1">
+            主图方式
+            <select
+              value={mainMode}
+              onChange={(e) => setMainMode(e.target.value as 'ai' | 'compose')}
+              className="h-6 rounded border border-slate-200 px-1 text-[11px]"
+            >
+              <option value="ai">AI 生成（可加 Logo / 多色）</option>
+              <option value="compose">原图直出（换白底，保真优先）</option>
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-1">
             <input type="checkbox" className="h-3.5 w-3.5" checked={withLogo} onChange={(e) => setWithLogo(e.target.checked)} />
             主图加品牌 Logo
+          </label>
+          <label className="inline-flex items-center gap-1">
+            <input type="checkbox" className="h-3.5 w-3.5" checked={noStyleRefs} onChange={(e) => setNoStyleRefs(e.target.checked)} />
+            不用风格参考图（保真优先）
           </label>
         </div>
 
@@ -913,32 +830,40 @@ export function ProductImageStudio({
             placeholder="这次出图的注意点（可空），例如：主图展示正面、细节图拍缝线、场景用办公桌"
             className="h-8 w-full rounded border border-slate-200 px-2 text-[12px] outline-none focus:border-blue-400"
           />
-          <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
-            场景图会按产品的真实用途来安排（办公桌、展会现场、通勤、旅行、健身等），并按真实比例出现在手或常见物品旁边；
-            细节图会挑买家下单前最想看的部位（拉链、缝线、握感、印 logo 的面）。
-          </p>
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <Button size="sm" disabled={busy === 'gen' || over || !kinds.length || !sources.length} onClick={() => void generate()}>
+          <Button
+            size="sm"
+            disabled={busy === 'gen' || (!auto && (over || !kinds.length)) || !sources.length}
+            onClick={() => void generate()}
+          >
             {busy === 'gen' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
-            生成 {kinds.length} 张图（1200×1200）
+            生成一套 ASI 产品图（1200×1200）
           </Button>
           {!sources.length && <span className="text-[11px] text-amber-700">先加产品图才能生成</span>}
           {progress && <span className="text-[11px] text-slate-500">{progress}</span>}
         </div>
       </div>
 
-      {/* 3. 结果 + 审查 */}
+      {/* 4. 结果 + 每张图反馈 */}
       <div className="rounded-xl border border-slate-200 bg-white p-3">
         <div className="flex items-center justify-between">
-          <div className="text-[13px] font-semibold text-slate-800">已生成图片</div>
-          <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}>
-            {loading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />} 刷新
-          </Button>
+          <div>
+            <div className="text-[13px] font-semibold text-slate-800">已生成图片</div>
+            <div className="text-[11px] text-slate-500">每张都能单独确认、重跑或收藏；旧版本不会被覆盖</div>
+          </div>
+          <div className="flex gap-1.5">
+            <Button size="sm" variant="ghost" onClick={() => setShowHistory((v) => !v)}>
+              {showHistory ? '隐藏历史版本' : `历史版本 ${archived.length}`}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={loading} onClick={() => void load()}>
+              {loading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />} 刷新
+            </Button>
+          </div>
         </div>
 
-        {images.length === 0 ? (
+        {current.length === 0 ? (
           <div className="py-8 text-center text-[12px] text-slate-400">还没有生成图片</div>
         ) : (
           <div className="mt-2 space-y-3">
@@ -947,27 +872,101 @@ export function ProductImageStudio({
                 <div className="mb-1 text-[11px] font-medium text-slate-500">{KIND_LABEL[g.kind] ?? g.kind}</div>
                 <div className="flex flex-wrap gap-3">
                   {g.items.map((img) => (
-                    <div key={img.id} className="w-40">
-                      <div className="relative overflow-hidden rounded-lg border border-slate-200">
-                        <img src={api.productImageUrl(img.productId, img.file)} alt="" className="h-40 w-40 object-contain" />
+                    <div key={img.id} className="w-44">
+                      <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white">
+                        <img src={api.productImageUrl(img.productId, img.file)} alt="" className="aspect-square w-full object-contain" />
+                        {img.feedback?.verdict === 'like' && (
+                          <span className="absolute left-1 top-1 rounded bg-emerald-600/90 px-1 text-[10px] text-white">已确认</span>
+                        )}
+                        {img.feedback?.verdict === 'dislike' && (
+                          <span className="absolute left-1 top-1 rounded bg-rose-600/90 px-1 text-[10px] text-white">待改</span>
+                        )}
                       </div>
-                      <div className="mt-1 flex items-center justify-between">
-                        {reviewBadge(img)}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-1.5 text-[10px]"
+                      <div className="mt-1 flex items-center justify-between">{reviewBadge(img)}</div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <button
+                          className="inline-flex items-center gap-0.5 rounded border border-emerald-200 px-1.5 py-0.5 text-[10px] text-emerald-700 hover:bg-emerald-50"
+                          onClick={() => void like(img)}
+                        >
+                          <ThumbsUp className="h-3 w-3" /> 满意
+                        </button>
+                        <button
+                          className="inline-flex items-center gap-0.5 rounded border border-rose-200 px-1.5 py-0.5 text-[10px] text-rose-700 hover:bg-rose-50"
+                          onClick={() => {
+                            setDislikeImage(img)
+                            setDislikeReasons(img.feedback?.verdict === 'dislike' ? img.feedback.reasons : [])
+                            setDislikeNote(img.feedback?.note ?? '')
+                          }}
+                        >
+                          <ThumbsDown className="h-3 w-3" /> 不满意
+                        </button>
+                        <button
+                          className="inline-flex items-center gap-0.5 rounded border border-amber-200 px-1.5 py-0.5 text-[10px] text-amber-700 hover:bg-amber-50"
+                          title="收藏进优秀作品库（供 AI 学习风格）"
+                          onClick={() => void collect(img)}
+                        >
+                          <Star className="h-3 w-3" /> 收藏
+                        </button>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <button
+                          className="inline-flex items-center gap-0.5 text-[10px] text-slate-500 hover:text-slate-800"
+                          onClick={() => void regenerate(img)}
+                        >
+                          <RefreshCw className="h-3 w-3" /> 重新生成
+                        </button>
+                        <button
+                          className="inline-flex items-center gap-0.5 text-[10px] text-slate-500 hover:text-slate-800"
                           onClick={() => onChatImage(img)}
                         >
-                          <MessageSquare className="mr-0.5 h-3 w-3" /> AI 修改
-                        </Button>
+                          <MessageSquare className="h-3 w-3" /> 修改要求
+                        </button>
+                        <button
+                          className="inline-flex items-center gap-0.5 text-[10px] text-slate-500 hover:text-slate-800"
+                          onClick={() => setExpanded((cur) => ({ ...cur, [img.id]: !cur[img.id] }))}
+                        >
+                          {expanded[img.id] ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                          参考图/提示词
+                        </button>
                       </div>
+
                       {img.review && !img.review.ok && (
                         <ul className="mt-0.5 list-disc pl-3 text-[10px] text-amber-700">
                           {img.review.issues.slice(0, 3).map((x, i) => (
                             <li key={i}>{x}</li>
                           ))}
                         </ul>
+                      )}
+
+                      {expanded[img.id] && (
+                        <div className="mt-1 space-y-1 rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-[10px] text-slate-600">
+                          <div>
+                            风格：{img.styleName || '未套用'} · 版本：{img.promptVersion || '-'} · 主图方式：
+                            {img.refsUsed?.mainMode === 'compose' ? '原图直出' : 'AI 生成'}
+                          </div>
+                          <div>产品参考图：{img.refsUsed?.product?.length ?? 0} 张</div>
+                          {(img.refsUsed?.product?.length ?? 0) > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                              {img.refsUsed?.product.slice(0, 6).map((u, i) => (
+                                <img key={i} src={api.proxyImageUrl(u)} alt="" className="h-7 w-7 rounded border border-slate-200 object-cover" />
+                              ))}
+                            </div>
+                          )}
+                          <div>风格参考图：{img.refsUsed?.style?.length ?? 0} 张{img.refsUsed?.logo ? ' · 含品牌 Logo' : ''}</div>
+                          {(img.refsUsed?.style?.length ?? 0) > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                              {img.refsUsed?.style.map((s, i) => (
+                                <img key={i} src={api.proxyImageUrl(s.url)} alt="" title={s.title} className="h-7 w-7 rounded border border-slate-200 object-cover" />
+                              ))}
+                            </div>
+                          )}
+                          <details>
+                            <summary className="cursor-pointer text-slate-500">实际发给模型的提示词</summary>
+                            <pre className="mt-0.5 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded bg-white p-1 text-[9px] leading-relaxed text-slate-500">
+                              {img.prompt}
+                            </pre>
+                          </details>
+                        </div>
                       )}
                     </div>
                   ))}
@@ -976,9 +975,212 @@ export function ProductImageStudio({
             ))}
           </div>
         )}
+
+        {showHistory && archived.length > 0 && (
+          <div className="mt-3 border-t border-slate-100 pt-2">
+            <div className="text-[11px] text-slate-500">历史版本（{archived.length} 张，不会被删除）</div>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {archived.map((img) => (
+                <div key={img.id} className="w-24 opacity-70">
+                  <img src={api.productImageUrl(img.productId, img.file)} alt="" className="aspect-square w-full rounded border border-slate-200 object-contain" />
+                  <div className="truncate text-[9px] text-slate-400">
+                    {KIND_LABEL[img.kind] ?? img.kind} · {new Date(img.createdAt).toLocaleDateString()}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* 生成前对话：确认这张图怎么拍，AI 会给一段注意点 */}
+      {/* 5. 高级设置：手动指定参考图 / 图种 / 生成前对话 */}
+      <details className="rounded-xl border border-slate-200 bg-white p-3">
+        <summary className="cursor-pointer text-[12px] font-medium text-slate-700">
+          高级设置（手动指定参考图 / 每种图的注意点 / 生成前对话）
+        </summary>
+
+        <div className="mt-3 space-y-3">
+          <div className="grid gap-2 lg:grid-cols-2">
+            <div>
+              <div className="text-[12px] font-medium text-slate-700">风格参考图（从视觉风格中心选，可排除）</div>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {libraryRefs.slice(0, 18).map((r) => {
+                  const on = manualRefIds.includes(r.id)
+                  return (
+                    <button
+                      key={r.id}
+                      onClick={() =>
+                        setManualRefIds((cur) => (on ? cur.filter((x) => x !== r.id) : [...cur, r.id].slice(0, 2)))
+                      }
+                      className={cn('rounded border-2 p-0', on ? 'border-blue-500' : 'border-transparent opacity-70')}
+                      title={`${r.title || r.category}${on ? '（已选）' : ''}`}
+                    >
+                      <img src={api.proxyImageUrl(r.url)} alt="" className="h-10 w-10 rounded object-cover" />
+                    </button>
+                  )
+                })}
+                {libraryRefs.length === 0 && (
+                  <span className="text-[11px] text-slate-400">
+                    参考库还是空的，去「视觉风格中心」上传几张优秀图
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-400">
+                <span>最多选 2 张；不选=自动匹配</span>
+                {manualRefIds.length > 0 && (
+                  <button className="text-rose-500 hover:underline" onClick={() => setManualRefIds([])}>
+                    清空
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[12px] font-medium text-slate-700">手动指定风格</div>
+              <select
+                value={manualStyleId}
+                onChange={(e) => setManualStyleId(e.target.value)}
+                className="mt-1 h-7 w-full rounded border border-slate-200 px-1 text-[11px]"
+              >
+                <option value="">自动匹配（推荐）</option>
+                {styles.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                    {s.isDefault ? '（默认）' : ''}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-1 text-[10px] text-slate-400">
+                手动选了风格就不会再用自动识别的结果；参考图仍取该风格绑定的图。
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[12px] font-medium text-slate-700">每种图参考哪些产品图</div>
+            <div className="mt-1 grid gap-2 lg:grid-cols-2">
+              {(['main', 'dimension', 'detail', 'scene'] as const).map((k) => (
+                <div key={k} className="rounded-lg border border-slate-200 px-2 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[12px] font-medium text-slate-800">{KIND_LABEL[k]}</span>
+                    <span className="text-[10px] text-slate-400">
+                      已选 {plan[k].sources.length ? `${plan[k].sources.length} 张` : '全部产品图'}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto h-6 px-2 text-[10px]"
+                      onClick={() => {
+                        setChatKind(k)
+                        setChatInput('')
+                      }}
+                    >
+                      <MessageSquare className="mr-0.5 h-3 w-3" /> 先和 AI 对话
+                    </Button>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {sources.slice(0, 12).map((u, i) => {
+                      const on = plan[k].sources.includes(u)
+                      return (
+                        <button
+                          key={`${k}-${i}`}
+                          title={on ? '已选为这张图的参考图' : '点一下，作为这张图的参考图'}
+                          onClick={() =>
+                            void savePlan(k, { sources: on ? plan[k].sources.filter((x) => x !== u) : [...plan[k].sources, u] })
+                          }
+                          className={cn('rounded border-2 p-0', on ? 'border-blue-500' : 'border-transparent opacity-70')}
+                        >
+                          <img src={api.proxyImageUrl(u)} alt="" className="h-9 w-9 rounded object-cover" />
+                        </button>
+                      )
+                    })}
+                    {sources.length === 0 && <span className="text-[10px] text-slate-400">先加产品图</span>}
+                  </div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <input
+                      value={plan[k].notes}
+                      onChange={(e) => setPlan((cur) => ({ ...cur, [k]: { ...cur[k], notes: e.target.value } }))}
+                      onBlur={() => void savePlan(k, { notes: plan[k].notes })}
+                      placeholder="这张图的注意点（对话后自动填入）"
+                      className="h-7 flex-1 rounded border border-slate-200 px-2 text-[11px] outline-none focus:border-blue-400"
+                    />
+                    {plan[k].sources.length > 0 && (
+                      <button className="text-[10px] text-rose-500 hover:underline" onClick={() => void savePlan(k, { sources: [] })}>
+                        清空
+                      </button>
+                    )}
+                  </div>
+                  <label className="mt-1 inline-flex items-center gap-1 text-[10px] text-slate-500">
+                    <input
+                      type="checkbox"
+                      className="h-3 w-3"
+                      checked={plan[k].refs.includes('__none__')}
+                      onChange={(e) => void savePlan(k, { refs: e.target.checked ? ['__none__'] : [] })}
+                    />
+                    这张图不用风格参考图
+                  </label>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[12px] font-medium text-slate-700">每产品手工参考图（旧入口，仍可用）</div>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {refs.map((r) => (
+                <div key={r.id} className="relative">
+                  <img src={api.proxyImageUrl(r.url)} alt="" className="h-14 w-14 rounded border border-slate-200 object-cover" />
+                  <button
+                    className="absolute -right-1 -top-1 rounded-full bg-white p-0.5 text-slate-500 shadow hover:text-rose-600"
+                    onClick={async () => {
+                      try {
+                        await api.deleteRefImage(r.id)
+                        setRefs((cur) => cur.filter((x) => x.id !== r.id))
+                      } catch (err) {
+                        toast.error(getErrorMessage(err))
+                      }
+                    }}
+                    title="删除"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              <label className="flex h-14 w-14 cursor-pointer items-center justify-center rounded border border-dashed border-slate-300 text-slate-400 hover:border-blue-300">
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    e.target.value = ''
+                    if (!f) return
+                    const reader = new FileReader()
+                    reader.onload = async () => {
+                      const v = String(reader.result ?? '')
+                      if (!v.startsWith('data:image/')) return
+                      try {
+                        const r = await api.addRefImages(productId, { images: [v] })
+                        setRefs(r.refs ?? [])
+                        toast.success('已添加参考图')
+                      } catch (err) {
+                        toast.error(getErrorMessage(err))
+                      }
+                    }
+                    reader.readAsDataURL(f)
+                  }}
+                />
+                <ImagePlus className="h-4 w-4" />
+              </label>
+            </div>
+            <div className="mt-1 text-[10px] text-slate-400">
+              这些图只学构图/光线/场景；产品结构、颜色、配件一律以产品图为准。
+            </div>
+          </div>
+        </div>
+      </details>
+
+      {/* 生成前对话 */}
       {chatKind && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 sm:items-center" onClick={() => setChatKind(null)}>
           <div
@@ -986,9 +1188,7 @@ export function ProductImageStudio({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
-              <div className="text-[13px] font-semibold text-slate-800">
-                生成前对话 · {KIND_LABEL[chatKind]}
-              </div>
+              <div className="text-[13px] font-semibold text-slate-800">生成前对话 · {KIND_LABEL[chatKind]}</div>
               <button onClick={() => setChatKind(null)} className="rounded p-1 text-slate-400 hover:bg-slate-100">
                 <X className="h-4 w-4" />
               </button>
@@ -1032,42 +1232,63 @@ export function ProductImageStudio({
           </div>
         </div>
       )}
+
+      {/* 不满意原因 */}
+      {dislikeImage && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 sm:items-center" onClick={() => setDislikeImage(null)}>
+          <div
+            className="w-full max-w-md overflow-hidden rounded-t-2xl bg-white shadow-xl sm:rounded-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+              <div className="text-[13px] font-semibold text-slate-800">
+                哪里不满意 · {KIND_LABEL[dislikeImage.kind] ?? dislikeImage.kind}
+              </div>
+              <button onClick={() => setDislikeImage(null)} className="rounded p-1 text-slate-400 hover:bg-slate-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-2 px-4 py-3">
+              <img
+                src={api.productImageUrl(dislikeImage.productId, dislikeImage.file)}
+                alt=""
+                className="mx-auto max-h-48 rounded border border-slate-200 object-contain"
+              />
+              <div className="grid grid-cols-2 gap-1 text-[12px]">
+                {feedbackReasons.map((r) => (
+                  <label key={r.key} className="inline-flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5"
+                      checked={dislikeReasons.includes(r.key)}
+                      onChange={(e) =>
+                        setDislikeReasons((cur) =>
+                          e.target.checked ? [...cur, r.key] : cur.filter((x) => x !== r.key)
+                        )
+                      }
+                    />
+                    {r.label}
+                  </label>
+                ))}
+              </div>
+              <input
+                value={dislikeNote}
+                onChange={(e) => setDislikeNote(e.target.value)}
+                placeholder="补充说明（可空）"
+                className="h-8 w-full rounded border border-slate-200 px-2 text-[12px]"
+              />
+            </div>
+            <div className="flex justify-end gap-1.5 border-t border-slate-100 px-4 py-2.5">
+              <Button size="sm" variant="ghost" onClick={() => setDislikeImage(null)}>
+                取消
+              </Button>
+              <Button size="sm" onClick={() => void submitDislike()}>
+                提交反馈
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
-
-/**
- * 缩略图：外链图统一走服务器代理（1688 有防盗链，浏览器直连会破损），
- * 加载失败时显示「破损」，点一下可以让服务器重新下载。
- */
-function Thumb({ url, className, onRetry }: { url: string; className?: string; onRetry?: () => void }) {
-  const [failed, setFailed] = useState(false)
-  const src = api.proxyImageUrl(url)
-  if (!src || failed) {
-    return (
-      <div
-        className={cn(
-          'relative flex flex-col items-center justify-center gap-0.5 rounded border border-dashed border-rose-300 bg-rose-50 text-[9px] text-rose-600',
-          className
-        )}
-        title={onRetry ? '这张图加载失败：点一下让服务器重新下载' : '这张图加载失败'}
-        onClick={(e) => {
-          if (!onRetry) return
-          e.stopPropagation()
-          setFailed(false)
-          onRetry()
-        }}
-      >
-        <ImageOff className="h-4 w-4" />
-        <span>破损</span>
-      </div>
-    )
-  }
-  return (
-    <div className={cn('overflow-hidden rounded border border-slate-200 bg-slate-50', className)}>
-      <img src={src} alt="" className="h-full w-full object-cover" loading="lazy" onError={() => setFailed(true)} referrerPolicy="no-referrer" />
-    </div>
-  )
-}
-
-type ProductImageKindKey = ProductImage['kind']

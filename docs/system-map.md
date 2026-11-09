@@ -236,3 +236,34 @@ asi-workbench/
 - **每种图单独选风格参考图**（`product_image_plan.refs`，新列）：四种图除了选「产品图」（事实基准），
   现在还能各自选「参考图（只学风格）」；不选就沿用全部参考图（最多送 2 张）。生成时按图种取，
   提示词也说明「不同图可能没有风格参考图」。图片转存时 sources 与 refs 的地址一起重映射。
+## 12. 视觉风格体系（2026-11-09 新增）
+
+出图从「每个产品现找参考图、现写提示词」改成「一次调教、长期复用」：
+
+```
+视觉风格中心：上传/导入/收藏参考图 → AI 提炼结构化风格（13 项视觉特征 + 英文风格指令）
+产品出图：1688 原图 → AI 识别品类/材质/颜色 → 按品类匹配风格 → 自动选 1-2 张参考图
+          → 产品图在前 + 风格图在后 + 保真护栏 → 逐张生成 → 满意/不满意/收藏/单张重跑
+```
+
+- 新表：`visual_refs`（参考图，真身存 `image_blobs` 的 `_visual/<file>`）、
+  `visual_styles`（结构化风格配置，version 递增）、`image_feedback`（满意/不满意原因，
+  关联 prompt_version + 风格）、`product_dimensions`（确认尺寸：长/宽/高/厚度/其他）、
+  `product_visual_profiles`（每个产品识别到的品类 + 命中的风格，落库缓存不重复花 AI 钱）。
+- `product_images` 新列：`refs_used`（这张图实际用了哪些参考图）、`style_id`、`style_name`、
+  `prompt_version`、`archived`、`parent_id`、`feedback`。重新生成/重新编辑不再覆盖旧图，旧版归档保留。
+- `product_image_plan` 新列：`refs`（这张图指定/排除的风格参考图；`__none__` = 不用风格参考）。
+- 保真独立层：`services/image-fidelity.ts` 的 10 条硬规则由 `guardPrompt()` 拼到**每一张**实际
+  prompt 末尾，`missingFidelityRules()` 可单测；测试在 `__tests__/image-fidelity.test.ts`。
+- 原图直出兜底：`composeWhiteMain()` 从四边泛洪换纯白底，产品像素不重绘（保真优先、不花出图费），
+  主图方式选「原图直出（换白底）」时启用。
+- 尺寸图：只认 `product_dimensions` 里用户确认的数字；底部=长、右侧=高、左斜=宽，
+  厚度与其他尺寸由程序画在底部图例（`dimension-overlay.ts` 的 `legend`），AI 不画数字。
+- 模型能力：`capabilitiesFor()` 按 Base URL/模型判断是否支持多参考图（Seedream 10 张、OpenAI 4 张、
+  未知服务商保守 1 张），`budgetRefs()` 产品图优先、风格图最多 2 张、Logo 不被挤掉。
+- 接口：`/api/visual-styles/*`（refs、styles、styles/learn、product/:id/match、feedback/summary、
+  generated-candidates）、`/api/product-images/capabilities`、`/product/:id/dimensions`、
+  `/product/:id/style`、`/:imageId/regenerate`、`/:imageId/feedback`。
+- 前端：`pages/VisualStyles.tsx`（`/visual-styles` 视觉风格中心）；`ProductImageStudio.tsx`
+  默认自动模式 + 尺寸录入 + 每图反馈/历史/参考图与提示词查看，高级操作收在 `<details>` 里。
+

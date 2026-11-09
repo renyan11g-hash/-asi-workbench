@@ -288,3 +288,81 @@ export function inflateBox(box: Box, px: number, width: number, height: number):
     bottom: Math.min(height - 1, box.bottom + px),
   }
 }
+
+/**
+ * 「原图直出」主图：保住产品真身，只换背景。
+ *
+ * 为什么需要：文生图再强也可能改结构/颜色。当保真优先于美化时，直接拿 1688 实拍图，
+ * 从四边泛洪把「与边缘背景色接近」的区域刷成纯白，再把产品等比放进 1200×1200 白底画布。
+ * 产品像素本身一个都不重绘，因此结构/颜色/Logo/配件 100% 不会变。
+ *
+ * 泛洪只从画布边缘出发：产品内部的同色区域（例如白色杯身内部）不会被连通，不会被误刷。
+ */
+export async function composeWhiteMain(input: Buffer): Promise<Buffer> {
+  const img = await Jimp.read(input).catch(() => null)
+  if (!img) return input
+  const { width, height, data } = img.bitmap
+  const bg = estimateBackgroundColor(img)
+  const tol = 36
+
+  const visited = new Uint8Array(width * height)
+  const stack: number[] = []
+  const push = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return
+    const p = y * width + x
+    if (visited[p]) return
+    const i = p * 4
+    if (!isBgPixel(data, i, bg, tol)) return
+    visited[p] = 1
+    stack.push(p)
+  }
+  for (let x = 0; x < width; x++) {
+    push(x, 0)
+    push(x, height - 1)
+  }
+  for (let y = 0; y < height; y++) {
+    push(0, y)
+    push(width - 1, y)
+  }
+  let filled = 0
+  while (stack.length) {
+    const p = stack.pop() as number
+    const i = p * 4
+    data[i] = 255
+    data[i + 1] = 255
+    data[i + 2] = 255
+    data[i + 3] = 255
+    filled++
+    const x = p % width
+    const y = (p - x) / width
+    push(x + 1, y)
+    push(x - 1, y)
+    push(x, y + 1)
+    push(x, y - 1)
+  }
+
+  const ratio = filled / (width * height)
+  // 背景几乎刷不掉（复杂场景图/深色底）：说明不是白底实拍，退化为只清外圈，产品仍不改
+  if (ratio < 0.12) return finalizeMainImage(await img.getBufferAsync(Jimp.MIME_PNG), 0.06)
+
+  // 刷完后的产品包围盒（此时背景是纯白）
+  const box = detectProductBox(img, 18)
+  const padX = Math.max(2, Math.round((box.right - box.left) * 0.04))
+  const padY = Math.max(2, Math.round((box.bottom - box.top) * 0.04))
+  const cropW = Math.max(1, Math.min(width, box.right - box.left + padX * 2))
+  const cropH = Math.max(1, Math.min(height, box.bottom - box.top + padY * 2))
+  const cropX = Math.max(0, Math.min(width - cropW, box.left - padX))
+  const cropY = Math.max(0, Math.min(height - cropH, box.top - padY))
+
+  const cropped = img.clone().crop(cropX, cropY, cropW, cropH)
+  // 四周留 8% 空白，产品居中，整体 1200×1200
+  const inner = Math.round(CANVAS_SIZE * 0.84)
+  const scaled = cropped.scaleToFit(inner, inner)
+  const canvas = new Jimp(CANVAS_SIZE, CANVAS_SIZE, 0xffffffff)
+  canvas.composite(
+    scaled,
+    Math.round((CANVAS_SIZE - scaled.bitmap.width) / 2),
+    Math.round((CANVAS_SIZE - scaled.bitmap.height) / 2)
+  )
+  return canvas.getBufferAsync(Jimp.MIME_PNG)
+}

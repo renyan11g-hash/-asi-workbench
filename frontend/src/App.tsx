@@ -14,6 +14,7 @@ import SourcingSuggest from "./pages/SourcingSuggest";
 import Evaluations from "./pages/Evaluations";
 import Library from "./pages/Library";
 import ListingEditor from "./pages/ListingEditor";
+import VisualStyles from "./pages/VisualStyles";
 import ListingReviews from "./pages/ListingReviews";
 import Production from "./pages/Production";
 import RpaArchive from "./pages/RpaArchive";
@@ -132,6 +133,12 @@ function App() {
                 data-genie-key="OrderCenter"
                 data-genie-title="订单运营中心"
                 element={<PageTransition transition="fade"><OrderCenter /></PageTransition>}
+              />
+              <Route
+                path="visual-styles"
+                data-genie-key="VisualStyles"
+                data-genie-title="视觉风格中心"
+                element={<PageTransition transition="fade"><VisualStyles /></PageTransition>}
               />
               <Route
                 path="settings"

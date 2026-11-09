@@ -20,6 +20,7 @@ import { supplierCommunicationsRouter } from './modules/supplier-communications'
 import { emailDraftsRouter } from './modules/email-drafts'
 import { dashboardRouter } from './modules/dashboard'
 import { productImagesRouter } from './modules/product-images'
+import { visualStylesRouter } from './modules/visual-styles'
 import { batchRouter } from './modules/batch'
 import { listingReviewsRouter } from './modules/listing-reviews'
 import { masterProductsRouter } from './modules/master-products'
@@ -70,6 +71,8 @@ export const createApp = (): Application => {
   app.use(`${env.API_PREFIX}/email-drafts`, emailDraftsRouter)
   app.use(`${env.API_PREFIX}/dashboard`, dashboardRouter)
   app.use(`${env.API_PREFIX}/product-images`, productImagesRouter)
+  // 视觉风格中心：参考图库 / 结构化风格配置 / 自动匹配（图片真身进 DB，长期复用）
+  app.use(`${env.API_PREFIX}/visual-styles`, visualStylesRouter)
   // 批量处理：粘贴多条链接，后台逐条跑单品同款流程
   app.use(`${env.API_PREFIX}/batch`, batchRouter)
   app.use(`${env.API_PREFIX}/listing-reviews`, listingReviewsRouter)

@@ -34,6 +34,10 @@ export interface PromptOptions {
   mainStyle?: 'white' | 'combo'
   withDetail?: boolean
   withScene?: boolean
+  /** 已学习的视觉风格指令（英文，只管「怎么拍」，不许改产品） */
+  styleBlock?: string
+  /** 风格名字（写进 prompt 便于追溯，不进画面） */
+  styleName?: string
 }
 
 const SYSTEM = `You are a prompt engineer for AI product photography (gpt-image-1).
@@ -64,6 +68,7 @@ Rules for every prompt:
   * Otherwise → the user's logo (provided as the LAST reference image) is blended onto the product as described in the "main" rules below.
 - Keep composition uncluttered; leave breathing room around the product.
 - If the user message contains a "USER NOTES" block, those are the client's hard requirements (composition, colours, which variant to show, where the logo goes, background, etc.). Follow them STRICTLY in the affected prompts; they override the defaults above (but still never add text/numbers or invented content).
+- If the user message contains a "VISUAL STYLE PROFILE", apply it to composition, camera, lighting, background treatment, colour grading, whitespace and layout. It NEVER changes the product itself and NEVER authorises extra props, parts, text or logos. When style and product fidelity conflict, product fidelity wins.
 
 Output STRICT JSON only:
 {"main":"<prompt>","dimension":"<prompt>","detail":["<prompt1>","<prompt2>"],"scene":["<prompt1>","<prompt2>"]}
@@ -137,11 +142,18 @@ ${notes}
   const logoDirective = withLogo
     ? `LOGO: blend the user's brand logo (the LAST reference image) onto the product front in the "main" prompt only.`
     : `LOGO: none — the "main" prompt must describe a completely clean product with NO logo, brand mark, or imprint anywhere.`
+  const styleBlock = (opts?.styleBlock ?? '').trim()
+  const styleSection = styleBlock
+    ? `
+VISUAL STYLE PROFILE${opts?.styleName ? ` ("${opts.styleName}")` : ''} — apply to composition/background/lighting/layout ONLY:
+${styleBlock}
+`
+    : ''
   const user = `Create the image prompts for this 1688 product.
 
 PRODUCT FACTS:
 ${productFacts}
-${opts?.productInfo ? `\nSTRUCTURED PRODUCT DATA (read this before writing prompts — features / colours / material / usage):\n${opts.productInfo}\n` : ''}${notesBlock}
+${opts?.productInfo ? `\nSTRUCTURED PRODUCT DATA (read this before writing prompts — features / colours / material / usage):\n${opts.productInfo}\n` : ''}${notesBlock}${styleSection}
 ${logoDirective}
 ${opts?.styleRefCount ? `STYLE REFERENCES: style references, when provided for an image, are its LAST reference image(s) (up to 2) — composition, layout, lighting, background treatment. They may be DIFFERENT products. Never copy their product; only borrow the photographic style. Different images in the set may have no style reference at all.` : ''}
 IMAGE SET REQUESTED: ${[opts?.withDetail !== false ? 'detail' : '', opts?.withScene !== false ? 'scene' : ''].filter(Boolean).join(' + ') || 'main + dimension'}

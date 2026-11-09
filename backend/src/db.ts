@@ -134,6 +134,13 @@ CREATE TABLE IF NOT EXISTS product_images (
   file TEXT NOT NULL,
   dimension_spec TEXT,
   with_logo INTEGER NOT NULL DEFAULT 1,
+  refs_used TEXT NOT NULL DEFAULT '[]',
+  style_id TEXT,
+  style_name TEXT NOT NULL DEFAULT '',
+  prompt_version TEXT NOT NULL DEFAULT '',
+  archived INTEGER NOT NULL DEFAULT 0,
+  parent_id TEXT,
+  feedback TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -165,6 +172,93 @@ CREATE TABLE IF NOT EXISTS product_image_plan (
   chat TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL,
   PRIMARY KEY (product_id, kind)
+);
+
+-- 视觉参考库（长期复用）：人工上传 / 从 ASI 同行页面导入 / 从历史生成图收藏。
+-- 图片真身永久存进 image_blobs（key = '_visual/<id>.<ext>'），不依赖 AI 对话历史或临时文件；
+-- verdict = good（优秀作品）/ bad（不合格案例）/ ok；status = active / inactive。
+CREATE TABLE IF NOT EXISTS visual_refs (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL DEFAULT 'showcase',
+  title TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',
+  verdict TEXT NOT NULL DEFAULT 'ok',
+  status TEXT NOT NULL DEFAULT 'active',
+  favorite INTEGER NOT NULL DEFAULT 0,
+  origin TEXT NOT NULL DEFAULT 'upload',
+  source_url TEXT NOT NULL DEFAULT '',
+  product_id TEXT,
+  image_id TEXT,
+  blob_key TEXT NOT NULL,
+  mime TEXT NOT NULL DEFAULT 'image/png',
+  width INTEGER,
+  height INTEGER,
+  analyzed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_visual_refs_category ON visual_refs(category);
+CREATE INDEX IF NOT EXISTS idx_visual_refs_status ON visual_refs(status);
+
+-- 视觉风格配置（结构化、可人工查看/修改/版本递增）。
+-- profile 存 13 项视觉特征（构图/占比/背景/色彩/光影/材质/角度/景深/留白/排版/场景/字体…），
+-- prompt_block 是编译好的英文风格指令，出图时注入提示词；ref_ids 记录这条风格学自哪些参考图。
+CREATE TABLE IF NOT EXISTS visual_styles (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'global',
+  category TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  is_default INTEGER NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL DEFAULT 1,
+  profile TEXT NOT NULL DEFAULT '{}',
+  prompt_block TEXT NOT NULL DEFAULT '',
+  ref_ids TEXT NOT NULL DEFAULT '[]',
+  note TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- 每张生成图的满意度反馈：与图片、产品品类、提示词版本、风格版本绑定，用于反向学习。
+CREATE TABLE IF NOT EXISTS image_feedback (
+  id TEXT PRIMARY KEY,
+  image_id TEXT NOT NULL,
+  product_id TEXT NOT NULL DEFAULT '',
+  verdict TEXT NOT NULL,
+  reasons TEXT NOT NULL DEFAULT '[]',
+  note TEXT NOT NULL DEFAULT '',
+  style_id TEXT,
+  style_name TEXT NOT NULL DEFAULT '',
+  prompt_version TEXT NOT NULL DEFAULT '',
+  product_category TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_image_feedback_image ON image_feedback(image_id);
+CREATE INDEX IF NOT EXISTS idx_image_feedback_product ON image_feedback(product_id);
+
+-- 产品确认尺寸（尺寸图只认这里的数据，单位 inch）：长/宽/高/厚度 + 其他
+CREATE TABLE IF NOT EXISTS product_dimensions (
+  product_id TEXT PRIMARY KEY,
+  length_in REAL,
+  width_in REAL,
+  height_in REAL,
+  thickness_in REAL,
+  extra TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL
+);
+
+-- 产品视觉识别结果 + 命中的风格（自动匹配状态落库，刷新/重启不丢，不每次重新识别）
+CREATE TABLE IF NOT EXISTS product_visual_profiles (
+  product_id TEXT PRIMARY KEY,
+  data TEXT NOT NULL DEFAULT '{}',
+  style_id TEXT,
+  style_reason TEXT NOT NULL DEFAULT '',
+  ref_ids TEXT NOT NULL DEFAULT '[]',
+  model TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 -- 品牌 Logo（全局单条，key='brand-logo'，value=文件名）
@@ -567,7 +661,22 @@ ensureTableColumn('product_images', 'review', 'review TEXT')
 // 产品图片表：老库补 with_logo 列（主图是否融合 Logo，0/1）
 ensureTableColumn('product_images', 'with_logo', 'with_logo INTEGER NOT NULL DEFAULT 1')
 
-// 每种图单独选「参考图（只学风格）」：refs 存参考图地址数组（空数组 = 沿用全部参考图）
+// 每种图单独选「参考图（只学风格）」：
+//   refs 既能存参考图地址（旧的每产品参考图），也能存 visual_refs.id（视觉风格中心），
+//   空数组 = 沿用自动匹配到的风格参考图；['__none__'] = 这张图明确不用风格参考图。
+// ---- 视觉风格体系（2026-11-09）----
+// 每张图实际用了哪些参考图（产品图 / 风格参考图 / Logo），以及命中的风格、提示词版本。
+// 出图和审查都不再猜：用户能点开任意一张图看到「这张图是怎么算出来的」。
+ensureTableColumn('product_images', 'refs_used', "refs_used TEXT NOT NULL DEFAULT '[]'")
+ensureTableColumn('product_images', 'style_id', 'style_id TEXT')
+ensureTableColumn('product_images', 'style_name', "style_name TEXT NOT NULL DEFAULT ''")
+ensureTableColumn('product_images', 'prompt_version', "prompt_version NOT NULL DEFAULT ''")
+// 版本化：重新生成/重新编辑不再覆盖旧图，老记录 archived=1 保留，parent_id 串起版本链
+ensureTableColumn('product_images', 'archived', 'archived INTEGER NOT NULL DEFAULT 0')
+ensureTableColumn('product_images', 'parent_id', 'parent_id TEXT')
+// 单张图的最新人工反馈（完整反馈历史在 image_feedback 表）
+ensureTableColumn('product_images', 'feedback', 'feedback TEXT')
+
 ensureTableColumn('product_image_plan', 'refs', "refs TEXT NOT NULL DEFAULT '[]'")
 
 // 待审核库：批量生产走「暂存草稿」模式后，需要知道这条审核记录

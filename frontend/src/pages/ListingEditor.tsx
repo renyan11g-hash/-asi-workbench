@@ -1248,7 +1248,7 @@ export default function ListingEditor() {
       {/* 产品图片工作台：产品图 / 参考图 / 四种生成模式 / 生成后自动审查 */}
       <SectionCard
         title="产品图片（AI 生成）"
-        hint="产品图是 AI 的事实基准；参考图只学构图光线场景，不改产品。输出统一 1200×1200，每张图生成后自动做 8 项一致性审查，可逐张与 AI 对话修改。"
+        hint="产品图是 AI 的事实基准。默认自动识别品类、套用「视觉风格中心」学到的风格并自动配图；输出统一 1200×1200，每张图单独满意/不满意/重跑/收藏，旧版本不会被覆盖。"
       >
         {product && (
           <ProductImageStudio key={imgVersion} productId={product.id} onChatImage={setChatImage} />

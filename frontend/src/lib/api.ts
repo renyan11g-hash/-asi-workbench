@@ -40,11 +40,17 @@ import {
   ProductStatus,
   ProductionJob,
   ProductionProgress,
+  ProductDimensions,
+  ImageCapabilities,
   Settings,
+  ShotPlan,
   SimilarResearch,
   SourceInfo,
   SpecFieldDef,
+  StyleMatch,
   SupplierCommunication,
+  VisualRef,
+  VisualStyle,
 } from '../types'
 
 /** AI 生成类接口耗时较长：默认 10 分钟，需与后端 AI_TIMEOUT_MS 保持一致 */
@@ -637,7 +643,7 @@ export const api = {
     payload: {
       kind: 'main' | 'dimension' | 'detail' | 'scene'
       sources?: string[]
-      /** 这张图额外参考的「风格参考图」（只学构图/光线/场景，不改产品） */
+      /** 这张图额外参考的「风格参考图」（只学构图/光线/场景，不改产品；地址或 visual_refs.id） */
       refs?: string[]
       notes?: string
       chat?: Array<{ role: 'user' | 'assistant'; content: string; at?: string }>
@@ -847,7 +853,20 @@ export const api = {
     /** 主图是否融合品牌 Logo（默认 true；false=干净产品图） */
     withLogo?: boolean,
     /** 主图样式：white=纯白底单主图；combo=产品+卖点组合展示 */
-    mainStyle?: 'white' | 'combo'
+    mainStyle?: 'white' | 'combo',
+    /** 自动匹配风格 / 手动指定风格 / 原图直出 / 确认尺寸 */
+    opts?: {
+      auto?: boolean
+      styleId?: string
+      styleRefIds?: string[]
+      noStyleRefs?: boolean
+      mainMode?: 'ai' | 'compose'
+      dimensions?: Partial<
+        Pick<ProductDimensions, 'lengthIn' | 'widthIn' | 'heightIn' | 'thicknessIn'> & {
+          extra: Array<{ label: string; value: number }>
+        }
+      >
+    }
   ): Promise<ProductImage[]> {
     const { data: start } = await apiClient.post<{ taskId: string; status: string }>(
       `/product-images/generate`,
@@ -857,6 +876,7 @@ export const api = {
         kinds,
         withLogo: withLogo === undefined ? undefined : withLogo,
         mainStyle,
+        ...(opts ?? {}),
       }
     )
     const taskId = start.taskId
@@ -1616,6 +1636,228 @@ export const api = {
     if (params.status) qs.set('status', params.status)
     return `${apiClient.defaults.baseURL}/listing-reviews/export?${qs.toString()}`
   },
+
+  // ---------------- 视觉风格中心 ----------------
+  async getVisualMeta(): Promise<{
+    categories: Array<{ key: string; label: string }>
+    feedbackReasons: Array<{ key: string; label: string }>
+  }> {
+    const { data } = await apiClient.get('/visual-styles/meta')
+    return data
+  },
+
+  async listVisualRefs(params?: {
+    category?: string
+    status?: string
+    verdict?: string
+    favorite?: boolean
+    limit?: number
+  }): Promise<VisualRef[]> {
+    const { data } = await apiClient.get<{ refs: VisualRef[] }>('/visual-styles/refs', { params })
+    return data.refs
+  },
+
+  async addVisualRef(payload: {
+    dataUrl?: string
+    url?: string
+    category?: string
+    title?: string
+    note?: string
+    tags?: string[]
+    verdict?: 'good' | 'ok' | 'bad'
+    favorite?: boolean
+    origin?: string
+    sourceUrl?: string
+  }): Promise<VisualRef> {
+    const { data } = await apiClient.post<{ ref: VisualRef }>('/visual-styles/refs', payload)
+    return data.ref
+  },
+
+  async updateVisualRef(
+    id: string,
+    payload: Partial<{
+      category: string
+      title: string
+      note: string
+      tags: string[]
+      verdict: 'good' | 'ok' | 'bad'
+      status: 'active' | 'inactive'
+      favorite: boolean
+    }>
+  ): Promise<VisualRef> {
+    const { data } = await apiClient.patch<{ ref: VisualRef }>(`/visual-styles/refs/${id}`, payload)
+    return data.ref
+  },
+
+  async deleteVisualRef(id: string): Promise<void> {
+    await apiClient.delete(`/visual-styles/refs/${id}`)
+  },
+
+  async collectGeneratedRef(payload: {
+    productId: string
+    imageId: string
+    category?: string
+    title?: string
+    note?: string
+    verdict?: 'good' | 'ok' | 'bad'
+  }): Promise<VisualRef> {
+    const { data } = await apiClient.post<{ ref: VisualRef }>('/visual-styles/refs/from-generated', payload)
+    return data.ref
+  },
+
+  async listGeneratedCandidates(limit = 40): Promise<
+    Array<{
+      productId: string
+      productCode: string
+      sourceTitle: string
+      imageId: string
+      kind: string
+      url: string
+      createdAt: string
+      collectedRefId: string | null
+    }>
+  > {
+    const { data } = await apiClient.get('/visual-styles/generated-candidates', { params: { limit } })
+    return data.candidates
+  },
+
+  async listVisualStyles(): Promise<VisualStyle[]> {
+    const { data } = await apiClient.get<{ styles: VisualStyle[] }>('/visual-styles/styles')
+    return data.styles
+  },
+
+  async learnVisualStyle(payload: {
+    name: string
+    styleId?: string
+    category?: string
+    scope?: 'global' | 'category'
+    refIds?: string[]
+    note?: string
+    productHint?: string
+  }): Promise<VisualStyle> {
+    const { data } = await apiClient.post<{ style: VisualStyle }>(
+      '/visual-styles/styles/learn',
+      payload,
+      LONG_TIMEOUT
+    )
+    return data.style
+  },
+
+  async createVisualStyle(payload: {
+    name: string
+    scope?: 'global' | 'category'
+    category?: string
+    note?: string
+    promptBlock?: string
+    isDefault?: boolean
+  }): Promise<VisualStyle> {
+    const { data } = await apiClient.post<{ style: VisualStyle }>('/visual-styles/styles', payload)
+    return data.style
+  },
+
+  async updateVisualStyle(
+    id: string,
+    payload: Partial<{
+      name: string
+      scope: 'global' | 'category'
+      category: string
+      status: 'active' | 'inactive'
+      isDefault: boolean
+      note: string
+      promptBlock: string
+      refIds: string[]
+      profile: Partial<VisualStyle['profile']>
+    }>
+  ): Promise<VisualStyle> {
+    const { data } = await apiClient.patch<{ style: VisualStyle }>(`/visual-styles/styles/${id}`, payload)
+    return data.style
+  },
+
+  async deleteVisualStyle(id: string): Promise<void> {
+    await apiClient.delete(`/visual-styles/styles/${id}`)
+  },
+
+  async matchProductStyle(productId: string, force = false): Promise<StyleMatch> {
+    const { data } = await apiClient.post<{ match: StyleMatch }>(
+      `/visual-styles/product/${productId}/match`,
+      { force },
+      LONG_TIMEOUT
+    )
+    return data.match
+  },
+
+  /** 产品当前的自动匹配状态 + 建议图组（只读缓存，不调 AI） */
+  async getProductStyle(productId: string): Promise<{
+    match: StyleMatch | null
+    dimensions: ProductDimensions
+    dimensionSpec: { widthIn: number; heightIn: number; depthIn: number | null; legend?: string } | null
+    suggestion: ShotPlan
+  }> {
+    const { data } = await apiClient.get(`/product-images/product/${productId}/style`)
+    return data
+  },
+
+  async getImageCapabilities(): Promise<ImageCapabilities> {
+    const { data } = await apiClient.get<{ capabilities: ImageCapabilities }>('/product-images/capabilities')
+    return data.capabilities
+  },
+
+  async getProductDimensions(productId: string): Promise<ProductDimensions> {
+    const { data } = await apiClient.get<{ dimensions: ProductDimensions }>(
+      `/product-images/product/${productId}/dimensions`
+    )
+    return data.dimensions
+  },
+
+  async saveProductDimensions(
+    productId: string,
+    payload: Partial<{
+      lengthIn: number | null
+      widthIn: number | null
+      heightIn: number | null
+      thicknessIn: number | null
+      extra: Array<{ label: string; value: number }>
+    }>
+  ): Promise<{ dimensions: ProductDimensions; dimensionSpec: { widthIn: number; heightIn: number; depthIn: number | null; legend?: string } | null }> {
+    const { data } = await apiClient.put(`/product-images/product/${productId}/dimensions`, payload)
+    return data
+  },
+
+  /** 单张重试：只重跑这一张，其他满意的图保留 */
+  async regenerateProductImage(productId: string, imageId: string, notes?: string): Promise<ProductImage> {
+    const { data } = await apiClient.post<{ image: ProductImage }>(
+      `/product-images/${imageId}/regenerate`,
+      { productId, notes: notes?.trim() || undefined },
+      { timeout: 600_000 }
+    )
+    return data.image
+  },
+
+  /** 满意度反馈（可同时收藏进优秀作品库） */
+  async submitImageFeedback(
+    productId: string,
+    imageId: string,
+    payload: {
+      verdict: 'like' | 'dislike'
+      reasons?: string[]
+      note?: string
+      addToLibrary?: boolean
+      category?: string
+    }
+  ): Promise<{ ok: boolean; feedback: { id: string; verdict: string; reasons: string[] }; ref: VisualRef | null }> {
+    const { data } = await apiClient.post(`/product-images/${imageId}/feedback`, { productId, ...payload })
+    return data
+  },
+
+  async getFeedbackSummary(): Promise<{
+    total: number
+    likes: number
+    dislikes: number
+    reasons: Array<{ key: string; count: number }>
+  }> {
+    const { data } = await apiClient.get('/visual-styles/feedback/summary')
+    return data
+  },
 }
 
 /** 把 Listing 整理为可直接粘贴的纯文本（含中英对照） */
@@ -1872,4 +2114,6 @@ export const orderApi = {
   async deleteEmailDraft(id: string): Promise<void> {
     await apiClient.delete(`/email-drafts/${id}`)
   },
+
+
 }

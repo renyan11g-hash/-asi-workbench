@@ -252,7 +252,26 @@ export interface ProductImage {
     widthIn: number
     heightIn: number
     depthIn: number | null
+    /** 底部图例（长/宽/高/厚度，程序绘制） */
+    legend?: string | null
   } | null
+  /** 这张图实际用了哪些参考图（产品图 / 风格参考图 / Logo） */
+  refsUsed?: {
+    kind: string
+    product: string[]
+    style: Array<{ id: string; url: string; title: string; category: string }>
+    logo: boolean
+    styleId: string | null
+    styleName: string
+    mainMode: string | null
+  } | null
+  styleId?: string | null
+  styleName?: string
+  promptVersion?: string
+  /** 旧版本归档（重新生成/重新编辑后旧图保留） */
+  archived?: boolean
+  parentId?: string | null
+  feedback?: { verdict: 'like' | 'dislike'; reasons: string[]; note: string; at: string } | null
   createdAt: string
   updatedAt: string
 }
@@ -1009,4 +1028,115 @@ export interface AiCallSummary {
   avgMs: number
   promptTokens: number
   completionTokens: number
+}
+
+// ========== 视觉风格体系（参考图库 / 结构化风格 / 自动匹配 / 反馈） ==========
+
+export type VisualCategory = 'main' | 'showcase' | 'detail' | 'dimension' | 'scene'
+
+export interface VisualRef {
+  id: string
+  category: VisualCategory
+  title: string
+  note: string
+  tags: string[]
+  verdict: 'good' | 'ok' | 'bad'
+  status: 'active' | 'inactive'
+  favorite: boolean
+  origin: string
+  sourceUrl: string
+  productId: string | null
+  imageId: string | null
+  url: string
+  width: number | null
+  height: number | null
+  analyzedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface VisualStyleProfile {
+  summary: string
+  categoryFit: string[]
+  composition: string
+  productCoverage: string
+  placement: string
+  background: string
+  palette: string
+  lighting: string
+  shadow: string
+  texture: string
+  angle: string
+  depthOfField: string
+  whitespace: string
+  layout: string
+  scene: string
+  typography: string
+  doList: string[]
+  avoidList: string[]
+  promptBlock: string
+}
+
+export interface VisualStyle {
+  id: string
+  name: string
+  scope: 'global' | 'category'
+  category: string
+  status: 'active' | 'inactive'
+  isDefault: boolean
+  version: number
+  profile: VisualStyleProfile
+  promptBlock: string
+  refIds: string[]
+  refCount: number
+  note: string
+  model: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ProductIdentification {
+  category: string
+  categoryEn: string
+  colors: string[]
+  structure: string
+  material: string
+  accessories: string[]
+  usageScenes: string[]
+  confidence: 'high' | 'medium' | 'low'
+  source: 'ai' | 'fallback'
+  note: string
+}
+
+export interface StyleMatch {
+  identification: ProductIdentification
+  style: VisualStyle | null
+  reason: string
+  refs: VisualRef[]
+  cached: boolean
+}
+
+export interface ProductDimensions {
+  lengthIn: number | null
+  widthIn: number | null
+  heightIn: number | null
+  thicknessIn: number | null
+  extra: Array<{ label: string; value: number }>
+  updatedAt: string | null
+}
+
+export interface ShotPlan {
+  kinds: ProductImageKind[]
+  detailCount: number
+  sceneCount: number
+  reasons: string[]
+}
+
+export interface ImageCapabilities {
+  provider: string
+  model: string
+  multiRef: boolean
+  supportsEdit: boolean
+  maxRefs: number
+  note: string
 }
