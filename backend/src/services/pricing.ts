@@ -312,38 +312,70 @@ export function convertUnits(source: SourceInfo): {
   return { unitWeightLb, cartonGwLb, cartonSizeInch, productSizeInch, productSizeCm }
 }
 
+/** 尺寸文案里的数字与单位（1688 资料经常不写单位，默认按 cm；mm/inch 才换算） */
+function sizeNumbers(text: string): { nums: number[]; unit: 'cm' | 'mm' | 'in' } | null {
+  // 「2x500ml」「200g」这类是容量/重量，不是尺寸；只有明确写了长度单位才按尺寸解析
+  if (/(ml|cl|oz|kg|g|l)\b/i.test(text) && !/(cm|mm|inch|in\b|["”])/i.test(text)) return null
+  const m = text.match(
+    /(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)(?:\s*[xX×*]\s*(\d+(?:\.\d+)?))?/i
+  )
+  if (!m) return null
+  const nums = [m[1], m[2], m[3]].filter((v): v is string => Boolean(v)).map(Number).filter((n) => Number.isFinite(n) && n > 0)
+  if (nums.length < 2) return null
+  const unit: 'cm' | 'mm' | 'in' = /mm|毫米/i.test(text) ? 'mm' : /inch|英寸|["”]/i.test(text) ? 'in' : 'cm'
+  // 没有单位的数字：只接受合理尺寸范围，避免把「2x500ml」这类容量当尺寸
+  if (unit === 'cm' && nums.some((n) => n > 150)) return null
+  return { nums, unit }
+}
+
+const toInch = (n: number, unit: 'cm' | 'mm' | 'in') => (unit === 'in' ? n : unit === 'mm' ? n / 25.4 : n / 2.54)
+const toCm = (n: number, unit: 'cm' | 'mm' | 'in') => (unit === 'cm' ? n : unit === 'mm' ? n / 10 : n * 2.54)
+
 function convertProductSizeCn(sizeCn: string, _weightG: number | null): string {
   const text = sizeCn?.trim() ?? ''
-  const m = text.match(/(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)\s*cm/i)
-  if (m) {
-    const w = Number(m[1]) / 2.54
-    const h = Number(m[2]) / 2.54
-    return `${w.toFixed(2)}" W x ${h.toFixed(2)}" H`
+  const parsed = sizeNumbers(text)
+  if (parsed) {
+    const [a, b, c] = parsed.nums.map((n) => toInch(n, parsed.unit))
+    // 三维尺寸（长/宽/高）比只写宽高更准确；两维保持原来的 W x H 写法
+    if (c != null) return `${a.toFixed(2)}" L x ${b.toFixed(2)}" W x ${c.toFixed(2)}" H`
+    return `${a.toFixed(2)}" W x ${b.toFixed(2)}" H`
   }
   if (/oz/i.test(text)) return ''
-  const dia = text.match(/[ØD直径]\s*(\d+(?:\.\d+)?)\s*cm/i)
-  if (dia) return `${(Number(dia[1]) / 2.54).toFixed(2)}" Diameter`
+  const dia = text.match(/[ØD直径]\s*(\d+(?:\.\d+)?)\s*(cm|mm|inch|in)?/i)
+  if (dia) {
+    const unit: 'cm' | 'mm' | 'in' = /mm/i.test(dia[2] ?? '') ? 'mm' : /in|inch/i.test(dia[2] ?? '') ? 'in' : 'cm'
+    const v = toInch(Number(dia[1]), unit)
+    if (!dia[2] && v > 60) return '' // 没有单位的巨大数字不是产品直径
+    return `${v.toFixed(2)}" Diameter`
+  }
   return ''
 }
 
-/** 从 1688 尺寸文案（如 "8x12cm" / "直径 7cm"）解析出产品本身的厘米尺寸 {l,w,h}（用于提交表最右列填入） */
+/** 从 1688 尺寸文案（如 "8x12cm" / "12*3*0.5" / "直径 7cm"）解析出产品本身的厘米尺寸 {l,w,h} */
 export function parseProductSizeCm(
   sizeCn: string | undefined | null,
   weightG: number | null | undefined
 ): { l: number; w: number; h: number } | null {
   const text = (sizeCn ?? '').trim()
-  if (text) {
-    // 常见：7.5x20cm / 8*12cm / 7.5 x 20 CM
-    const grid = text.match(/(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)\s*cm/i)
-    if (grid) {
-      const a = Number(grid[1])
-      const b = Number(grid[2])
-      return { l: Number(a.toFixed(1)), w: Number(b.toFixed(1)), h: Number(b.toFixed(1)) }
+  // 容量/重量文案（2x500ml、200g）不是产品尺寸，跳过尺寸解析
+  const volumeOnly = /(ml|cl|oz|kg|g|l)\b/i.test(text) && !/(cm|mm|inch|in\b|["”])/i.test(text)
+  if (text && !volumeOnly) {
+    const parsed = sizeNumbers(text)
+    if (parsed) {
+      const [a, b, c] = parsed.nums.map((n) => toCm(n, parsed.unit))
+      // 二维尺寸没有高度，沿用原来的处理（h = w）；三维则如实取第三个数字
+      return {
+        l: Number(a.toFixed(1)),
+        w: Number(b.toFixed(1)),
+        h: Number((c ?? b).toFixed(1)),
+      }
     }
     // 单边长：7cm / 直径7cm / 7.5cm
-    const single = text.match(/[ØD直径]?\s*(\d+(?:\.\d+)?)\s*cm/i)
+    const single = text.match(/[ØD直径]?\s*(\d+(?:\.\d+)?)\s*(cm|mm|inch|in)?/i)
     if (single) {
-      const a = Number(single[1])
+      const unit: 'cm' | 'mm' | 'in' = /mm/i.test(single[2] ?? '') ? 'mm' : /inch|in\b/i.test(single[2] ?? '') ? 'in' : 'cm'
+      const a = toCm(Number(single[1]), unit)
+      if (!single[2] && a > 150) return null
       return { l: Number(a.toFixed(1)), w: Number(a.toFixed(1)), h: Number(a.toFixed(1)) }
     }
   }
