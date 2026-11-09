@@ -89,6 +89,16 @@ export const createApp = (): Application => {
   // 一次性数据管理：备份 / 重编号 / 删除（需确认串，幂等）
   app.use(`${env.API_PREFIX}/admin`, adminRouter)
 
+  // 未注册的 /api 路径一律 JSON 404。
+  // 不加这个的话会掉进下面的 SPA fallback，返回 200 + HTML，
+  // 前端把 HTML 当 JSON 解析 → 报「Unexpected token <」这类和真实原因无关的错误。
+  app.use(env.API_PREFIX, (req, res) => {
+    res.status(404).json({
+      status: 'error',
+      message: `接口不存在：${req.method} ${req.originalUrl}`,
+    })
+  })
+
   // 生产环境：托管前端构建产物（单端口部署）
   const staticDir = resolveStaticDir()
   if (staticDir) {

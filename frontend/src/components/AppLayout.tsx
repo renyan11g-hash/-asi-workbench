@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { AppErrorBoundary } from '@/components/AppErrorBoundary'
 import { cn } from '@/lib/utils'
 
 /**
@@ -179,7 +180,10 @@ export function AppLayout() {
         </header>
 
         <main className="min-w-0 flex-1 px-6 py-6">
-          <Outlet />
+          {/* key=路径：切页面自动清掉上一次的错误状态，出错时导航仍可用 */}
+          <AppErrorBoundary key={location.pathname}>
+            <Outlet />
+          </AppErrorBoundary>
         </main>
       </div>
     </div>

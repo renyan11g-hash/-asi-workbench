@@ -38,13 +38,76 @@ function openDatabase(): DatabaseLike {
   return new Database(dbPath) as unknown as DatabaseLike
 }
 
-export const db = openDatabase()
-
 /** 同步等待（初始化重试用；libsql 是同步 API，不能用 await） */
 const sleepSync = (ms: number) => {
   const sab = new SharedArrayBuffer(4)
   Atomics.wait(new Int32Array(sab), 0, 0, ms)
 }
+
+/**
+ * 线上偶发「数据库连接被掐断」的容错（2026-11-09 事故）。
+ *
+ * 现象：页面刷新后一直打不开，/api/health/errors 里攒了十几条
+ *   `Hrana(Http("connection closed before message completed"))`，
+ * 落在 /api/flow/overview、/api/products 这类首屏读接口上——一次断连 = 首屏某个请求 500 =
+ * 整个页面卡在加载状态，用户看到的就是「网站崩了」。实测重放请求 1/30 左右命中。
+ *
+ * 这类错误是 Turso 侧把复用的 Hrana 连接关掉了（Render 出网/长连接复用所致），
+ * 换一条连接重试就好。因此：**读语句自动重试**（SELECT/PRAGMA/EXPLAIN），
+ * 写语句（INSERT/UPDATE/DELETE）不重试——断连时无法判断是「没执行」还是「执行了没回包」，
+ * 重试可能把同一条数据插两遍，宁可让这次写失败报错。
+ */
+export function isTransientDbError(e: unknown): boolean {
+  const msg = (e as Error)?.message ?? String(e)
+  return /Hrana|connection closed before message completed|connection reset|ECONNRESET|EPIPE|socket hang up|fetch failed|network error/i.test(
+    msg
+  )
+}
+
+const MAX_DB_ATTEMPTS = 3
+
+function retryRead<T>(fn: () => T): T {
+  let attempt = 0
+  for (;;) {
+    try {
+      return fn()
+    } catch (e) {
+      attempt += 1
+      if (attempt >= MAX_DB_ATTEMPTS || !isTransientDbError(e)) throw e
+      // 60ms → 200ms，给 Turso 换连接的时间
+      sleepSync(attempt === 1 ? 60 : 200)
+    }
+  }
+}
+
+/** 读语句：可以从断连里恢复；其余一律原样执行（不重试） */
+function isReadStatement(sql: string): boolean {
+  const s = sql.trimStart().slice(0, 12).toUpperCase()
+  return s.startsWith('SELECT') || s.startsWith('PRAGMA') || s.startsWith('EXPLAIN')
+}
+
+/** 把数据库包一层：只有读语句在「断连类」错误上重试（导出仅为单测） */
+export function withTransientRetry(inner: DatabaseLike): DatabaseLike {
+  return {
+    exec(sql: string) {
+      inner.exec(sql)
+    },
+    prepare(sql: string): StatementLike {
+      if (!isReadStatement(sql)) return inner.prepare(sql)
+      const stmt = retryRead(() => inner.prepare(sql))
+      return {
+        run: (...args: unknown[]) => stmt.run(...args),
+        get: (...args: unknown[]) => retryRead(() => stmt.get(...args)),
+        all: (...args: unknown[]) => retryRead(() => stmt.all(...args)),
+      }
+    },
+    close() {
+      inner.close()
+    },
+  }
+}
+
+export const db = withTransientRetry(openDatabase())
 
 /**
  * 启动期建表/补列的容错包装。

@@ -31,8 +31,14 @@ const queryClient = new QueryClient({
       staleTime: 15 * 1000,
       // Cache data for 5 minutes
       gcTime: 5 * 60 * 1000,
-      // Retry failed requests once
-      retry: 1,
+      // 失败重试：网络抖动 / 数据库临时断连（500、502、503、504）自动再试 2 次，
+      // 退避 0.8s → 2.4s。4xx 是业务错误（没权限、参数不对），重试没意义，直接报给用户。
+      retry: (failureCount, error) => {
+        const status = (error as { response?: { status?: number } } | null)?.response?.status
+        if (status && status >= 400 && status < 500) return false
+        return failureCount < 2
+      },
+      retryDelay: (attempt) => Math.min(800 * 3 ** attempt, 4000),
       // 切回标签页自动刷新（别的页面改了资料，回来就是最新的）
       refetchOnWindowFocus: true,
       refetchOnReconnect: true,
