@@ -36,7 +36,18 @@ export function isHttpUrl(url: string): boolean {
 }
 
 export function isManagedImage(url: string): boolean {
-  return /^\/api\/product-images\//.test((url ?? '').trim())
+  const raw = (url ?? '').trim()
+  if (!raw) return false
+  // 相对地址（页面上用的）和带域名的绝对地址（记录/接口里可能存的）都要认
+  if (raw.startsWith('/api/product-images/')) return true
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      return new URL(raw).pathname.startsWith('/api/product-images/')
+    } catch {
+      return false
+    }
+  }
+  return false
 }
 
 /** 清理从网页/聊天里复制出来的地址：引号、&amp;、协议相对、http→https */

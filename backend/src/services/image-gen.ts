@@ -1,5 +1,6 @@
 import { Settings } from '../types'
 import { AiError } from './ai'
+import { inlineImage } from './image-inline'
 
 /**
  * 图像生成服务 —— 双协议：
@@ -20,6 +21,44 @@ export type ImageSettings = Pick<
 
 /** 参考图：URL（1688 产品图直传，火山免下载）或 Buffer（Logo） */
 export type ImageRef = { url: string } | { buffer: Buffer }
+
+/**
+ * 能直接发给服务商的图片地址：data:image/... 或 http(s)。
+ *
+ * 2026-11-09 线上事故：重新生成单张图时把站内相对地址 `/api/product-images/.../x.jpg`
+ * 原样发给了方舟，服务商返回 400 `invalid url specified`，用户只看到「图像生成失败 (400)」。
+ * 相对地址服务商永远读不到，必须在发请求前读成 data URL。
+ */
+export function isSendableImageUrl(u: string): boolean {
+  const s = (u ?? '').trim()
+  return /^data:image\//i.test(s) || /^https?:\/\//i.test(s)
+}
+
+/**
+ * 发请求前统一清洗参考图：
+ * - data URL / http(s) 原样保留
+ * - 站内相对地址 → 读成 data URL（读不到就跳过，不把坏地址丢给服务商）
+ * - Buffer 原样保留
+ */
+export async function normalizeImageRefs(refs: ImageRef[]): Promise<ImageRef[]> {
+  const out: ImageRef[] = []
+  for (const r of refs) {
+    if ('buffer' in r) {
+      out.push(r)
+      continue
+    }
+    const u = (r.url ?? '').trim()
+    if (!u) continue
+    if (isSendableImageUrl(u)) {
+      out.push({ url: u })
+      continue
+    }
+    const inlined = await inlineImage(u)
+    if (inlined) out.push({ url: inlined })
+    else console.warn('[image-gen] 参考图读不出来，已跳过：', u.slice(0, 120))
+  }
+  return out
+}
 
 interface ArkImageResponse {
   data?: Array<{ url?: string; b64_json?: string; size?: string }>
@@ -106,7 +145,9 @@ async function arkGenerate(
   const url = `${base.replace(/\/+$/, '')}/images/generations`
 
   // 火山参考图：https URL 直传；Buffer 转 base64 dataURL
-  const imageParam = refs
+  // 站内相对地址先内联成 data URL（否则方舟报 400 invalid url specified）
+  const prepared = await normalizeImageRefs(refs)
+  const imageParam = prepared
     .map((r) => ('url' in r ? r.url : `data:image/png;base64,${r.buffer.toString('base64')}`))
     .slice(0, 10) // Seedream 4.0 最多 10 张参考图
 
@@ -212,15 +253,25 @@ async function openaiEdit(
   form.append('n', '1')
   form.append('size', settings.imageSize || '1024x1024')
   form.append('quality', settings.imageQuality || 'high')
-  for (const r of refs) {
+  // 相对地址先内联成 data URL；data URL 直接解码，不要再走 http 抓取
+  const prepared = await normalizeImageRefs(refs)
+  for (const r of prepared) {
     if ('buffer' in r) {
       form.append('image[]', new Blob([new Uint8Array(r.buffer)]), 'reference.png')
-    } else {
-      const imgRes = await fetch(r.url, { signal: AbortSignal.timeout(30_000) })
-      if (!imgRes.ok) continue
-      const buf = Buffer.from(await imgRes.arrayBuffer())
-      form.append('image[]', new Blob([new Uint8Array(buf)]), 'reference.png')
+      continue
     }
+    const inline = /^data:image\/[a-z0-9.+-]+;base64,(.+)$/i.exec(r.url)
+    let buf: Buffer | null = inline ? Buffer.from(inline[1], 'base64') : null
+    if (!buf) {
+      try {
+        const imgRes = await fetch(r.url, { signal: AbortSignal.timeout(30_000) })
+        if (imgRes.ok) buf = Buffer.from(await imgRes.arrayBuffer())
+      } catch {
+        buf = null
+      }
+    }
+    if (!buf) continue
+    form.append('image[]', new Blob([new Uint8Array(buf)]), 'reference.png')
   }
 
   const controller = new AbortController()

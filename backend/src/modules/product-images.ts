@@ -451,20 +451,22 @@ const generateSchema = z.object({
 
 /** 把任意图片地址读成 data URL（模型一定读得到；外链防盗链/过期都不影响出图） */
 async function refToDataUrl(u: string): Promise<string> {
-  if (u.startsWith('data:image/')) {
-    const parsed = dataUrlToBuffer(u)
+  const raw = (u ?? '').trim()
+  if (raw.startsWith('data:image/')) {
+    const parsed = dataUrlToBuffer(raw)
     if (!parsed) throw new Error('图片数据损坏')
     return toJpegDataUrl(parsed.buffer, 1200, 84)
   }
-  if (isManagedImage(u)) {
-    const m = /^\/api\/product-images\/([^/]+)\/([^/?#]+)/.exec(u)
+  if (isManagedImage(raw)) {
+    // 相对地址与「带域名的绝对地址」都能取到 pid/file
+    const m = /\/api\/product-images\/([^/]+)\/([^/?#]+)/.exec(raw)
     if (!m) throw new Error('图片地址无法识别')
     return toJpegDataUrl(readImageFile(decodeURIComponent(m[1]), decodeURIComponent(m[2])), 1200, 84)
   }
   // 视觉风格中心的参考图（真身存 DB）
-  const vm = /^\/api\/visual-styles\/refs\/([^/?#]+)\/image/.exec(u)
+  const vm = /\/api\/visual-styles\/refs\/([^/?#]+)\/image/.exec(raw)
   if (vm) return toJpegDataUrl(visualRefBuffer(decodeURIComponent(vm[1])), 1200, 84)
-  const remote = await fetchRemoteImage(u, { timeoutMs: 9000 })
+  const remote = await fetchRemoteImage(raw, { timeoutMs: 9000 })
   return toJpegDataUrl(remote.buffer, 1200, 84)
 }
 
@@ -1727,16 +1729,24 @@ productImagesRouter.post('/:imageId/regenerate', async (req: Request, res: Respo
   const logo = readLogo()
   const extra = (body.instruction ?? body.notes ?? '').trim()
 
-  // 用当时这张图真实用过的参考图重跑（产品图在前、风格参考图在后），旧记录已保存 refs_used
+  // 用当时这张图真实用过的参考图重跑（产品图在前、风格参考图在后），旧记录已保存 refs_used。
+  // 记录里存的是产品图原始地址（多为站内相对地址 /api/product-images/...），必须读成 data URL：
+  // 直接把相对地址发给方舟会 400 invalid url specified（2026-11-09 线上就是这个问题）。
   const refs: ImageRef[] = []
   const used = image.refsUsed
   if (used?.product?.length) {
-    for (const u of used.product) refs.push({ url: u })
+    for (const u of used.product.slice(0, 10)) {
+      try {
+        refs.push({ url: await refToDataUrl(u) })
+      } catch {
+        /* 单张读不出来就跳过，剩下的还能画 */
+      }
+    }
   }
   for (const s of used?.style ?? []) {
     try {
       if (s.id) refs.push({ buffer: visualRefBuffer(s.id) })
-      else if (/^(https?:\/\/|data:image\/)/i.test(s.url)) refs.push({ url: s.url })
+      else if (s.url) refs.push({ url: await refToDataUrl(s.url) })
     } catch {
       /* 风格图被删了就不带 */
     }

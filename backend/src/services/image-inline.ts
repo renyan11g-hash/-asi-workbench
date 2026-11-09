@@ -22,9 +22,33 @@ function isHttp(url: string): boolean {
   return /^https?:\/\//i.test(url)
 }
 
+/**
+ * 站内图片地址 → 统一的 `/api/product-images/{pid}/{file}` 形式。
+ * 线上会出现两种写法：页面上是相对地址 `/api/...`，而接口/记录里可能是带域名的绝对地址
+ * `https://asi-workbench.onrender.com/api/...`——两种都必须认，否则会被当成外链去抓，
+ * 或者更糟：被原样发给图像服务商（方舟直接 400 invalid url）。
+ */
+export function managedImagePath(url: string): string | null {
+  const raw = (url ?? '').trim()
+  if (!raw) return null
+  let pathname = raw
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      pathname = new URL(raw).pathname
+    } catch {
+      return null
+    }
+  }
+  const m = /^\/api\/product-images\/([^/]+)\/([^/?#]+)/.exec(pathname)
+  if (!m) return null
+  return `/api/product-images/${m[1]}/${m[2]}`
+}
+
 /** 我们自己存储的图片（/api/product-images/{pid}/{file}）：从 DB 的 image_blobs 读，部署后也不丢 */
 function managedImageBuffer(url: string): Buffer | null {
-  const m = /^\/api\/product-images\/([^/]+)\/([^/?#]+)/.exec(url)
+  const path = managedImagePath(url)
+  if (!path) return null
+  const m = /^\/api\/product-images\/([^/]+)\/([^/?#]+)/.exec(path)
   if (!m) return null
   try {
     const row = db.prepare('SELECT data FROM image_blobs WHERE key = ?').get(`${m[1]}/${m[2]}`) as
@@ -68,8 +92,8 @@ export async function inlineImage(url: string): Promise<string | null> {
   if (hit) return hit
 
   let buf: Buffer | null = null
-  if (isHttp(u)) buf = await download(u)
-  else if (u.startsWith('/api/product-images/')) buf = managedImageBuffer(u)
+  if (managedImagePath(u)) buf = managedImageBuffer(u)
+  else if (isHttp(u)) buf = await download(u)
   if (!buf) return null
 
   const dataUrl = await toDataUrl(buf)
