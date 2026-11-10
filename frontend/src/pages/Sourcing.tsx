@@ -39,7 +39,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ScoreRing, SectionCard, VerdictBadge } from '@/components/ui/primitives'
 import EvaluationChat from '@/components/EvaluationChat'
 import { api, getErrorMessage } from '@/lib/api'
-import { formatMarketHits } from '@/lib/market-format'
+import { MarketEvidenceBlock } from '@/components/MarketEvidence'
 import { useProducts, useSettings } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
 import { EMPTY_SOURCE, Evaluation, ImprintRecommendResult, PriceRow, SourceInfo } from '@/types'
@@ -1040,24 +1040,8 @@ export default function Sourcing() {
                         </div>
                       ) : null}
                       {evaluation.marketSnapshot && (
-                        <div className="mt-1">
-                          <span className="text-slate-400">海外同款 </span>
-                          <span className="text-slate-700">
-                            {formatMarketHits(evaluation.marketSnapshot)} · list $
-                            {evaluation.marketSnapshot.priceLow ?? '—'}–$
-                            {evaluation.marketSnapshot.priceHigh ?? '—'}
-                          </span>
-                          {evaluation.marketSnapshot.queries?.length ? (
-                            <span className="text-slate-400">
-                              {' '}
-                              · 「{evaluation.marketSnapshot.queries.join(' / ')}」
-                            </span>
-                          ) : null}
-                          {evaluation.marketSnapshot.relevanceNote ? (
-                            <div className="mt-0.5 text-amber-700">
-                              {evaluation.marketSnapshot.relevanceNote}
-                            </div>
-                          ) : null}
+                        <div className="mt-1.5">
+                          <MarketEvidenceBlock snap={evaluation.marketSnapshot} />
                         </div>
                       )}
                       {!evaluation.marketSnapshot && evaluation.marketError ? (

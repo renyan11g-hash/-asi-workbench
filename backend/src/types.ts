@@ -17,14 +17,14 @@ export interface Evaluation {
   }
   /** 总分的由来（哪一维封顶 / 最弱一环），系统生成 */
   scoreNote?: string
-  /** 海外市场探测结果（4imprint 真实目录价），评估时抓的 */
+  /** 海外市场探测结果（4imprint 目录价 + ASI/ESP 全站供给密度），评估时抓的 */
   marketSnapshot?: {
     queries: string[]
-    /** RSS 抓到的原始条数 */
+    /** 4imprint RSS 抓到的原始条数 */
     total: number
-    /** 标题真正命中核心词的同类条数（旧数据没有这个字段） */
+    /** 4imprint 标题真正命中核心词的同类条数（旧数据没有这个字段） */
     matched?: number
-    /** 折算到 28 条口径的密度依据（旧数据没有） */
+    /** 4imprint 折算到 28 条口径的密度依据（旧数据没有） */
     densityCount?: number
     /** 判定相关性用的核心词（旧数据没有） */
     matchTokens?: string[]
@@ -35,6 +35,29 @@ export interface Evaluation {
     competitionEstimate: number
     /** 关键词太泛 / 一条都没命中时的提醒（旧数据没有） */
     relevanceNote?: string
+    /**
+     * ASI / ESP 全供应商目录那一路（差异化主依据）。
+     * 2026-11-10 之前的老评估没有这个字段，界面要能容忍缺失。
+     */
+    esp?: {
+      queries: string[]
+      /** 全站匹配总数（平台自报，"至少"口径） */
+      total: number
+      /** 每条搜索词各自匹配到多少 */
+      byQuery?: Array<{ query: string; total: number; matched: number; sampleSize: number }>
+      /** 前 20 条样本里真同款的条数 */
+      matchedSample: number
+      sampleSize: number
+      /** ASI 类目分布 */
+      categories: Array<{ name: string; count: number }>
+      priceLow: number | null
+      priceHigh: number | null
+      median: number | null
+      /** 站点返回的是泛匹配兜底列表，密度不可信 */
+      fallback?: boolean
+      relevanceNote?: string
+      samples: Array<{ title: string; priceMin: number; productNo?: string; url: string }>
+    }
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
     fetchedAt: string
   }

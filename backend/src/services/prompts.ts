@@ -148,25 +148,50 @@ export function buildEvaluatePrompt(source: SourceInfo, settings: Settings, mark
 Evaluate the 1688 item for fit with US promotional products market.
 Respond with STRICT JSON only (no markdown, no commentary).`
 
+  const esp = market?.esp
+  const espBlock =
+    esp && esp.total > 0
+      ? `SOURCE A — ASI / ESP SUPPLIER NETWORK (supplier.espwebsite.com — the combined catalogue of ASI's ESP supplier sites, i.e. the WHOLE ASI supplier universe; THIS is the broad view of the market)
+- Search terms used: ${esp.queries.join(' | ')}
+- Matching products across the whole ASI ESP network: ${esp.total}+ (platform-reported; treat as "at least this many" — the scoring uses the LARGEST of the per-term counts, i.e. the most crowded reading)
+- Per search term on ESP: ${esp.byQuery.map((q) => `"${q.query}" → ${q.total} matches (${q.matched}/${q.sampleSize} same-type in the top results)`).join(' · ') || 'n/a'}
+- ASI category breakdown of those matches: ${esp.categories.map((c) => `${c.name} ${c.count}`).join(' · ') || 'n/a'}
+- Same-type verification on the sampled results (n=${esp.sampleSize}, relevance tokens: ${esp.matchTokens.join(', ') || 'n/a'}): ${esp.matchedSample} of them are genuinely the same product type
+- Sample bulk-tier list price band (same-type hits): $${esp.price?.p25 ?? '?'} – $${esp.price?.p75 ?? '?'} (median $${esp.price?.median ?? '?'}, overall $${esp.price?.min ?? '?'} – $${esp.price?.max ?? '?'})
+- Cheapest same-type competitors (real ASI catalogue listings):
+${esp.items
+  .slice(0, 6)
+  .map((i) => `  · ${i.title}${i.productNo ? ` [${i.productNo}]` : ''} — $${i.priceMin}${i.url ? ` — ${i.url}` : ''}`)
+  .join('\n')}
+${esp.relevanceNote ? `- Caveat from the probe: ${esp.relevanceNote}\n` : ''}
+`
+      : esp
+        ? `SOURCE A — ASI / ESP SUPPLIER NETWORK: searched "${esp.queries.join(' | ')}" and the whole ASI ESP network returned NO matching products. Treat this as genuinely scarce supply, but double-check with "cons" whether it is scarce because the product is unusual or because the English search term is wrong.\n\n`
+        : ''
+
   const marketBlock = market
-    ? `OVERSEAS MARKET EVIDENCE (4imprint search — REAL catalogue prices, not guesses)
-- Search terms used: ${market.queries.join(' | ')}
+    ? `OVERSEAS MARKET EVIDENCE — two independent REAL sources (catalogue data, not guesses)
+
+${espBlock}SOURCE B — 4IMPRINT (ONE US distributor's catalogue — narrow, never a market verdict on its own)
 - Raw hits: ${market.total} (RSS caps around 28 per query, so treat as "at least this many")
-- Actual same-product hits after matching on keywords [${market.matchTokens.join(', ') || 'n/a'}]: ${market.matched}
-- Density figure used for scoring (normalised to a 28-item sample): ${market.densityCount}
+- Same-product hits after matching on keywords [${market.matchTokens.join(', ') || 'n/a'}]: ${market.matched}
+- Density figure from this source only (normalised to a 28-item sample): ${market.densityCount}
 - Real list price band (bulk tier, same-product hits only): $${market.price?.p25 ?? '?'} – $${market.price?.p75 ?? '?'} (median $${market.price?.median ?? '?'}, overall $${market.price?.min ?? '?'} – $${market.price?.max ?? '?'})
-- Market-derived rough estimates: differentiation ≈ ${market.diffEstimate}, competition ≈ ${market.competitionEstimate}
-${market.relevanceNote ? `- Caveat from the probe: ${market.relevanceNote}\n` : ''}- Closest competitors:
+- Closest competitors:
 ${market.items
   .slice(0, 8)
   .map((i) => `  · ${i.title} — $${i.priceMin} - $${i.priceMax}`)
   .join('\n')}
 
+MARKET-DERIVED ROUGH ESTIMATES (already computed from the sources above; differentiation is driven by SOURCE A): differentiation ≈ ${market.diffEstimate}, competition ≈ ${market.competitionEstimate}
+${market.relevanceNote ? `- Probing caveats: ${market.relevanceNote}\n` : ''}
 HOW TO USE THIS EVIDENCE:
-- "differentiation" and "competition" MUST be based on this sample. Land within ±15 of the market-derived estimates above; if you go outside that window, explain in one short Chinese sentence inside "cons" why this product is materially different from the sample.
-- "priceAdviceUsd" MUST come from the real price band above (not a guess). Give a sensible sub-range for THIS product's tier.
-- Few same-product hits (grey area) means the category is thin on this platform — that supports higher differentiation; a saturated count means the opposite. Say which one it is in "summary".
-- If the sample is obviously off-target (different product type), say so in "cons" and still score on product merits.
+- "differentiation" and "competition" MUST be judged on SOURCE A (the whole ASI ESP supplier network), NOT on 4imprint alone. 4imprint is a single distributor: a product with 1 hit there can still have hundreds of ASI suppliers making it. Never call a category "thin / niche" just because 4imprint is thin.
+- Land within ±15 of the market-derived estimates above; if you go outside that window, explain in one short Chinese sentence inside "cons" why this product is materially different from the sample.
+- Read the two sources together and say the conclusion out loud in "summary": e.g. "4imprint 上少见，但 ESP 全站 N 款同类，属大众品类，差异化只能靠设计/材质" or, when both are thin, "两个来源都只有个位数，属真空品类".
+- "priceAdviceUsd" MUST come from the real price bands above (not a guess): SOURCE B (4imprint) is the primary reference because those are real tiered distributor prices; use SOURCE A's wider band to see where the whole ASI network sits. Give a sensible sub-range for THIS product's tier.
+- Compare OUR landed cost / planned selling price against both bands. If our price sits above SOURCE A's p75 (the upper quarter of the whole ASI network), say so in "issues" — that is the single most common reason a promo product fails.
+- If a sample is obviously off-target (different product type), say so in "cons" and still score on product merits.
 
 `
     : ''
@@ -558,6 +583,7 @@ OUTPUT JSON SCHEMA (must match the original evaluation schema, all fields requir
 
 Rules:
 - Only change scores/fields when the conversation gives concrete new info (e.g. "已经和供应商确认可以做 5 种颜色" → upgrade colors flexibility).
+- Differentiation MUST be read from marketSnapshot.esp (the whole ASI / ESP supplier network) whenever it exists. marketSnapshot.total / matched describe 4imprint ONLY (a single distributor) — never conclude "niche / thin category / 差异化高" from a low 4imprint count alone.
 - Always return all five scoreBreakdown dimensions. The system recomputes the final score from them (weighted + hard caps), so the five numbers are what actually matter.
 - Be brutally honest. Do not be a yes-man.
 - If the conversation adds no real signal, you may return the same evaluation.`

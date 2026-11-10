@@ -91,6 +91,7 @@ systemRouter.get('/health/market-probe', async (req: Request, res: Response) => 
     .filter(Boolean)
   const productType = String(req.query.pt ?? '').trim()
   const diag = await probeWithDiag(q, 9000, { coreKeywords: core, productType })
+  const esp = diag.esp?.snapshot ?? null
   res.json({
     ok: Boolean(diag.snapshot),
     error: diag.error ?? null,
@@ -111,6 +112,21 @@ systemRouter.get('/health/market-probe', async (req: Request, res: Response) => 
         }
       : null,
     sample: diag.snapshot?.items?.slice(0, 3) ?? [],
+    /** ASI / ESP 全供应商目录那一路（差异化的主依据） */
+    esp: {
+      ok: Boolean(esp),
+      error: diag.esp?.error ?? null,
+      total: esp?.total ?? 0,
+      matchedSample: esp?.matchedSample ?? 0,
+      sampleSize: esp?.sampleSize ?? 0,
+      fallback: esp?.fallback ?? null,
+      densityScore: esp?.densityScore ?? null,
+      categories: esp?.categories ?? [],
+      price: esp?.price ?? null,
+      relevanceNote: esp?.relevanceNote ?? null,
+      perQuery: diag.esp?.perQuery ?? [],
+      sample: esp?.items?.slice(0, 3) ?? [],
+    },
   })
 })
 

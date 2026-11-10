@@ -16,6 +16,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { SectionCard, ScoreRing, VerdictBadge } from '@/components/ui/primitives'
+import { MarketEvidenceBlock } from '@/components/MarketEvidence'
 import { api, getErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { Evaluation, EvaluationRow, Product } from '@/types'
@@ -571,21 +572,10 @@ function EvalDetailDrawer({
                   {evaluation.priceAdviceUsd.max}
                 </div>
               )}
-              {evaluation.marketSnapshot && (
-                <div className="rounded-lg border border-slate-200 bg-white p-2 text-[11px] text-slate-600">
-                  <div className="font-semibold text-slate-700">海外同款（4imprint）</div>
-                  <div className="mt-0.5">
-                    搜到 {evaluation.marketSnapshot.total} 条，命中同款 {evaluation.marketSnapshot.matched ?? '—'} 条，
-                    价格区间 ${evaluation.marketSnapshot.priceLow ?? '?'} – ${evaluation.marketSnapshot.priceHigh ?? '?'}（中位 $
-                    {evaluation.marketSnapshot.median ?? '?'}）
-                  </div>
-                  {evaluation.marketSnapshot.samples?.slice(0, 3).map((s, i) => (
-                    <div key={i} className="mt-0.5 truncate text-slate-500">
-                      · {s.title}（${s.priceMin}–{s.priceMax}）
-                    </div>
-                  ))}
-                </div>
-              )}
+              {evaluation.marketSnapshot && <MarketEvidenceBlock snap={evaluation.marketSnapshot} />}
+              {!evaluation.marketSnapshot && evaluation.marketError ? (
+                <div className="text-[11px] text-amber-700">海外同款没取到：{evaluation.marketError}</div>
+              ) : null}
               {evaluation.sourcingTips && (
                 <div className="text-[12px] text-slate-600">
                   <span className="font-semibold text-slate-700">采购建议：</span>

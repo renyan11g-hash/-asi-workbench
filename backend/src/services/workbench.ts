@@ -164,8 +164,17 @@ function normalizeEvaluation(
       ? { min: market.price.p25, max: market.price.p75 }
       : { min: num(price.min, 0), max: num(price.max, 0) }
 
-  const marketNote = market?.price
-    ? `｜海外同款 ${market.matched}/${market.total} 条同类，list $${market.price.p25}–$${market.price.p75}`
+  const marketNote = market
+    ? [
+        market.esp
+          ? `ESP 全站 ${market.esp.total} 款匹配`
+          : '',
+        market.price
+          ? `4imprint ${market.matched}/${market.total} 条同类 · list $${market.price.p25}–$${market.price.p75}`
+          : `4imprint ${market.matched}/${market.total} 条同类`,
+      ]
+        .filter(Boolean)
+        .join('，')
     : ''
 
   /*
@@ -191,7 +200,7 @@ function normalizeEvaluation(
     score,
     verdict,
     scoreBreakdown: breakdown ?? undefined,
-    scoreNote: composed ? `${composed.note}｜${scoreBand(composed.score)}${marketNote}` : undefined,
+    scoreNote: composed ? `${composed.note}｜${scoreBand(composed.score)}${marketNote ? `｜${marketNote}` : ''}` : undefined,
     marketSnapshot: market
       ? {
           queries: market.queries,
@@ -205,6 +214,29 @@ function normalizeEvaluation(
           diffEstimate: market.diffEstimate,
           competitionEstimate: market.competitionEstimate,
           relevanceNote: market.relevanceNote,
+          ...(market.esp
+            ? {
+                esp: {
+                  queries: market.esp.queries,
+                  total: market.esp.total,
+                  byQuery: market.esp.byQuery,
+                  matchedSample: market.esp.matchedSample,
+                  sampleSize: market.esp.sampleSize,
+                  categories: market.esp.categories,
+                  priceLow: market.esp.price?.p25 ?? null,
+                  priceHigh: market.esp.price?.p75 ?? null,
+                  median: market.esp.price?.median ?? null,
+                  ...(market.esp.fallback ? { fallback: true } : {}),
+                  ...(market.esp.relevanceNote ? { relevanceNote: market.esp.relevanceNote } : {}),
+                  samples: market.esp.items.slice(0, 6).map((i) => ({
+                    title: i.title,
+                    priceMin: i.priceMin,
+                    ...(i.productNo ? { productNo: i.productNo } : {}),
+                    url: i.url,
+                  })),
+                },
+              }
+            : {}),
           samples: market.items.slice(0, 5).map((i) => ({
             title: i.title,
             priceMin: i.priceMin,

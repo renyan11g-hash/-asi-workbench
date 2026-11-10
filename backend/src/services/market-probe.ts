@@ -1,19 +1,34 @@
 /**
- * 海外市场探针（4imprint 公开 RSS）
+ * 海外市场探针（两路并行）
  *
- * 为什么用它：评估最怕"AI 拍脑袋"。4imprint 是美国促销礼品头部平台，
- * 它的搜索结果里带着**真实目录价**（"From only $X - $Y"，X 是高数量档的单价）。
- * 把我们自己的品换算成英文词去搜一下，就能拿到三件事实：
- *   1. 同款有多少条        → 供给密度（差异化 / 竞争的直接证据）
- *   2. 价格区间怎么分布    → 价格带是否拉得开（能不能做溢价）
- *   3. 具体竞品标题/价格   → 直接喂给 AI 对比
+ * ① 4imprint 公开 RSS（market-probe 内置）：美国促销礼品头部**分销商**，
+ *    RSS 里带真实目录价（"From only $X - $Y"，X 是高数量档单价），用来算价格带。
+ *    局限：它只是一个分销商，搜索结果最多约 28 条。
  *
- * 注意：RSS 每次最多约 28 条，条数是"至少这么多"，不是全量。
- * 所以密度评分按区间分档，不做线性外推。
+ * ② ASI / ESP 全供应商目录（esp-probe.ts）：supplier.espwebsite.com 是 ASI 旗下
+ *    ESP 供应商站群的总入口，等于把各家供应商的目录合起来检索，页面直接给出
+ *    "N+ item(s) are found" 的全站匹配数与类目分面计数。**差异化以这一路为主**。
  *
- * 2026-11-03：Render 上探针返回空，需要外部可诊断。
- * 因此把"抓取过程"也返回出来（probeWithDiag），并开放 /api/health/market-probe?q= 便于远程排查。
+ * 为什么必须两路：早先只用 4imprint，"1 条命中"就被当成"细分薄品类、差异化高"，
+ * 但同一个品在 ASI 全网可能有几百上千个供应商在做——结论正好反过来。
+ * 现在价格带优先用 4imprint（真实三档目录价），供给密度/竞争用 ESP（全网口径）。
+ *
+ * 注意：4imprint RSS 每次最多约 28 条；ESP 只抓第一页 20 条 + 平台自报总数
+ * （该站分页要走 ASP.NET 回发，URL 参数无效）。两边的总数都按"至少这么多"理解，
+ * 所以密度按区间分档，不做线性外推。
  */
+
+import {
+  dedupe,
+  isRelevant,
+  needHits,
+  pickMatchTokens,
+  priceBandOf,
+  round2,
+  spreadScoreOf,
+  tokensOf,
+} from './market-text'
+import { probeEspWithDiag, type EspProbeDiag, type EspSnapshot } from './esp-probe'
 
 export interface MarketItem {
   title: string
@@ -26,26 +41,32 @@ export interface MarketItem {
 
 export interface MarketSnapshot {
   queries: string[]
-  /** RSS 抓到的原始条数（4imprint 上限约 28，代表这个品类的供给总量感） */
+  /** 4imprint RSS 抓到的原始条数（上限约 28） */
   total: number
-  /** 标题真正命中产品核心词的条数（剔掉 4imprint 的泛匹配噪声） */
+  /** 4imprint 标题真正命中产品核心词的条数（剔掉泛匹配噪声） */
   matched: number
-  /** 密度评分用的同类条数：取命中最多的一次搜索（每次搜索本身就是一次上限 28 的普查） */
+  /** 4imprint 密度评分用的同类条数（每次搜索本身就是一次上限 28 的普查） */
   densityCount: number
   /** 判定相关性用的核心词（同款标题必须含其中大部分） */
   matchTokens: string[]
   items: MarketItem[]
+  /**
+   * 价格带：优先 4imprint 的真实目录价；4imprint 没取到时退回 ESP 样本价。
+   * 这是"评价我们的售价贵不贵"的依据。
+   */
   price: { min: number; p25: number; median: number; p75: number; max: number } | null
-  /** 供给密度分：同款越少越高 */
+  /** 供给密度分：同款越少越高（ESP 可用时按 ESP 全站口径，否则按 4imprint 28 条口径） */
   densityScore: number
   /** 价格离散分：价格带拉得越开越高 */
   spreadScore: number
-  /** 差异化粗估（0-100）：密度 55% + 离散 45% */
+  /** 差异化粗估（0-100）：密度 60% + 离散 40% */
   diffEstimate: number
   /** 竞争粗估（0-100）：等同于密度分（同款少 = 竞争弱 = 分高） */
   competitionEstimate: number
   /** 相关性偏低时给界面看的一句话（关键词太泛 / 一条都没命中） */
   relevanceNote?: string
+  /** ASI / ESP 全供应商目录那一路的证据（差异化主依据；旧数据没有这个字段） */
+  esp?: EspSnapshot
   fetchedAt: string
 }
 
@@ -61,6 +82,8 @@ export interface ProbeDiag {
     status?: number
     error?: string
   }>
+  /** ESP 那一路的诊断（失败原因单独看，避免和 4imprint 混在一起） */
+  esp?: EspProbeDiag
   snapshot: MarketSnapshot | null
   /** 整体失败原因（给界面/日志看的一句话） */
   error?: string
@@ -105,18 +128,7 @@ function parseRss(xml: string): MarketItem[] {
   return out
 }
 
-const quantile = (sorted: number[], q: number): number => {
-  if (!sorted.length) return 0
-  const pos = (sorted.length - 1) * q
-  const base = Math.floor(pos)
-  const rest = pos - base
-  const next = sorted[base + 1] ?? sorted[base]
-  return sorted[base] + rest * (next - sorted[base])
-}
-
-const round2 = (v: number) => Math.round(v * 100) / 100
-
-/** 供给密度：同款条数越多，差异化越低 */
+/** 供给密度（4imprint 28 条口径）：同款条数越多，差异化越低 */
 function densityScoreOf(total: number): number {
   if (total <= 4) return 92
   if (total <= 8) return 78
@@ -125,97 +137,7 @@ function densityScoreOf(total: number): number {
   return 28
 }
 
-/** 价格离散度：(p75-p25)/median，价格带拉得开说明市场接受溢价 */
-function spreadScoreOf(p25: number, p75: number, median: number): number {
-  if (!(median > 0)) return 50
-  const spread = (p75 - p25) / median
-  if (spread >= 0.9) return 85
-  if (spread >= 0.6) return 70
-  if (spread >= 0.4) return 56
-  if (spread >= 0.25) return 42
-  return 30
-}
-
-/*
- * ---------- 相关性过滤 ----------
- *
- * 为什么要它：4imprint 的搜索是**泛匹配**。搜 "travel organizer" 会返回
- * Curvy Pen（圆珠笔）、Coin Pouch（硬币袋）这类完全不相干的品——因为单词被拆开匹配了。
- * 如果直接拿这 28 条算价格离散度，噪声会被当成"市场价位分层丰富"，差异化被系统性高估。
- * 所以先用"同款标题必须含有几个核心词"筛一遍，只拿真正同款的算密度和价格带。
- */
-
-/** 英文停用词：促销礼品标题几乎条条都有，不能用来判断"是不是同款" */
-const EN_STOP = new Set([
-  'the', 'and', 'for', 'with', 'from', 'of', 'to', 'in', 'on', 'at', 'by', 'a', 'an',
-  'new', 'set', 'pcs', 'pc', 'pack', 'piece', 'pieces', 'custom', 'logo', 'printed', 'print',
-  'promotional', 'promo', 'product', 'item', 'style', 'type', 'high', 'quality', 'large',
-  'small', 'mini', 'portable', 'multi', 'function', 'functional', 'your', 'you', 'our',
-  'all', 'one', 'two', 'plus', 'deluxe', 'classic', 'premium', 'basic', 'value', 'easy',
-  'travel', // 太泛：行李箱/收纳/洗漱/颈枕标题里都有，单靠它不算同款
-])
-
-/** 粗粒度单复数归一：bags→bag，boxes→box，toiletries→toiletry */
-function stem(w: string): string {
-  if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y'
-  if (w.length > 4 && /(?:s|x|z|ch|sh)es$/.test(w)) return w.slice(0, -2)
-  if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1)
-  return w
-}
-
-function tokensOf(s: string): string[] {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w.length > 2 && !EN_STOP.has(w))
-    .map(stem)
-}
-
-const dedupe = (list: string[]): string[] => {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const t of list) {
-    if (!t || seen.has(t)) continue
-    seen.add(t)
-    out.push(t)
-  }
-  return out
-}
-
-/**
- * 挑一套"同款标题必须命中"的核心词。
- * 优先用 AI 给的 coreKeywords（它认得这个品类的必备名词）；
- * 没给就取最长的那一条搜索词 / 品类名的实词——只用单一短语，保证阈值口径一致。
- */
-function pickMatchTokens(queries: string[], coreKeywords: string[], productType?: string): string[] {
-  const fromAi = dedupe(coreKeywords.flatMap(tokensOf))
-  if (fromAi.length >= 2) return fromAi.slice(0, 8)
-
-  const phrases = [...queries, ...(productType ? [productType] : [])]
-  let best: string[] = []
-  for (const p of phrases) {
-    const t = tokensOf(p)
-    if (t.length > best.length) best = t
-  }
-  return dedupe(best).slice(0, 6)
-}
-
-/** 需要命中几个核心词才算同款：短词全中，长词 60% */
-function needHits(tokens: string[]): number {
-  if (!tokens.length) return 1
-  return tokens.length <= 2 ? tokens.length : Math.ceil(tokens.length * 0.6)
-}
-
-function isRelevant(title: string, tokens: string[], need: number): boolean {
-  if (!tokens.length) return true
-  const t = new Set(tokensOf(title))
-  let hit = 0
-  for (const tok of tokens) if (t.has(tok)) hit++
-  return hit >= need
-}
-
-/** 只依赖最小形状，避免 @types/node 版本差异导致 fetch 类型缺失（本地没有 tsc 可验） */
+/** 只依赖最小形状，避免 @types/node 版本差异导致 fetch 类型缺失 */
 type SimpleResponse = { ok: boolean; status?: number; text(): Promise<string> }
 type SimpleFetch = (
   url: string,
@@ -251,16 +173,26 @@ async function fetchRss(
   }
 }
 
-/** 带诊断的市场探测：失败也能说清失败在哪一步 */
-export async function probeWithDiag(
-  queries: string[],
-  timeoutMs = 9000,
-  opts: ProbeOptions = {}
-): Promise<ProbeDiag> {
-  const clean = queries.map((q) => q.trim()).filter(Boolean).slice(0, 2)
-  const perQuery: ProbeDiag['perQuery'] = []
-  if (!clean.length) return { queries: [], perQuery, snapshot: null, error: '没有可用的英文搜索词' }
+interface FourImprintResult {
+  perQuery: ProbeDiag['perQuery']
+  /** 去重后的原始条数（两条 query 的并集，不是相加） */
+  total: number
+  items: MarketItem[]
+  matchTokens: string[]
+  matched: number
+  densityCount: number
+  price: MarketSnapshot['price']
+  relevanceNote?: string
+  error?: string
+}
 
+/** 4imprint 那一路（原来的全部逻辑，原样保留，只是包成函数方便和 ESP 并行） */
+async function probe4imprint(
+  clean: string[],
+  timeoutMs: number,
+  opts: ProbeOptions
+): Promise<FourImprintResult> {
+  const perQuery: ProbeDiag['perQuery'] = []
   const seen = new Set<string>()
   const items: MarketItem[] = []
   // 核心词先算出来，方便在抓取时直接统计每条 query 的命中数
@@ -293,7 +225,16 @@ export async function probeWithDiag(
       : firstErr?.ok && firstErr.bytes > 0
         ? `${firstErr.query}: 页面抓到了 ${firstErr.bytes} 字节，但没解析出带价格的商品`
         : '没有解析到任何商品'
-    return { queries: clean, perQuery, snapshot: null, error }
+    return {
+      perQuery,
+      total: 0,
+      items: [],
+      matchTokens,
+      matched: 0,
+      densityCount: 0,
+      price: null,
+      error,
+    }
   }
 
   /*
@@ -305,59 +246,119 @@ export async function probeWithDiag(
   // 少于 3 条就当"没筛住"，用全量，避免样本太窄得出极端结论
   const useRelevant = matched >= 3
   const basis = useRelevant ? relevant : items
-
-  const lows = basis.map((i) => i.priceMin).sort((a, b) => a - b)
-  const price = {
-    min: round2(lows[0]),
-    p25: round2(quantile(lows, 0.25)),
-    median: round2(quantile(lows, 0.5)),
-    p75: round2(quantile(lows, 0.75)),
-    max: round2(lows[lows.length - 1]),
-  }
+  const price = priceBandOf(basis.map((i) => i.priceMin))
 
   /*
    * 密度口径：RSS 每条 query 最多约 28 条，所以**每条 query 本身就是一次独立普查**。
-   * 取"命中同款条数最多的那次搜索"作为密度依据——不按比例外推：
-   *   · 该词只返回 16 条（没到上限）→ 这 16 条就是全量，命中 4 条就是真有 4 条同类；
-   *   · 该词返回满 28 条（被截断）→ 28 条里命中 11 条，同类密度就是 11/28。
-   * 早先按"总命中率折算"会被两条 query 合并后的分母摊薄，密度被系统性高估。
+   * 取"命中同款条数最多的那次搜索"作为密度依据——不按比例外推。
    */
   const bestMatched = Math.min(28, Math.max(0, ...perQuery.map((p) => p.matched)))
   const densityCount = useRelevant ? bestMatched : Math.min(items.length, 28)
 
-  const densityScore = densityScoreOf(densityCount)
-  const spreadScore = spreadScoreOf(price.p25, price.p75, price.median)
-  const diffEstimate = Math.round(densityScore * 0.55 + spreadScore * 0.45)
-
   let relevanceNote: string | undefined
   const tokText = matchTokens.join('/')
   if (matchTokens.length && matched === 0) {
-    relevanceNote = `「${clean.join(' | ')}」搜到的 ${items.length} 条里没有一条标题真含 ${tokText}，价格带按原始结果算，差别仅供参考`
+    relevanceNote = `4imprint 搜到的 ${items.length} 条里没有一条标题真含 ${tokText}，价格带按原始结果算`
   } else if (matchTokens.length && !useRelevant) {
-    relevanceNote = `只有 ${matched} 条标题真含 ${tokText}（样本偏少），密度按原始条数算`
-  } else if (useRelevant && items.length >= 8 && matched / items.length < 0.25) {
-    relevanceNote = `${items.length} 条里仅 ${matched} 条是同类（${Math.round((matched / items.length) * 100)}%），说明这个词的搜索结果很杂；密度只按命中条数算`
+    relevanceNote = `4imprint 只有 ${matched} 条标题真含 ${tokText}（样本偏少），密度按原始条数算`
   }
 
   // 价格低的排前面，方便 AI 看"最狠的竞品是谁"
   const sorted = [...basis].sort((a, b) => a.priceMin - b.priceMin)
 
   return {
-    queries: clean,
     perQuery,
+    total: items.length,
+    items: sorted,
+    matchTokens,
+    matched,
+    densityCount,
+    price,
+    ...(relevanceNote ? { relevanceNote } : {}),
+  }
+}
+
+/** 带诊断的市场探测：两路并行，失败也能说清失败在哪一路 */
+export async function probeWithDiag(
+  queries: string[],
+  timeoutMs = 9000,
+  opts: ProbeOptions = {}
+): Promise<ProbeDiag> {
+  const clean = dedupe(queries.map((q) => q.trim()).filter(Boolean)).slice(0, 2)
+  if (!clean.length) return { queries: [], perQuery: [], snapshot: null, error: '没有可用的英文搜索词' }
+
+  const [four, esp] = await Promise.all([
+    probe4imprint(clean, timeoutMs, opts).catch(() => null),
+    probeEspWithDiag(clean, timeoutMs, opts).catch((e) => ({
+      queries: clean,
+      perQuery: [],
+      snapshot: null,
+      error: (e as Error)?.message ?? 'ESP 探针异常',
+    })),
+  ])
+
+  const fourOk = Boolean(four && four.items.length)
+  const espSnap = esp?.snapshot ?? null
+  // ESP 只有在"真匹配到了东西"时才拿来定密度；泛匹配兜底页的总数不可信
+  const espUsable = Boolean(espSnap && espSnap.total > 0 && !espSnap.fallback)
+
+  if (!fourOk && !espSnap) {
+    return {
+      queries: clean,
+      perQuery: four?.perQuery ?? [],
+      esp,
+      snapshot: null,
+      error: four?.error ?? esp?.error ?? '两个来源都没取到数据',
+    }
+  }
+
+  // 价格带优先 4imprint（真实分销商三档目录价），没有就退 ESP 样本价
+  const price = (fourOk ? four!.price : null) ?? espSnap?.price ?? null
+  const spreadScore = price ? spreadScoreOf(price.p25, price.p75, price.median) : 50
+
+  /*
+   * 密度以 ESP 为准：这是"全 ASI 供应商目录"的口径，而 4imprint 只是其中一家分销商。
+   * 早先只用 4imprint 会把"这家没做过"误读成"市场上没人做"，差异化被系统性高估。
+   * 只有 ESP 完全取不到（或返回泛匹配兜底）时，才退回 4imprint 的 28 条口径。
+   */
+  const densityScore = espUsable
+    ? espSnap!.densityScore
+    : fourOk
+      ? densityScoreOf(four!.densityCount)
+      : 50
+  const diffEstimate = Math.round(densityScore * 0.6 + spreadScore * 0.4)
+
+  const notes = [four?.relevanceNote, espSnap?.relevanceNote].filter(Boolean) as string[]
+  if (four && !fourOk && espSnap) notes.push('4imprint 没取到数据，价格带按 ESP 样本价算')
+
+  // 没有 4imprint 条目时，用 ESP 样本顶上，保证 AI 至少看得到竞品标题和价格
+  const items: MarketItem[] = fourOk
+    ? four!.items.slice(0, 12)
+    : (espSnap?.items ?? []).slice(0, 12).map((i) => ({
+        title: i.title,
+        priceMin: i.priceMin,
+        priceMax: i.priceMin,
+        url: i.url,
+      }))
+
+  return {
+    queries: clean,
+    perQuery: four?.perQuery ?? [],
+    esp,
     snapshot: {
       queries: clean,
-      total: items.length,
-      matched,
-      densityCount,
-      matchTokens,
-      items: sorted.slice(0, 12),
+      total: four?.total ?? 0,
+      matched: four?.matched ?? 0,
+      densityCount: four?.densityCount ?? 0,
+      matchTokens: four?.matchTokens ?? espSnap?.matchTokens ?? [],
+      items,
       price,
       densityScore,
       spreadScore,
       diffEstimate,
       competitionEstimate: densityScore,
-      ...(relevanceNote ? { relevanceNote } : {}),
+      ...(notes.length ? { relevanceNote: notes.join('；') } : {}),
+      ...(espSnap ? { esp: espSnap } : {}),
       fetchedAt: new Date().toISOString(),
     },
   }
@@ -378,3 +379,7 @@ export async function probeOverseasMarket(
     return null
   }
 }
+
+/** 供测试/诊断用：把一段标题按同款口径分词 */
+export const marketTokensOf = tokensOf
+export { round2 }

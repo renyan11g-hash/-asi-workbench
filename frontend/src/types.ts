@@ -12,7 +12,7 @@ export interface Evaluation {
   }
   /** 总分的由来（哪一维封顶 / 最弱一环），系统生成 */
   scoreNote?: string
-  /** 海外市场探测结果（4imprint 真实目录价），评估时抓的 */
+  /** 海外市场探测结果（4imprint 目录价 + ASI/ESP 全站供给密度），评估时抓的 */
   marketSnapshot?: {
     queries: string[]
     total: number
@@ -29,6 +29,24 @@ export interface Evaluation {
     competitionEstimate: number
     /** 关键词太泛 / 一条都没命中时的提醒（旧评估没有） */
     relevanceNote?: string
+    /**
+     * ASI / ESP 全供应商目录那一路（差异化主依据）。
+     * 2026-11-10 之前的老评估没有这个字段，界面要能容忍缺失。
+     */
+    esp?: {
+      queries: string[]
+      total: number
+      byQuery?: Array<{ query: string; total: number; matched: number; sampleSize: number }>
+      matchedSample: number
+      sampleSize: number
+      categories: Array<{ name: string; count: number }>
+      priceLow: number | null
+      priceHigh: number | null
+      median: number | null
+      fallback?: boolean
+      relevanceNote?: string
+      samples: Array<{ title: string; priceMin: number; productNo?: string; url: string }>
+    }
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
     fetchedAt: string
   }
