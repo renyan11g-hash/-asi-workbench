@@ -9,10 +9,10 @@ import { AiError, callChatJson } from '../services/ai'
 import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
 import type { ResearchMatch } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
-import { buildPriceGrid, convertUnits } from '../services/pricing'
+import { buildPriceGrid, convertUnits, retogglePriceRow } from '../services/pricing'
 import { buildGlsWorkbook } from '../services/gls-export'
 import { recommendImprintMethods } from '../services/imprint-recommend'
-import { Evaluation, Listing, Product, ProductStatus, SimilarResearch, SourceInfo } from '../types'
+import { Evaluation, Listing, PriceRow, Product, ProductStatus, SimilarResearch, SourceInfo } from '../types'
 import { loadSettings } from './settings'
 import { env } from '../config/env'
 import { computeScoreV2 } from '../services/scoring'
@@ -1768,20 +1768,37 @@ productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
     })
     .parse(req.body ?? {})
 
+  // 只切换某一档运输方式：就地改这一行，其它档一个字段都不动
+  // （以前是把整表重新 buildPriceGrid 一遍，会把之前手动切过的档和人工改过的价格冲掉）
+  if (body.toggle) {
+    const currentRows = (current.listing?.priceGrid ?? []) as PriceRow[]
+    if (!currentRows.length || body.toggle.idx >= currentRows.length) {
+      throw new AppError(400, '这一档不存在，请刷新页面后重试')
+    }
+    const rows = retogglePriceRow({
+      source: current.source,
+      settings,
+      rows: currentRows,
+      idx: body.toggle.idx,
+      mode: body.toggle.mode,
+    })
+    const listing: Listing | null = current.listing ? { ...current.listing, priceGrid: rows } : null
+    if (listing) {
+      db.prepare('UPDATE products SET listing=?, updated_at=? WHERE id=?').run(
+        JSON.stringify(listing),
+        new Date().toISOString(),
+        id
+      )
+    }
+    res.json({ priceGrid: rows, product: findProduct(id) })
+    return
+  }
+
   const overrides: Parameters<typeof buildPriceGrid>[2] = {
     billableKg: body.billableKg,
     markupAir: body.markupAir,
     markupSea: body.markupSea,
     shippingModes: body.shippingModes,
-  }
-  if (body.toggle) {
-    const currentRows = (current.listing?.priceGrid ?? []) as Array<{ markupRate?: number }>
-    const modes: Array<'air' | 'sea' | null> = currentRows.map(() => null)
-    // 只给被点的那一档下指令；其余档留 null = 仍按「前 N 档空运」自动分配
-    if (body.toggle.idx < modes.length) modes[body.toggle.idx] = body.toggle.mode
-    overrides.shippingModes = modes
-    const keepMarkup = Number(currentRows[body.toggle.idx]?.markupRate)
-    if (keepMarkup > 0) overrides.markupByIndex = { [body.toggle.idx]: keepMarkup }
   }
 
   const { rows } = buildPriceGrid(current.source, settings, overrides)

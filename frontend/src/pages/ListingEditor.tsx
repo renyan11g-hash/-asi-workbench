@@ -1922,7 +1922,7 @@ export default function ListingEditor() {
                         <button
                           type="button"
                           onClick={() => toggleShipping(idx)}
-                          title="点一下切换空运 / 海运，整表按新方式重算"
+                          title="只切换这一档的运输方式：只重算这一档的运费和售价，其它档不动"
                           className={`rounded px-1.5 py-0.5 text-[10px] transition-colors ${
                             r.shipping === 'air'
                               ? 'bg-blue-50 text-blue-700 hover:bg-blue-100'

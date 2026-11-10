@@ -263,8 +263,85 @@ export function buildPriceGrid(
   return { rows, breakdowns }
 }
 
-/** 给 AI 看的成本摘要，避免模型瞎编 */
-export function costSummaryForPrompt(
+/**
+ * 单档切换空运 / 海运：**只重算被点的那一档**，其余档原样返回。
+ *
+ * 以前切一档是把整张表重新 buildPriceGrid 一遍，导致：
+ *   ① 之前手动切过运输方式的档，会被「按前 N 档空运」的自动分配冲掉；
+ *   ② 人工改过的售价 / 倍率 / 数量也会被重算覆盖。
+ * 现在按「就地改一行」处理：其他档的对象一个字段都不动，只把这一档的运费、
+ * 到岸成本、售价（沿用该档现有倍率）、毛利按新的运输方式重算。
+ */
+export function retogglePriceRow(params: {
+  source: Pick<
+    SourceInfo,
+    'priceCny' | 'pcsPerCarton' | 'weightG' | 'cartonLCm' | 'cartonWCm' | 'cartonHCm' | 'cartonGwKg'
+  >
+  settings: Settings
+  rows: PriceRow[]
+  idx: number
+  mode: 'air' | 'sea'
+}): PriceRow[] {
+  const { source, settings, idx, mode } = params
+  const rows = params.rows.map((r) => ({ ...r }))
+  const row = rows[idx]
+  if (!row) return rows
+
+  const fx = Number(settings.fxRate) || 6.7
+  const pcs = Math.max(1, Number(source.pcsPerCarton) || 1)
+  const rate =
+    mode === 'air'
+      ? Number(settings.airRateCnyPerKg) || 50
+      : Number(settings.seaRateCnyPerKg) || 20
+  const goodsCny = Number(source.priceCny) || 0
+  const printCny = Number(settings.printCostCny) || 0
+  const sampleFee = Number(settings.sampleFeeCny) || 0
+  const miscPct = Number(settings.miscFeePct) || 0
+
+  // 计费重用这一档原来算出来的值：同一票货，换运输方式不该改变计费重
+  const billableKg = Number(row.billableKg) > 0 ? Number(row.billableKg) : 0
+  const freightCny = billableKg > 0 ? (billableKg * rate) / pcs : 0
+  const unitCostCny = goodsCny + freightCny
+
+  // 沿用该档现有倍率（人工调过的倍率不会被改掉）；没有就按该运输方式的基准倍率
+  const markup =
+    Number(row.markupRate) > 0
+      ? Number(row.markupRate)
+      : mode === 'air'
+        ? Number(settings.markupAir) || 1.4
+        : Number(settings.markupSea) || 1.25
+
+  const qty = Number(row.qty) > 0 ? Number(row.qty) : 1
+  const unitPrice = round2(applyRounding((unitCostCny * markup) / fx, settings.rounding))
+  const sampleCny = idx === 0 ? sampleFee / qty : 0
+  const fixedCostCny = goodsCny + freightCny + printCny + sampleCny
+  const miscCny = (miscPct / 100) * unitPrice * fx
+  const allInCostCny = fixedCostCny + miscCny
+  const grossProfit = unitPrice - allInCostCny / fx
+  const grossProfitCny = grossProfit * fx
+  const margin = unitPrice > 0 ? grossProfit / unitPrice : 0
+
+  rows[idx] = {
+    ...row,
+    shipping: mode,
+    billableKg: round2(billableKg),
+    unitCostCny: round2(unitCostCny),
+    unitCost: round2(unitCostCny / fx),
+    fixedCostUsd: round2(fixedCostCny / fx),
+    miscUsd: round2(miscCny / fx),
+    allInCostUsd: round2(allInCostCny / fx),
+    grossProfit: round2(grossProfit),
+    grossProfitCny: round2(grossProfitCny),
+    totalGrossProfitUsd: round2(grossProfit * qty),
+    totalGrossProfitCny: round2(grossProfitCny * qty),
+    unitPrice,
+    margin: Math.round(margin * 1000) / 10,
+    markupRate: Math.round(markup * 100) / 100,
+  }
+  return rows
+}
+
+/** 给 AI 看的成本摘要，避免模型瞎编 */export function costSummaryForPrompt(
   source: Pick<
     SourceInfo,
     'priceCny' | 'weightG' | 'cartonLCm' | 'cartonWCm' | 'cartonHCm' | 'pcsPerCarton' | 'cartonGwKg'
