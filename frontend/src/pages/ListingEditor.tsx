@@ -844,6 +844,7 @@ export default function ListingEditor() {
 
   // ---------- 本产品定价参数（汇率 / 运费 / 印刷费 / 样品费 / 杂费 / 会员折扣） ----------
   const [visualBusy, setVisualBusy] = useState(false)
+  const [evalBusy, setEvalBusy] = useState(false)
   const [priceForm, setPriceForm] = useState<Record<string, number>>({})
   useEffect(() => {
     if (!settings) return
@@ -2421,8 +2422,31 @@ export default function ListingEditor() {
               >
                 <div className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
                   <span>
-                    价格对比只认「识图同款」。识别较慢（约 30-60 秒），需要时点一下：
+                    评估与英文文案是两条独立的线：<b>刷新评估只更新分数/证据</b>，不会重写标题/摘要/描述/关键词；价格对比只认「识图同款」。
                   </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 border-amber-300 bg-white text-xs"
+                    disabled={evalBusy}
+                    onClick={() =>
+                      void runEditable('刷新评估', async (force) => {
+                        setEvalBusy(true)
+                        try {
+                          await api.evaluateProduct(product.id, { force })
+                          qc.invalidateQueries({ queryKey: ['product', product.id] })
+                          qc.invalidateQueries({ queryKey: ['products'] })
+                          qc.invalidateQueries({ queryKey: ['drafts'] })
+                          toast.success('评估已刷新（英文文案保持原样，未重新生成）')
+                        } finally {
+                          setEvalBusy(false)
+                        }
+                      })
+                    }
+                  >
+                    {evalBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}
+                    刷新评估
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"

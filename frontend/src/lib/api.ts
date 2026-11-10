@@ -512,10 +512,11 @@ export const api = {
     await apiClient.delete(`/drafts/${id}`)
   },
 
-  async evaluateProduct(id: string): Promise<Product> {
+  /** 只刷新评估（分数/证据），不会重写已生成的英文文案 */
+  async evaluateProduct(id: string, opts?: { force?: boolean }): Promise<Product> {
     const { data } = await apiClient.post<{ product: Product }>(
       `/products/${id}/evaluate`,
-      {},
+      opts?.force ? { force: true } : {},
       LONG_TIMEOUT
     )
     return data.product

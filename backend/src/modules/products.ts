@@ -1651,6 +1651,8 @@ productsRouter.delete('/:id/purge', async (req: Request, res: Response) => {
 // ---------- AI：选品评估（落库） ----------
 productsRouter.post('/:id/evaluate', async (req: Request, res: Response) => {
   const id = String(req.params.id)
+  // 只刷新评估：不碰 listing（英文文案）。RPA 库产品同样要确认后带 force。
+  assertEditable(id, (req.body as Record<string, unknown> | undefined)?.force, '刷新评估')
   const current = findProduct(id)
   const settings = settingsForProduct(current)
   // 优先用请求里带的词；没有就复用这个产品保存时存下的「类似商品调研」关键词（免费的，不用再调 AI）
@@ -1664,7 +1666,9 @@ productsRouter.post('/:id/evaluate', async (req: Request, res: Response) => {
     new Date().toISOString(),
     id
   )
-  res.json({ product: findProduct(id) })
+  // listing 一个字都没动：这里只写 score/verdict/evaluation 三列，
+  // 已生成的英文文案（标题/摘要/描述/关键词/价格表）保持原样。
+  res.json({ product: findProduct(id), evaluationOnly: true })
 })
 
 /** 多轮对话调整评估（不落库，给 Sourcing 评估区使用） */
