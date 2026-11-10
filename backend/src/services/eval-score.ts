@@ -19,6 +19,7 @@
  *   差异化 < 30 → 总分封顶 55（同款烂大街，只能拼价格，做不出溢价）
  *   定制 < 30  → 总分封顶 60（做不出定制 = 无法作为促销礼品销售）
  *   物流 < 25  → 总分封顶 70（泡货/重货在低价带必亏）
+ *   分销商都不卖 → 总分封顶 55（需求未验证：可能是伪需求，先别投钱开模备货）
  */
 
 export interface ScoreBreakdown {
@@ -27,6 +28,12 @@ export interface ScoreBreakdown {
   shipping: number
   competition: number
   compliance: number
+}
+
+/** 外部证据触发的闸门（五维分表达不了，但必须拦住总分的结论） */
+export interface ScoreGates {
+  /** 分销商目录里没有任何一家在卖同类：需求未验证 */
+  demandMissing?: boolean
 }
 
 export const SCORE_WEIGHTS: Record<keyof ScoreBreakdown, number> = {
@@ -68,7 +75,7 @@ export function parseBreakdown(raw: unknown): ScoreBreakdown | null {
   return out
 }
 
-export function composeScore(b: ScoreBreakdown): ComposedScore {
+export function composeScore(b: ScoreBreakdown, gates: ScoreGates = {}): ComposedScore {
   const keys = Object.keys(SCORE_WEIGHTS) as Array<keyof ScoreBreakdown>
   const weighted = keys.reduce((sum, k) => sum + b[k] * SCORE_WEIGHTS[k], 0)
   const raw = Math.round(weighted)
@@ -76,6 +83,7 @@ export function composeScore(b: ScoreBreakdown): ComposedScore {
   // 闸门：按最狠的一条封顶
   let cap = 100
   let capKey: keyof ScoreBreakdown | null = null
+  let capReason = ''
   if (b.compliance < 40) {
     cap = 40
     capKey = 'compliance'
@@ -92,15 +100,27 @@ export function composeScore(b: ScoreBreakdown): ComposedScore {
     cap = 70
     capKey = 'shipping'
   }
+  /*
+   * 需求闸门：五维分再高，只要三家分销商目录里都没有同类，
+   * 这个"高差异化"就可能是伪需求（也可能只是还没人做，但那是赌博不是生意）。
+   * 封顶 55 = 最高只能到 MAYBE，逼业务先找客户确认再投钱。
+   */
+  if (gates.demandMissing && cap > 55) {
+    cap = 55
+    capKey = null
+    capReason = '分销商目录里没有同类在卖（需求未验证）'
+  }
 
   const score = Math.min(raw, cap)
 
   const verdict = score >= 75 ? 'GO' : score >= 55 ? 'MAYBE' : 'NO'
 
   const weakest = keys.reduce((a, k) => (b[k] < b[a] ? k : a), keys[0])
-  const note = capKey
-    ? `受「${DIM_LABEL[capKey]}」封顶（该项 ${b[capKey]} 分）`
-    : `最弱一环：${DIM_LABEL[weakest]} ${b[weakest]} 分`
+  const note = capReason
+    ? `受「${capReason}」封顶`
+    : capKey
+      ? `受「${DIM_LABEL[capKey]}」封顶（该项 ${b[capKey]} 分）`
+      : `最弱一环：${DIM_LABEL[weakest]} ${b[weakest]} 分`
 
   return { score, verdict, note }
 }

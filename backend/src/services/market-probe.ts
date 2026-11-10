@@ -20,6 +20,7 @@
 
 import {
   dedupe,
+  formOfTitle,
   isRelevant,
   needHits,
   pickMatchTokens,
@@ -27,8 +28,16 @@ import {
   round2,
   spreadScoreOf,
   tokensOf,
+  type ProductForm,
 } from './market-text'
 import { probeEspWithDiag, type EspProbeDiag, type EspSnapshot } from './esp-probe'
+import {
+  demandPriceOf,
+  probeDistributors,
+  summarizeDemand,
+  type DistributorDemand,
+  type DistributorSource,
+} from './distributor-probe'
 
 export interface MarketItem {
   title: string
@@ -59,14 +68,16 @@ export interface MarketSnapshot {
   densityScore: number
   /** 价格离散分：价格带拉得越开越高 */
   spreadScore: number
-  /** 差异化粗估（0-100）：密度 60% + 离散 40% */
+  /** 差异化粗估（0-100）：密度 60% + 离散 40%（只看供给，不掺需求） */
   diffEstimate: number
-  /** 竞争粗估（0-100）：等同于密度分（同款少 = 竞争弱 = 分高） */
+  /** 竞争粗估（0-100）：供给越少分越高；分销商需求越强分越低（3 家都在卖 = 拼价） */
   competitionEstimate: number
   /** 相关性偏低时给界面看的一句话（关键词太泛 / 一条都没命中） */
   relevanceNote?: string
-  /** ASI / ESP 全供应商目录那一路的证据（差异化主依据；旧数据没有这个字段） */
+  /** ASI / ESP 全供应商目录那一路的证据（供给侧，差异化主依据；旧数据没有这个字段） */
   esp?: EspSnapshot
+  /** 分销商需求侧证据（多家分销商目录：几家在卖、各多少条）。旧数据没有 */
+  demand?: DistributorDemand
   fetchedAt: string
 }
 
@@ -94,6 +105,8 @@ export interface ProbeOptions {
   coreKeywords?: string[]
   /** AI 认出的英文品类名，用于在没给核心词时补足判断依据 */
   productType?: string
+  /** 我们自己产品的形态（套装/单件）：形态不同的价格不能直接比 */
+  productForm?: ProductForm
 }
 
 const ENDPOINT = 'https://www.4imprint.com/rss/search?searchterm='
@@ -287,7 +300,7 @@ export async function probeWithDiag(
   const clean = dedupe(queries.map((q) => q.trim()).filter(Boolean)).slice(0, 2)
   if (!clean.length) return { queries: [], perQuery: [], snapshot: null, error: '没有可用的英文搜索词' }
 
-  const [four, esp] = await Promise.all([
+  const [four, esp, dist] = await Promise.all([
     probe4imprint(clean, timeoutMs, opts).catch(() => null),
     probeEspWithDiag(clean, timeoutMs, opts).catch((e) => ({
       queries: clean,
@@ -295,6 +308,11 @@ export async function probeWithDiag(
       snapshot: null,
       error: (e as Error)?.message ?? 'ESP 探针异常',
     })),
+    probeDistributors(clean, timeoutMs, {
+      coreKeywords: opts.coreKeywords,
+      productType: opts.productType,
+      productForm: opts.productForm,
+    }).catch(() => null),
   ])
 
   const fourOk = Boolean(four && four.items.length)
@@ -302,15 +320,53 @@ export async function probeWithDiag(
   // ESP 只有在"真匹配到了东西"时才拿来定密度；泛匹配兜底页的总数不可信
   const espUsable = Boolean(espSnap && espSnap.total > 0 && !espSnap.fallback)
 
-  if (!fourOk && !espSnap) {
+  if (!fourOk && !espSnap && !dist) {
     return {
       queries: clean,
       perQuery: four?.perQuery ?? [],
       esp,
       snapshot: null,
-      error: four?.error ?? esp?.error ?? '两个来源都没取到数据',
+      error: four?.error ?? esp?.error ?? '所有来源都没取到数据',
     }
   }
+
+  /*
+   * 需求侧：4imprint 也是"一家分销商"，并入同一张表一起看。
+   * 单看任何一家都会误判——一家没上架不代表没人要，一家上了架也不代表大众需求。
+   */
+  const fourSource: DistributorSource = {
+    id: 'fourimprint',
+    name: '4imprint',
+    ok: fourOk,
+    total: four?.total ?? null,
+    sampleSize: four?.total ?? 0,
+    matched: four?.matched ?? 0,
+    sameFormCount: four && opts.productForm
+      ? four.items.filter((i) => formOfTitle(i.title) === opts.productForm).length
+      : 0,
+    price: four?.price ?? null,
+    priceSameForm: null,
+    items: (four?.items ?? []).slice(0, 12).map((i) => ({
+      title: i.title,
+      priceMin: i.priceMin,
+      url: i.url,
+      form: formOfTitle(i.title),
+    })),
+    ...(four?.error ? { error: four.error } : {}),
+  }
+  const demandSources = [fourSource, ...(dist?.sources ?? [])]
+  const demandSummary = summarizeDemand(demandSources)
+  const demand: DistributorDemand = {
+    checked: demandSources.length,
+    carriers: demandSummary.carriers,
+    bestCount: demandSummary.bestCount,
+    demandScore: demandSummary.demandScore,
+    note: demandSummary.note,
+    price: demandPriceOf(demandSources, opts.productForm),
+    sources: demandSources,
+    fetchedAt: new Date().toISOString(),
+  }
+  const demandUsable = demandSources.some((s) => s.ok)
 
   // 价格带优先 4imprint（真实分销商三档目录价），没有就退 ESP 样本价
   const price = (fourOk ? four!.price : null) ?? espSnap?.price ?? null
@@ -328,8 +384,19 @@ export async function probeWithDiag(
       : 50
   const diffEstimate = Math.round(densityScore * 0.6 + spreadScore * 0.4)
 
+  /*
+   * 竞争 = 供给拥挤 + 需求旺盛。
+   * 供给少但三家分销商都在卖 → 说明是成熟大众品，竞争按"拼价"算，不能给高分。
+   * 供给少且没人卖 → 竞争压力确实低，但这个"低"会由需求闸门在总分上扣回来，
+   * 不能让它伪装成"高差异化好机会"。
+   */
+  const competitionEstimate = demandUsable
+    ? Math.max(0, Math.min(100, Math.round(densityScore * 0.55 + (100 - demand.demandScore) * 0.45)))
+    : densityScore
+
   const notes = [four?.relevanceNote, espSnap?.relevanceNote].filter(Boolean) as string[]
   if (four && !fourOk && espSnap) notes.push('4imprint 没取到数据，价格带按 ESP 样本价算')
+  if (!demandSources.some((s) => s.ok)) notes.push('分销商目录这次都没取到，需求侧无数据')
 
   // 没有 4imprint 条目时，用 ESP 样本顶上，保证 AI 至少看得到竞品标题和价格
   const items: MarketItem[] = fourOk
@@ -356,9 +423,10 @@ export async function probeWithDiag(
       densityScore,
       spreadScore,
       diffEstimate,
-      competitionEstimate: densityScore,
+      competitionEstimate,
       ...(notes.length ? { relevanceNote: notes.join('；') } : {}),
       ...(espSnap ? { esp: espSnap } : {}),
+      ...(demandUsable ? { demand } : {}),
       fetchedAt: new Date().toISOString(),
     },
   }

@@ -53,10 +53,63 @@ export interface Evaluation {
       priceLow: number | null
       priceHigh: number | null
       median: number | null
+      /** 我们自己产品的形态：set 套装 / single 单件（形态不同不能直接比价） */
+      productForm?: 'set' | 'single' | 'unknown'
+      /** 形态一致的样本条数 */
+      sameFormCount?: number
+      /** 形态一致样本的价格带（比价用这个，不是上面的 priceLow/High） */
+      sameFormPriceLow?: number | null
+      sameFormPriceHigh?: number | null
+      sameFormMedian?: number | null
+      sameFormMin?: number | null
+      sameFormMax?: number | null
       /** 站点返回的是泛匹配兜底列表，密度不可信 */
       fallback?: boolean
       relevanceNote?: string
-      samples: Array<{ title: string; priceMin: number; productNo?: string; url: string }>
+      samples: Array<{
+        title: string
+        priceMin: number
+        productNo?: string
+        form?: 'set' | 'single' | 'unknown'
+        url: string
+      }>
+    }
+    /**
+     * 分销商需求侧证据（多家分销商目录）。
+     * 我们的货卖给分销商，所以"几家在卖、各多少条"比"供应商有多少"更接近生意真相。
+     */
+    demand?: {
+      /** 有几家在卖同类 */
+      carriers: number
+      /** 试过的分销商家数 */
+      checked: number
+      /** 其中抓取成功的家数 */
+      reachable: number
+      /** 单家最多同类条数 */
+      bestCount: number
+      /** 需求强度分（0-100） */
+      demandScore: number
+      /** 中文一句话结论 */
+      note: string
+      priceLow: number | null
+      priceHigh: number | null
+      sources: Array<{
+        id: string
+        name: string
+        ok: boolean
+        total: number | null
+        matched: number
+        sampleSize: number
+        priceLow: number | null
+        priceHigh: number | null
+        error?: string
+        samples: Array<{
+          title: string
+          priceMin: number
+          form?: 'set' | 'single' | 'unknown'
+          url: string
+        }>
+      }>
     }
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
     fetchedAt: string

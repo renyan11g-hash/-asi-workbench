@@ -43,9 +43,52 @@ export interface Evaluation {
       priceLow: number | null
       priceHigh: number | null
       median: number | null
+      /** 我们自己产品的形态：set 套装 / single 单件 */
+      productForm?: 'set' | 'single' | 'unknown'
+      sameFormCount?: number
+      /** 形态一致样本的价格带（比价只能用这个） */
+      sameFormPriceLow?: number | null
+      sameFormPriceHigh?: number | null
+      sameFormMedian?: number | null
+      sameFormMin?: number | null
+      sameFormMax?: number | null
       fallback?: boolean
       relevanceNote?: string
-      samples: Array<{ title: string; priceMin: number; productNo?: string; url: string }>
+      samples: Array<{
+        title: string
+        priceMin: number
+        productNo?: string
+        form?: 'set' | 'single' | 'unknown'
+        url: string
+      }>
+    }
+    /** 分销商需求侧证据（多家分销商目录）；旧评估没有 */
+    demand?: {
+      carriers: number
+      checked: number
+      reachable: number
+      bestCount: number
+      demandScore: number
+      note: string
+      priceLow: number | null
+      priceHigh: number | null
+      sources: Array<{
+        id: string
+        name: string
+        ok: boolean
+        total: number | null
+        matched: number
+        sampleSize: number
+        priceLow: number | null
+        priceHigh: number | null
+        error?: string
+        samples: Array<{
+          title: string
+          priceMin: number
+          form?: 'set' | 'single' | 'unknown'
+          url: string
+        }>
+      }>
     }
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
     fetchedAt: string

@@ -15,6 +15,10 @@ export interface MarketSnapshotLike {
   matched?: number
   priceLow?: number | null
   priceHigh?: number | null
+  demand?: {
+    carriers: number
+    reachable: number
+  }
   esp?: {
     total: number
     matchedSample?: number
@@ -54,16 +58,23 @@ export function formatEspCategories(snap: MarketSnapshotLike, limit = 3): string
 
 /**
  * 一行紧凑写法，给列表/卡片用：
- *   有 ESP 数据 → "ESP 全站 779 款 · 4imprint 3/28"
+ *   有 ESP 数据 → "ESP 全站 779 款 · 分销商 2/3 家在卖 · 4imprint 3/28"
  *   没有 ESP（老评估）→ "4imprint 3/28 条同类"
  */
 export function formatMarketSources(snap: MarketSnapshotLike): string {
   const esp = formatEspHits(snap)
-  const four = `${formatMarketHits(snap)}`
-  if (!esp) return four
-  // 4imprint 一条都没取到时不显示 "0/0"
-  if (!(snap.total > 0)) return esp
-  return `${esp} · 4imprint ${four}`
+  const four = formatMarketHits(snap)
+  const parts: string[] = []
+  if (esp) parts.push(esp)
+  const demand = snap.demand
+  if (demand && demand.reachable > 0) {
+    parts.push(`分销商 ${demand.carriers}/${demand.reachable} 家在卖`)
+  }
+  if (parts.length) {
+    if (snap.total > 0) parts.push(`4imprint ${four}`)
+    return parts.join(' · ')
+  }
+  return four
 }
 
 /** 价格带的来源标签：ESP 样本价 / 4imprint 目录价 */

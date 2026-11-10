@@ -209,7 +209,8 @@ describe('probeWithDiag — 两路合并', () => {
     // 合并后按 ESP 的 5000 条口径 → 34 分
     expect(s!.esp?.total).toBe(5000)
     expect(s!.densityScore).toBe(34)
-    expect(s!.competitionEstimate).toBe(34)
+    // 竞争分现在还要叠加需求侧（4imprint 算 1 家 carrier），所以不再等于密度分
+    expect(s!.competitionEstimate).toBeLessThan(50)
     expect(s!.diffEstimate).toBeLessThan(60)
     expect(s!.esp?.items[0].url).toContain('/ProductDetails/?productId=')
   })
@@ -313,6 +314,52 @@ describe('probeWithDiag — 两路合并', () => {
     const diag = await probeEspWithDiag(['bamboo notebook'], 5000, opts)
     expect(diag.snapshot).toBeNull()
     expect(diag.error).toBeTruthy()
+  })
+
+  it('多家分销商都在卖同类时，竞争分被需求拉低（不能只报"供给少＝好机会"）', async () => {
+    const qlp = `<span class="js-total-results">20 Items</span>
+      <div class="prod-box-cat"><a href="/notebook-sets/a.htm" class="prod-box-cat__info-title">Bamboo Notebook Gift Set</a>
+      <p class="prod-box__info-price">As Low As <strong>$7.20</strong> ea.</p></div>
+      <div class="prod-box-cat"><a href="/notebook-sets/b.htm" class="prod-box-cat__info-title">Bamboo Notebook and Pen Set</a>
+      <p class="prod-box__info-price">As Low As <strong>$5.90</strong> ea.</p></div>
+      <div class="prod-box-cat"><a href="/notebook-sets/c.htm" class="prod-box-cat__info-title">Bamboo Journal Notebook Kit</a>
+      <p class="prod-box__info-price">As Low As <strong>$6.40</strong> ea.</p></div>`
+    mockFetch([
+      ['4imprint.com', { body: rssPage([{ title: 'Bamboo Notebook', min: 3.2, max: 4.1 }]) }],
+      ['qualitylogoproducts.com', { body: qlp }],
+      ['espwebsite.com', { body: espPage({ total: '5,000+', items: NB_ITEMS }) }],
+    ])
+    const { probeWithDiag } = loadProbe()
+    const diag = await probeWithDiag(['bamboo notebook'], 5000, opts)
+    const s = diag.snapshot!
+    expect(s.demand).toBeTruthy()
+    // 4imprint 也算一家分销商：它 1 条 + QLP 3 条 = 2 家在卖
+    expect(s.demand!.carriers).toBe(2)
+    expect(s.demand!.demandScore).toBeGreaterThanOrEqual(45)
+    // 供给密度 34（ESP 5000 条），但分销商在卖 → 竞争更难，分更低
+    expect(s.densityScore).toBe(34)
+    expect(s.competitionEstimate).toBeLessThan(45)
+    expect(
+      s.demand!.sources.find((x) => x.id === 'qlp')?.items.some((i) => i.url.includes('qualitylogoproducts.com/notebook-sets/'))
+    ).toBe(true)
+  })
+
+  it('不在卖（0 家）时需求分很低，交给闸门压总分', async () => {
+    mockFetch([
+      // 4imprint 目录里也没有同类（否则它自己就算一家 carrier）
+      ['4imprint.com', { body: rssPage([{ title: 'Ceramic Mug', min: 3.2, max: 4.1 }]) }],
+      [
+        'qualitylogoproducts.com',
+        { body: '<span class="js-total-results">0 Items</span><div class="prod-box-cat"></div>' },
+      ],
+      ['espwebsite.com', { body: espPage({ total: '30+', items: NB_ITEMS }) }],
+    ])
+    const { probeWithDiag } = loadProbe()
+    const s = (await probeWithDiag(['bamboo notebook'], 5000, opts)).snapshot!
+    expect(s.demand!.carriers).toBe(0)
+    expect(s.demand!.demandScore).toBe(20)
+    // 供给少 → 密度分高，但需求为 0 会在 composeScore 里封顶（见 distributor-probe 测试）
+    expect(s.densityScore).toBeGreaterThan(80)
   })
 
   it('同一个搜索词在 30 分钟内只用抓一次页面（批量选品不重复打站点）', async () => {

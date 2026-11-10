@@ -149,30 +149,75 @@ Evaluate the 1688 item for fit with US promotional products market.
 Respond with STRICT JSON only (no markdown, no commentary).`
 
   const esp = market?.esp
+  const formLabel = (f?: string) => (f === 'set' ? '套装 (multi-piece set)' : f === 'single' ? '单件 (single item)' : '形态未判定')
   const espBlock =
     esp && esp.total > 0
-      ? `SOURCE A — ASI / ESP SUPPLIER NETWORK (supplier.espwebsite.com — the combined catalogue of ASI's ESP supplier sites, i.e. the WHOLE ASI supplier universe; THIS is the broad view of the market)
+      ? `SOURCE A — ASI / ESP SUPPLIER NETWORK (supplier.espwebsite.com — the combined catalogue of ASI's ESP supplier sites, i.e. the WHOLE ASI supplier universe; THIS is the broad view of SUPPLY)
 - Search terms used: ${esp.queries.join(' | ')}
 - Matching products across the whole ASI ESP network: ${esp.total}+ (platform-reported; treat as "at least this many" — the scoring uses the LARGEST of the per-term counts, i.e. the most crowded reading)
 - Per search term on ESP: ${esp.byQuery.map((q) => `"${q.query}" → ${q.total} matches (${q.matched}/${q.sampleSize} same-type in the top results)`).join(' · ') || 'n/a'}
 - ASI category breakdown of those matches: ${esp.categories.map((c) => `${c.name} ${c.count}`).join(' · ') || 'n/a'}
 - Same-type verification on the sampled results (n=${esp.sampleSize}, relevance tokens: ${esp.matchTokens.join(', ') || 'n/a'}): ${esp.matchedSample} of them are genuinely the same product type
-- Sample bulk-tier list price band (same-type hits): $${esp.price?.p25 ?? '?'} – $${esp.price?.p75 ?? '?'} (median $${esp.price?.median ?? '?'}, overall $${esp.price?.min ?? '?'} – $${esp.price?.max ?? '?'})
-- Cheapest same-type competitors (real ASI catalogue listings):
+- OUR product form: ${formLabel(esp.productForm)}
+- Same-form price band (${esp.sameFormCount ?? 0} listings that are the SAME form as ours — THIS is the only band you may use to judge our price): ${
+          esp.priceSameForm
+            ? `$${esp.priceSameForm.p25} – $${esp.priceSameForm.p75} (median $${esp.priceSameForm.median}, overall $${esp.priceSameForm.min} – $${esp.priceSameForm.max})`
+            : 'not enough same-form samples — therefore NO reliable price comparison exists; do not claim our price is high or low'
+        }
+- Whole-catalogue price band of all same-type hits (MIXES single items with multi-piece sets — directional only, NEVER quote it as "the market price"): $${esp.price?.p25 ?? '?'} – $${esp.price?.p75 ?? '?'} (median $${esp.price?.median ?? '?'}, overall $${esp.price?.min ?? '?'} – $${esp.price?.max ?? '?'})
+- Cheapest same-type competitors on ESP (label = form):
 ${esp.items
   .slice(0, 6)
-  .map((i) => `  · ${i.title}${i.productNo ? ` [${i.productNo}]` : ''} — $${i.priceMin}${i.url ? ` — ${i.url}` : ''}`)
+  .map(
+    (i) =>
+      `  · [${i.form === 'set' ? 'SET' : 'SINGLE'}] ${i.title}${i.productNo ? ` [${i.productNo}]` : ''} — $${i.priceMin}${i.url ? ` — ${i.url}` : ''}`
+  )
   .join('\n')}
 ${esp.relevanceNote ? `- Caveat from the probe: ${esp.relevanceNote}\n` : ''}
 `
       : esp
-        ? `SOURCE A — ASI / ESP SUPPLIER NETWORK: searched "${esp.queries.join(' | ')}" and the whole ASI ESP network returned NO matching products. Treat this as genuinely scarce supply, but double-check with "cons" whether it is scarce because the product is unusual or because the English search term is wrong.\n\n`
+        ? `SOURCE A — ASI / ESP SUPPLIER NETWORK: searched "${esp.queries.join(' | ')}" and the whole ASI ESP network returned NO matching products. Treat this as genuinely scarce supply, but double-check in "cons" whether it is scarce because the product is unusual or because the English search term is wrong.\n\n`
         : ''
 
-  const marketBlock = market
-    ? `OVERSEAS MARKET EVIDENCE — two independent REAL sources (catalogue data, not guesses)
+  /*
+   * 需求侧：我们的货卖给分销商，所以"分销商在不在卖"比"供应商在不在做"更接近生意。
+   * 必须把每家分开列出来，避免又变成"只看一家"。
+   */
+  const demand = market?.demand
+  const demandBlock = demand
+    ? `SOURCE C — DISTRIBUTOR DEMAND (${demand.sources.length} US promotional-distributor catalogues searched; we SELL TO distributors, so their shelves are the demand signal)
+${demand.sources
+  .map(
+    (s) =>
+      `- ${s.name}: ${
+        s.ok
+          ? `${s.total != null ? `${s.total} results, ` : ''}${s.matched} same-type${s.sampleSize ? ` (of ${s.sampleSize} sampled)` : ''}${
+              s.price?.p25 != null ? `, bulk list $${s.price.p25}–$${s.price.p75}` : ''
+            }${
+              s.items.length
+                ? `\n${s.items
+                    .slice(0, 4)
+                    .map(
+                      (i) =>
+                        `    · [${i.form === 'set' ? 'SET' : 'SINGLE'}] ${i.title} — $${i.priceMin}${i.url ? ` — ${i.url}` : ''}`
+                    )
+                    .join('\n')}`
+                : ''
+            }`
+          : `not reachable (${s.error ?? 'error'})`
+      }`
+  )
+  .join('\n')}
+- Distributors carrying a same-type product: ${demand.carriers}/${demand.checked}
+- Demand strength score (0-100, computed): ${demand.demandScore}
+- Conclusion drawn from the demand side: ${demand.note}
+`
+    : ''
 
-${espBlock}SOURCE B — 4IMPRINT (ONE US distributor's catalogue — narrow, never a market verdict on its own)
+  const marketBlock = market
+    ? `OVERSEAS MARKET EVIDENCE — three independent REAL sources (catalogue data, not guesses)
+
+${espBlock}SOURCE B — 4IMPRINT (also just ONE distributor — see SOURCE C for the multi-distributor picture)
 - Raw hits: ${market.total} (RSS caps around 28 per query, so treat as "at least this many")
 - Same-product hits after matching on keywords [${market.matchTokens.join(', ') || 'n/a'}]: ${market.matched}
 - Density figure from this source only (normalised to a 28-item sample): ${market.densityCount}
@@ -183,14 +228,15 @@ ${market.items
   .map((i) => `  · ${i.title} — $${i.priceMin} - $${i.priceMax}`)
   .join('\n')}
 
-MARKET-DERIVED ROUGH ESTIMATES (already computed from the sources above; differentiation is driven by SOURCE A): differentiation ≈ ${market.diffEstimate}, competition ≈ ${market.competitionEstimate}
+${demandBlock}MARKET-DERIVED ROUGH ESTIMATES (already computed from the sources above): differentiation ≈ ${market.diffEstimate} (supply only), competition ≈ ${market.competitionEstimate} (supply crowding + distributor demand)
 ${market.relevanceNote ? `- Probing caveats: ${market.relevanceNote}\n` : ''}
 HOW TO USE THIS EVIDENCE:
-- "differentiation" and "competition" MUST be judged on SOURCE A (the whole ASI ESP supplier network), NOT on 4imprint alone. 4imprint is a single distributor: a product with 1 hit there can still have hundreds of ASI suppliers making it. Never call a category "thin / niche" just because 4imprint is thin.
+- "differentiation" MUST be judged on SOURCE A (the whole ASI ESP supplier network), NOT on 4imprint alone. 4imprint is a single distributor: a product with 1 hit there can still have hundreds of ASI suppliers making it. Never call a category "thin / niche" just because 4imprint is thin.
+- "competition" MUST combine SOURCE A (how many suppliers make it) with SOURCE C (how many distributors already sell it). Many distributors selling it = a real, contested market; say so plainly instead of promising an easy niche.
+- DEMAND IS THE GATEKEEPER: our goods are sold TO distributors. If SOURCE C shows 0 distributors carrying anything similar, say it in "issues" and in "summary" ("分销商目录里没人卖同类，需求未验证") — do not present it as a hidden opportunity. If several distributors carry it, the product is validated but contested.
 - Land within ±15 of the market-derived estimates above; if you go outside that window, explain in one short Chinese sentence inside "cons" why this product is materially different from the sample.
-- Read the two sources together and say the conclusion out loud in "summary": e.g. "4imprint 上少见，但 ESP 全站 N 款同类，属大众品类，差异化只能靠设计/材质" or, when both are thin, "两个来源都只有个位数，属真空品类".
-- "priceAdviceUsd" MUST come from the real price bands above (not a guess): SOURCE B (4imprint) is the primary reference because those are real tiered distributor prices; use SOURCE A's wider band to see where the whole ASI network sits. Give a sensible sub-range for THIS product's tier.
-- Compare OUR landed cost / planned selling price against both bands. If our price sits above SOURCE A's p75 (the upper quarter of the whole ASI network), say so in "issues" — that is the single most common reason a promo product fails.
+- PRICE — read this carefully: never compare our multi-piece SET against a single item. Use ONLY the same-form band. A set is supposed to cost more than a single notebook; quoting the whole-catalogue band as "the market price" is wrong and misleading. If there is no same-form band, write "缺同形态可比样本" instead of a price verdict.
+- "priceAdviceUsd" MUST come from the real price bands above (not a guess): 4imprint's tiered list prices are the most reliable reference; cross-check with SOURCE C's distributor prices. Give a sensible sub-range for THIS product's tier.
 - If a sample is obviously off-target (different product type), say so in "cons" and still score on product merits.
 
 `

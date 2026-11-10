@@ -18,7 +18,16 @@
  * 20 条足够算价格四分位，总数用平台给的那个数，不做线性外推。
  */
 
-import { isRelevant, needHits, pickMatchTokens, priceBandOf, tokensOf } from './market-text'
+import {
+  formOfTitle,
+  isRelevant,
+  needHits,
+  pickMatchTokens,
+  priceBandOf,
+  tokensOf,
+  type ProductForm,
+} from './market-text'
+import { fetchWithJinaFallback, type FetchOutcome } from './web-fetch'
 
 export interface EspItem {
   title: string
@@ -30,6 +39,8 @@ export interface EspItem {
   url: string
   /** 卡片上的短描述（截断，仅用于给 AI 判断同款） */
   description?: string
+  /** 形态：套装 / 单件（价格带必须按形态分组才可比） */
+  form?: ProductForm
 }
 
 export interface EspCategory {
@@ -53,6 +64,15 @@ export interface EspSnapshot {
   categories: EspCategory[]
   items: EspItem[]
   price: { min: number; p25: number; median: number; p75: number; max: number } | null
+  /**
+   * 我们的产品形态（套装/单件）。ESP 全站价格带之所以宽，就是因为里面混着单件和套装；
+   * 只有形态一致的那批才拿来比价。
+   */
+  productForm?: ProductForm
+  /** 形态一致的同类条数 */
+  sameFormCount?: number
+  /** 形态一致的同类价格带（比价用这个，不是 price） */
+  priceSameForm?: { min: number; p25: number; median: number; p75: number; max: number } | null
   /** 供给密度分：全站匹配越多越低（0-100） */
   densityScore: number
   /** 站点没给真匹配、返回了热门兜底列表 */
@@ -84,12 +104,12 @@ export interface EspProbeDiag {
 export interface EspProbeOptions {
   coreKeywords?: string[]
   productType?: string
+  /** 我们自己产品的形态（套装/单件）；给了才会额外算"同形态价格带" */
+  productForm?: ProductForm
 }
 
 const ENDPOINT = 'https://supplier.espwebsite.com/ProductResults/?SearchTerms='
 const DETAIL_BASE = 'https://supplier.espwebsite.com/ProductDetails/?productId='
-const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
 const decode = (s: string) =>
   s
@@ -151,6 +171,7 @@ export function parseEspResults(html: string): {
       priceMin: Math.round(price * 1000) / 1000,
       url: productId ? `${DETAIL_BASE}${productId}&PCUrl=1` : '',
       ...(description ? { description: description.slice(0, 240) } : {}),
+      form: formOfTitle(title),
     })
   }
 
@@ -170,14 +191,6 @@ export function espDensityScore(total: number): number {
   if (total <= 10000) return 34
   return 22
 }
-
-type SimpleResponse = { ok: boolean; status?: number; text(): Promise<string> }
-type SimpleFetch = (
-  url: string,
-  init?: { signal?: unknown; headers?: Record<string, string> }
-) => Promise<SimpleResponse>
-
-const nativeFetch = (globalThis as unknown as { fetch?: SimpleFetch }).fetch
 
 /**
  * 单个搜索词的页面缓存（30 分钟）。
@@ -211,68 +224,20 @@ export function clearEspCache() {
   pageCache.clear()
 }
 
-/**
- * 抓一页搜索结果。
- *
- * 2026-11-10 实测：从 Render（机房 IP）直连 supplier.espwebsite.com 会被 Cloudflare 挡成
- * HTTP 403，而本机（住宅 IP）直连是 200。所以这里先直连，失败就退到 r.jina.ai 渲染服务
- * （带 x-return-format: html 时它返回的是**原始 HTML**，解析逻辑一行都不用改）。
- * 这类站点没有公开 API，jina 是当前唯一稳定通路；它失败时评估照常进行，只是少了这一路证据。
- */
-const JINA_PREFIX = 'https://r.jina.ai/'
-
-type FetchOutcome = { ok: boolean; text?: string; status?: number; error?: string; via: 'direct' | 'jina' }
-
-async function fetchOnce(
-  url: string,
-  timeoutMs: number,
-  via: 'direct' | 'jina'
-): Promise<FetchOutcome> {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
-  try {
-    const res = await nativeFetch!(url, {
-      signal: ctrl.signal,
-      headers:
-        via === 'jina'
-          ? { 'User-Agent': UA, Accept: 'text/html', 'x-return-format': 'html' }
-          : {
-              'User-Agent': UA,
-              Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9',
-            },
-    })
-    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}`, via }
-    const text = await res.text()
-    return { ok: true, status: res.status, text, via }
-  } catch (e) {
-    const msg = (e as Error)?.message ?? String(e)
-    return { ok: false, error: /abort/i.test(msg) ? `超时（${timeoutMs}ms）` : msg, via }
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 /** 页面到底是不是搜索结果页（防止把 Cloudflare 挑战页当成"0 条结果"） */
-const looksLikeResultsPage = (html: string) =>
+export const looksLikeEspResultsPage = (html: string) =>
   html.includes('ltAlgoliaProductCount') || html.includes('RptProductsGrid') || html.includes('prodTile')
 
+/**
+ * 抓一页搜索结果：直连拿不到（Cloudflare 403 / 挑战页）就走 jina，
+ * 具体兜底逻辑在 web-fetch.ts，这里只关心"这一页是不是真的结果页"。
+ */
 async function fetchPage(query: string, timeoutMs: number): Promise<FetchOutcome> {
-  if (!nativeFetch) return { ok: false, error: '运行时没有 fetch（Node 版本过低）', via: 'direct' }
-  const target = ENDPOINT + encodeURIComponent(query) + '&PCUrl=1'
-
-  const direct = await fetchOnce(target, timeoutMs, 'direct')
-  if (direct.ok && direct.text && looksLikeResultsPage(direct.text)) return direct
-
-  // 直连被挡 / 拿到的是挑战页 → 走 jina 渲染（给足时间，它要自己去抓一次）
-  const jina = await fetchOnce(JINA_PREFIX + target, Math.max(timeoutMs, 15000), 'jina')
-  if (jina.ok && jina.text && looksLikeResultsPage(jina.text)) return jina
-
-  // 都不行：优先报告直连的状态码（更能说明是被挡还是页面变了）
-  if (direct.ok) return { ...jina, error: jina.error ?? direct.error }
-  return direct.error ? direct : jina
+  return fetchWithJinaFallback(ENDPOINT + encodeURIComponent(query) + '&PCUrl=1', {
+    timeoutMs,
+    looksOk: looksLikeEspResultsPage,
+  })
 }
-
 /** 带诊断的 ESP 探测：失败也能说清失败在哪一步 */
 export async function probeEspWithDiag(
   queries: string[],
@@ -348,6 +313,16 @@ export async function probeEspWithDiag(
   const price = priceBandOf(basis.map((i) => i.priceMin))
 
   /*
+   * 同形态价格带：三件套的价不能拿单本笔记本的价去比。
+   * 只有我们自己形态已知、且形态一致的样本够 3 条时才给这一档；
+   * 样本不够就留空——宁可告诉 AI "没有可比样本"，也不给一个会误导的区间。
+   */
+  const productForm = opts.productForm
+  const sameFormItems =
+    productForm && productForm !== 'unknown' ? basis.filter((i) => (i.form ?? 'single') === productForm) : []
+  const priceSameForm = sameFormItems.length >= 3 ? priceBandOf(sameFormItems.map((i) => i.priceMin)) : null
+
+  /*
    * 兜底识别：站点对完全没命中的词会返回 0 条（total=0）；
    * 但 word 被拆开泛匹配时（如 "not a product"）会给一大坨热门品——
    * 这种情况下 total 是虚的，必须在 note 里说清楚，别让 AI 把它当成"竞争激烈"的证据。
@@ -387,6 +362,9 @@ export async function probeEspWithDiag(
       categories,
       items: sorted.slice(0, 12),
       price,
+      ...(productForm && productForm !== 'unknown'
+        ? { productForm, sameFormCount: sameFormItems.length, priceSameForm }
+        : {}),
       densityScore,
       fallback,
       ...(relevanceNote ? { relevanceNote } : {}),

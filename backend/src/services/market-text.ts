@@ -110,3 +110,41 @@ export function spreadScoreOf(p25: number, p75: number, median: number): number 
   if (spread >= 0.25) return 42
   return 30
 }
+
+/*
+ * ---------- 形态识别（套装 vs 单件） ----------
+ *
+ * 为什么必须有：ESP 全站搜 "bamboo notebook" 出来的价格带是 0.86–35.71 美元，
+ * 因为里面既有单本笔记本，也有五六件套的礼盒。拿这个区间判断"我们的三件套贵不贵"
+ * 毫无意义——三件套本来就该比单件贵。
+ * 所以价格带必须区分形态：只有形态一致（套装 vs 单件）的样本才拿来比价，
+ * 形态不同的只作为"这个品类的价格范围"参考。
+ */
+
+export type ProductForm = 'set' | 'single' | 'unknown'
+
+/** 英文标题里的"套装/组合"信号：Set / Kit / Combo / Bundle / 3-in-1 / 3-Piece / Boxed / 带配件 */
+const SET_RE =
+  /\b(sets?|kits?|combos?|bundles?|collection|boxed)\b|\bgift\s*[- ]?(box|set)\b|\b\d+\s*[- ]?(in[- ]?1|piece|pcs|pc|pack)\b|\b\d+\s*pcs?\b|\bwith\s+(?:a\s+)?(?:pen|pens|stylus|keychain|bottle|tumbler|mug|notepad|blanket|flash\s?drive|usb)\b|\band\s+(?:pen|pens|stylus)\b/i
+/** 中文里的"套装"信号：套装/礼盒/三件套/一整套 */
+const SET_ZH_RE = /套装|套盒|礼盒|三件套|两件套|二件套|四件套|五件套|组合装|一整套|全套|套件|礼包/
+const SINGLE_ZH_RE = /单件|单个|单只|单卖|单本|单支/
+
+/** 从英文标题判断形态（拿不到信号就当已知：默认单件，因为标题没写套装基本就是单个） */
+export function formOfTitle(title: string): ProductForm {
+  return SET_RE.test(title) ? 'set' : 'single'
+}
+
+/** 从中文标题/描述判断我们自己的产品形态 */
+export function formOfSource(title: string, description = ''): ProductForm {
+  const text = `${title} ${description}`
+  if (SET_ZH_RE.test(text)) return 'set'
+  if (SINGLE_ZH_RE.test(text)) return 'single'
+  // 中文没写 → 看英文标题（amazonTitle 之类勾不到，这里只看中文，交给调用方兜底）
+  return 'unknown'
+}
+
+/** 形态的中文标签（界面/提示词共用） */
+export function formLabel(form: ProductForm): string {
+  return form === 'set' ? '套装' : form === 'single' ? '单件' : '形态未知'
+}

@@ -19,6 +19,7 @@ import { buildAssistantPrompt, buildCatalogKeywordsPrompt, buildChatEvaluationPr
 import { recommendImprintMethods } from './imprint-recommend'
 import { composeScore, parseBreakdown, scoreBand } from './eval-score'
 import { probeWithDiag, type MarketSnapshot } from './market-probe'
+import { formOfSource, formOfTitle } from './market-text'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
@@ -147,7 +148,11 @@ function normalizeEvaluation(
           competition: anchorTo(parsed.competition, market.competitionEstimate, 15),
         }
       : parsed
-  const composed = breakdown ? composeScore(breakdown) : null
+  // 分销商目录里没人在卖同类 → 需求未验证，总分封顶 55（详见 eval-score 的闸门规则）
+  const demandMissing = Boolean(
+    market?.demand && market.demand.sources.some((s) => s.ok) && market.demand.carriers === 0
+  )
+  const composed = breakdown ? composeScore(breakdown, { demandMissing }) : null
   const score = composed ? composed.score : aiScore
 
   const verdictByScore = (score >= 75 ? 'GO' : score >= 55 ? 'MAYBE' : 'NO') as Evaluation['verdict']
@@ -166,8 +171,9 @@ function normalizeEvaluation(
 
   const marketNote = market
     ? [
-        market.esp
-          ? `ESP 全站 ${market.esp.total} 款匹配`
+        market.esp ? `ESP 全站 ${market.esp.total} 款` : '',
+        market.demand
+          ? `分销商 ${market.demand.carriers}/${market.demand.sources.filter((s) => s.ok).length} 家在卖`
           : '',
         market.price
           ? `4imprint ${market.matched}/${market.total} 条同类 · list $${market.price.p25}–$${market.price.p75}`
@@ -226,13 +232,57 @@ function normalizeEvaluation(
                   priceLow: market.esp.price?.p25 ?? null,
                   priceHigh: market.esp.price?.p75 ?? null,
                   median: market.esp.price?.median ?? null,
+                  /** 我们的产品形态（套装/单件）+ 形态一致的样本数与价格带 */
+                  ...(market.esp.productForm
+                    ? {
+                        productForm: market.esp.productForm,
+                        sameFormCount: market.esp.sameFormCount ?? 0,
+                        sameFormPriceLow: market.esp.priceSameForm?.p25 ?? null,
+                        sameFormPriceHigh: market.esp.priceSameForm?.p75 ?? null,
+                        sameFormMedian: market.esp.priceSameForm?.median ?? null,
+                        sameFormMin: market.esp.priceSameForm?.min ?? null,
+                        sameFormMax: market.esp.priceSameForm?.max ?? null,
+                      }
+                    : {}),
                   ...(market.esp.fallback ? { fallback: true } : {}),
                   ...(market.esp.relevanceNote ? { relevanceNote: market.esp.relevanceNote } : {}),
-                  samples: market.esp.items.slice(0, 6).map((i) => ({
+                  samples: market.esp.items.slice(0, 8).map((i) => ({
                     title: i.title,
                     priceMin: i.priceMin,
                     ...(i.productNo ? { productNo: i.productNo } : {}),
+                    ...(i.form ? { form: i.form } : {}),
                     url: i.url,
+                  })),
+                },
+              }
+            : {}),
+          ...(market.demand
+            ? {
+                demand: {
+                  carriers: market.demand.carriers,
+                  checked: market.demand.sources.length,
+                  reachable: market.demand.sources.filter((s) => s.ok).length,
+                  bestCount: market.demand.bestCount,
+                  demandScore: market.demand.demandScore,
+                  note: market.demand.note,
+                  priceLow: market.demand.price?.p25 ?? null,
+                  priceHigh: market.demand.price?.p75 ?? null,
+                  sources: market.demand.sources.map((s) => ({
+                    id: s.id,
+                    name: s.name,
+                    ok: s.ok,
+                    total: s.total,
+                    matched: s.matched,
+                    sampleSize: s.sampleSize,
+                    priceLow: s.price?.p25 ?? null,
+                    priceHigh: s.price?.p75 ?? null,
+                    ...(s.error ? { error: s.error } : {}),
+                    samples: s.items.slice(0, 4).map((i) => ({
+                      title: i.title,
+                      priceMin: i.priceMin,
+                      ...(i.form ? { form: i.form } : {}),
+                      url: i.url,
+                    })),
                   })),
                 },
               }
@@ -515,7 +565,7 @@ export async function evaluateSource(
 ): Promise<Evaluation> {
   if (!settings.aiApiKey?.trim()) return heuristicEvaluate(source, settings)
 
-  // 先探一次海外市场（4imprint 真实目录价）：差异化/竞争有据可依，价格不用瞎猜
+  // 先探一次海外市场（ESP 供给侧 + 多家分销商需求侧）：差异化/竞争有据可依，价格不用瞎猜
   let market: MarketSnapshot | null = null
   let marketError = ''
   try {
@@ -523,9 +573,18 @@ export async function evaluateSource(
     if (!terms.queries.length) {
       marketError = terms.why || '没能把品名翻成英文搜索词'
     } else {
+      /*
+       * 形态必须先认出来：三件套 vs 单件 的价格不能直接比，
+       * 否则"我们的套装比别人的单本贵"会被误判成报价过高。
+       * 中文标题说了算；中文没写就看 AI 给的英文品类名。
+       */
+      const fromZh = formOfSource(source.sourceTitle, source.description)
+      const productForm =
+        fromZh !== 'unknown' ? fromZh : terms.productType ? formOfTitle(terms.productType) : undefined
       const diag = await probeWithDiag(terms.queries, 9000, {
         coreKeywords: terms.coreKeywords,
         productType: terms.productType,
+        productForm,
       })
       market = diag.snapshot
       if (!market) marketError = diag.error ?? '未取到海外同款数据'
