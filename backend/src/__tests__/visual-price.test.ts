@@ -102,7 +102,7 @@ describe('buildVisualPriceCheck', () => {
     expect(mockChat).not.toHaveBeenCalled()
   })
 
-  it('只有视觉确认的同款进价格带；低把握的"同款"不算', async () => {
+  it('只确认 2 条时不给价格带（样本太少，1-2 条很容易撞上极端值）', async () => {
     mockChat.mockResolvedValue({
       results: [
         { n: 1, same: true, confidence: 0.92, reason: '三件套礼盒，结构一致' },
@@ -119,11 +119,60 @@ describe('buildVisualPriceCheck', () => {
       ])
     )
     expect(r?.checked).toBe(2)
+    // 低把握不算同款 → 只剩 1 条可用 → 不给价格带
     expect(r?.sameCount).toBe(1)
-    expect(r?.price?.p25).toBe(12)
+    expect(r?.price).toBeNull()
+    expect(r?.note).toContain('样本太少')
     expect(r?.items.find((i) => i.title === 'Maybe Same Set')?.same).toBe(true)
-    // 低把握被过滤，只剩一条 → 价格带只由 12 美元那条决定
-    expect(r?.price?.max).toBe(12)
+  })
+
+  it('价格明显异常的同款（远低于同类中位）被剔除，不参与价格带', async () => {
+    mockChat.mockResolvedValue({
+      results: [
+        { n: 1, same: true, confidence: 0.97, reason: '同款' },
+        { n: 2, same: true, confidence: 0.95, reason: '同款' },
+        { n: 3, same: true, confidence: 0.95, reason: '同款' },
+        { n: 4, same: true, confidence: 0.96, reason: '同款但价格明显是供应商填错' },
+      ],
+    })
+    const m = marketWith([
+      ['Cheap Wrong Price', 0.86],
+      ['Set A', 9],
+      ['Set B', 11],
+      ['Set C', 13],
+    ])
+    // 标题同类中位 11 → 0.86 明显异常
+    m.esp!.priceSameForm = { min: 9, p25: 9, median: 11, p75: 13, max: 13 }
+    const r = await buildVisualPriceCheck(settings, ['https://example.com/ours.jpg'], '竹木三件套礼盒（套装）', m)
+    expect(r?.items.find((i) => i.title === 'Cheap Wrong Price')?.suspicious).toBe(true)
+    // 剔除异常后剩 3 条 → 价格带 9-13
+    expect(r?.sameCount).toBe(3)
+    expect(r?.price?.min).toBe(9)
+    expect(r?.price?.max).toBe(13)
+    expect(r?.note).toContain('异常')
+  })
+
+  it('跨来源同款一起算价格带（ESP + 分销商）', async () => {
+    mockChat.mockResolvedValue({
+      results: [
+        { n: 1, same: true, confidence: 0.9 },
+        { n: 2, same: true, confidence: 0.9 },
+        { n: 3, same: true, confidence: 0.9 },
+      ],
+    })
+    const r = await buildVisualPriceCheck(
+      settings,
+      ['https://example.com/ours.jpg'],
+      'x',
+      marketWith(
+        [['ESP A', 8], ['ESP B', 11]],
+        [['QLP A', 14]]
+      )
+    )
+    expect(r?.checked).toBe(3)
+    expect(r?.sameCount).toBe(3)
+    expect(r?.price?.min).toBe(8)
+    expect(r?.price?.max).toBe(14)
   })
 
   it('一条都没确认 → 不给价格，并提示别拿标题价格带下结论', async () => {

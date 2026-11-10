@@ -132,6 +132,8 @@ export interface Evaluation {
         same: boolean
         confidence: number
         reason?: string
+        /** 价格明显异常（远低于同类中位），已从价格带剔除 */
+        suspicious?: boolean
       }>
     }
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>

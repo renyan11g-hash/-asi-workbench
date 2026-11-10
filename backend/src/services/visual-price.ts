@@ -22,6 +22,8 @@ export interface CheckedItem {
   same: boolean
   confidence: number
   reason?: string
+  /** 价格明显异常（远低于同类中位数，多半是供应商数据错误） */
+  suspicious?: boolean
 }
 
 export interface VisualPriceCheck {
@@ -107,29 +109,51 @@ export async function buildVisualPriceCheck(
   }
 
   const byIndex = new Map(verdicts.map((v) => [v.index, v]))
+  /*
+   * 价格异常值过滤：ESP 上确实存在供应商填错价的情况（三件套礼盒挂 $0.86）。
+   * 拿这种"同款但价格离谱"的样本算比价，结论会比没有比价更糟。
+   * 参考基准用标题同类样本的中位数（宽口径，只挡掉数量级不对的），阈值取 30%。
+   */
+  const refMedian = market.esp?.priceSameForm?.median ?? market.esp?.price?.median ?? null
   const items: CheckedItem[] = candidates.map((c) => {
     const v = byIndex.get(c.index)
+    const same = Boolean(v?.same)
+    const bad = Boolean(same && refMedian && c.priceMin < refMedian * 0.3)
     return {
       title: c.title,
       priceMin: c.priceMin,
       url: c.url,
       source: c.source,
       ...(c.image ? { image: c.image } : {}),
-      same: Boolean(v?.same),
+      same,
       confidence: v?.confidence ?? 0,
       ...(v?.reason ? { reason: v.reason } : {}),
+      ...(bad ? { suspicious: true } : {}),
     }
   })
   // 低把握的"同款"不算：宁可样本少，也不要拿错样本算价格
   const confirmed = items.filter((i) => i.same && i.confidence >= 0.6)
-  const price = priceBandOf(confirmed.map((i) => i.priceMin))
+  const usable = confirmed.filter((i) => !i.suspicious)
+  const suspiciousCount = confirmed.length - usable.length
+  /*
+   * 少于 3 条就**不给价格带**：1-2 条样本很容易撞上极端值（实测 2 条都撞上了供应商错价），
+   * 给出去的"精确区间"会直接被当成报价依据，比不给更危险。
+   */
+  const price = usable.length >= 3 ? priceBandOf(usable.map((i) => i.priceMin)) : null
 
-  const note =
-    confirmed.length === 0
-      ? `识图比对 ${items.length} 条候选，没有一条是真同款：本次没有可比价格，别拿标题同类的价格带下结论`
-      : confirmed.length < 3
-        ? `识图只确认了 ${confirmed.length} 条同款（样本偏少），价格带仅供参考`
-        : `识图确认 ${confirmed.length} 条真同款，价格带按这 ${confirmed.length} 条算`
+  const noteParts: string[] = []
+  if (!confirmed.length) {
+    noteParts.push(`识图比对 ${items.length} 条候选，没有一条是真同款：本次没有可比价格，别拿标题同类的价格带下结论`)
+  } else if (suspiciousCount) {
+    noteParts.push(`识图确认 ${confirmed.length} 条同款，其中 ${suspiciousCount} 条价格明显异常（远低于同类中位 ${refMedian}）已剔除`)
+  }
+  if (confirmed.length && !price) {
+    noteParts.push(`可用样本只有 ${usable.length} 条（<3），样本太少不给价格结论`)
+  } else if (price && usable.length < 5) {
+    noteParts.push(`可用样本 ${usable.length} 条，价格带仅作参考`)
+  } else if (price) {
+    noteParts.push(`按 ${usable.length} 条识图同款算价格带`)
+  }
 
-  return { checked: items.length, sameCount: confirmed.length, price, items, note }
+  return { checked: items.length, sameCount: usable.length, price, items, note: noteParts.join('；') }
 }

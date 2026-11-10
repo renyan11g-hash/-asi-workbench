@@ -83,6 +83,7 @@ export interface MarketEvidenceSnap {
       same: boolean
       confidence: number
       reason?: string
+      suspicious?: boolean
     }>
   }
 }
@@ -254,6 +255,7 @@ export function MarketEvidenceBlock({ snap }: { snap: MarketEvidenceSnap }) {
                     it.title
                   )}{' '}
                   — ${it.priceMin} <span className="text-slate-400">（{it.source}）</span>
+                  {it.suspicious ? <span className="text-amber-700"> · 价格异常已剔除</span> : null}
                   {it.reason ? <span className="text-slate-400"> · {it.reason}</span> : null}
                 </div>
               ))}

@@ -311,6 +311,7 @@ function normalizeEvaluation(
                     same: i.same,
                     confidence: i.confidence,
                     ...(i.reason ? { reason: i.reason } : {}),
+                    ...(i.suspicious ? { suspicious: true } : {}),
                   })),
                 },
               }
