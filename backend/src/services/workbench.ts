@@ -294,6 +294,7 @@ function normalizeEvaluation(
                 },
               }
             : {}),
+          ...(market.memberDiscount ? { memberDiscount: market.memberDiscount } : {}),
           ...(market.priceCheck
             ? {
                 priceCheck: {

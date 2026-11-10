@@ -102,7 +102,7 @@ describe('buildVisualPriceCheck', () => {
     expect(mockChat).not.toHaveBeenCalled()
   })
 
-  it('只确认 2 条时不给价格带（样本太少，1-2 条很容易撞上极端值）', async () => {
+  it('只确认 2 条时按偏少样本给价格带（用户要求大致相似即可比价）', async () => {
     mockChat.mockResolvedValue({
       results: [
         { n: 1, same: true, confidence: 0.92, reason: '三件套礼盒，结构一致' },
@@ -122,11 +122,11 @@ describe('buildVisualPriceCheck', () => {
     // 低把握不算同款 → 只剩 1 条可用 → 不给价格带
     expect(r?.sameCount).toBe(1)
     expect(r?.price).toBeNull()
-    expect(r?.note).toContain('样本太少')
+    expect(r?.note).toContain('只确认 1 条同款')
     expect(r?.items.find((i) => i.title === 'Maybe Same Set')?.same).toBe(true)
   })
 
-  it('价格明显异常的同款（远低于同类中位）被剔除，不参与价格带', async () => {
+  it('价格明显异常的同款只标注、不剔除（可能确实是大货价）', async () => {
     mockChat.mockResolvedValue({
       results: [
         { n: 1, same: true, confidence: 0.97, reason: '同款' },
@@ -145,11 +145,11 @@ describe('buildVisualPriceCheck', () => {
     m.esp!.priceSameForm = { min: 9, p25: 9, median: 11, p75: 13, max: 13 }
     const r = await buildVisualPriceCheck(settings, ['https://example.com/ours.jpg'], '竹木三件套礼盒（套装）', m)
     expect(r?.items.find((i) => i.title === 'Cheap Wrong Price')?.suspicious).toBe(true)
-    // 剔除异常后剩 3 条 → 价格带 9-13
-    expect(r?.sameCount).toBe(3)
-    expect(r?.price?.min).toBe(9)
+    // 4 条全部算进价格带（异常只标注）
+    expect(r?.sameCount).toBe(4)
+    expect(r?.price?.min).toBe(0.86)
     expect(r?.price?.max).toBe(13)
-    expect(r?.note).toContain('异常')
+    expect(r?.note).toContain('价格明显低于同类')
   })
 
   it('跨来源同款一起算价格带（ESP + 分销商）', async () => {
@@ -193,7 +193,7 @@ describe('buildVisualPriceCheck', () => {
     )
     expect(r?.price).toBeNull()
     expect(r?.sameCount).toBe(0)
-    expect(r?.note).toContain('没有一条是真同款')
+    expect(r?.note).toContain('没有一条是同款')
   })
 
   it('视觉模型失败 → 降级，不影响评估', async () => {

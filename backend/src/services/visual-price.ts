@@ -146,33 +146,34 @@ export async function buildVisualPriceCheck(
   })
   // 低把握的"同款"不算：宁可样本少，也不要拿错样本算价格
   const confirmed = items.filter((i) => i.same && i.confidence >= 0.6)
-  const usable = confirmed.filter((i) => !i.suspicious)
-  const suspiciousCount = confirmed.length - usable.length
   /*
-   * 少于 3 条就**不给价格带**：1-2 条样本很容易撞上极端值（实测 2 条都撞上了供应商错价），
-   * 给出去的"精确区间"会直接被当成报价依据，比不给更危险。
+   * 价格异常只标注、不剔除：识图已经确认是同类产品，价格低可能确实是大货价或供应商数据粗糙。
+   * 直接删掉会让用户看不到最狠的竞品；标出来让他点链接判断更靠谱。
    */
-  const price = usable.length >= 3 ? priceBandOf(usable.map((i) => i.priceMin)) : null
+  const suspiciousCount = confirmed.filter((i) => i.suspicious).length
+  // ≥2 条就给价格带（用户明确说过"大致相似即可比价"）；只有 1 条等于没有区间
+  const price = confirmed.length >= 2 ? priceBandOf(confirmed.map((i) => i.priceMin)) : null
+  const spreadRatio = price && price.p25 > 0 ? price.p75 / price.p25 : 1
 
   const noteParts: string[] = []
-  if (items.length && !verdicts.length) noteParts.push('视觉模型没有返回任何判断，本次不做识图比价')
   if (!confirmed.length) {
-    noteParts.push(`识图比对 ${items.length} 条候选，没有一条是真同款：本次没有可比价格，别拿标题同类的价格带下结论`)
-  } else if (suspiciousCount) {
-    noteParts.push(`识图确认 ${confirmed.length} 条同款，其中 ${suspiciousCount} 条价格明显异常（远低于同类中位 ${refMedian}）已剔除`)
-  }
-  if (confirmed.length && !price) {
-    noteParts.push(`可用样本只有 ${usable.length} 条（<3），样本太少不给价格结论`)
-  } else if (price && usable.length < 5) {
-    noteParts.push(`可用样本 ${usable.length} 条，价格带仅作参考`)
-  } else if (price) {
-    noteParts.push(`按 ${usable.length} 条识图同款算价格带`)
+    noteParts.push(`识图比对 ${items.length} 条候选，没有一条是同款：本次没有可比价格，别拿标题同类的价格带下结论`)
+  } else if (!price) {
+    noteParts.push('识图只确认 1 条同款，不足以形成价格带')
+  } else {
+    noteParts.push(`按 ${confirmed.length} 条识图同款算价格带${confirmed.length < 3 ? '（样本偏少）' : ''}`)
+    if (suspiciousCount) {
+      noteParts.push(`其中 ${suspiciousCount} 条价格明显低于同类（可能是大货价或供应商数据不准，已标注）`)
+    }
+    if (spreadRatio >= 3) {
+      noteParts.push(`样本价差很大（$${price.min}–$${price.max}），多半是配置/数量档不同，点链接核对后再用`)
+    }
   }
 
   return {
     checked: items.length,
     confirmedCount: confirmed.length,
-    sameCount: usable.length,
+    sameCount: confirmed.length,
     price,
     items,
     note: noteParts.join('；'),
