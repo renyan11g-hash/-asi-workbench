@@ -1550,6 +1550,7 @@ productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
 
   // ① listing 派生字段联动重算（不改动 AI 生成的文案内容，只同步与源信息强相关的数据）
   let listing = current.listing
+  const syncedFields: string[] = []
   if (listing) {
     const units = convertUnits(source)
     const rows = buildPriceGrid(source, settings).rows
@@ -1564,6 +1565,66 @@ productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
       packaging: units.cartonSizeInch
         ? `Carton: ${units.cartonSizeInch}, ${source.pcsPerCarton ?? '?'} pcs/ctn, ${units.cartonGwLb ?? '?'} lb`
         : listing.packaging,
+    }
+    if (current.source.weightG !== source.weightG) syncedFields.push('单件重量')
+
+    /*
+     * 材质变了 → 材质标签和印刷方式必须跟着变。
+     * 印刷方式是**材质驱动**的（PVC 不能用热升华、深色涤纶会发灰……），
+     * 所以这里直接用同一个规则引擎重算，而不是让业务员手动改。
+     */
+    const materialChanged = (current.source.materialCn ?? '') !== (source.materialCn ?? '')
+    if (materialChanged) {
+      try {
+        const reco = recommendImprintMethods(source)
+        if (reco.materialTags.length) {
+          listing = {
+            ...listing,
+            materials: reco.materialTags,
+            material: reco.materialTags.join(', '),
+          }
+        }
+        const required = ['Silkscreen', 'Unimprinted', 'Full Color']
+        const compatible = new Set(reco.recommendations.map((r) => r.method as string))
+        const kept = (listing.imprintMethods ?? []).filter(
+          (m) => required.includes(m) || compatible.has(m)
+        )
+        const picked = reco.recommendations
+          .filter((r) => r.tier === 'primary' || r.tier === 'suitable')
+          .slice(0, 4)
+          .map((r) => r.method as string)
+        listing = {
+          ...listing,
+          imprintMethods: Array.from(new Set([...required, ...kept, ...picked])),
+        }
+        syncedFields.push('材质', '印刷方式')
+      } catch {
+        // 规则引擎异常不影响保存
+      }
+    }
+
+    /*
+     * 颜色变了 → 文案里的颜色也要改（英文颜色名必须走译名，不能直接塞中文）。
+     * 颜色是个小字段，用现成的字段重生管线最稳（失败就保留旧值，不阻塞保存）。
+     */
+    const colorsChanged = (current.source.colorsCn ?? '') !== (source.colorsCn ?? '')
+    if (colorsChanged && (source.colorsCn ?? '').trim()) {
+      try {
+        const vals = await runAi(() =>
+          regenerateListingFields(
+            source,
+            listing as Partial<Listing>,
+            ['colors', 'colorChips'],
+            undefined,
+            settings,
+            current.evaluation
+          )
+        )
+        listing = { ...(listing as Listing), ...(vals as Partial<Listing>) }
+        syncedFields.push('颜色')
+      } catch {
+        // 颜色翻译失败：保留旧颜色，不阻塞保存
+      }
     }
   }
 
@@ -1599,7 +1660,7 @@ productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
     }
   }
 
-  res.json({ product: findProduct(id), syncedDraftId, masterSynced })
+  res.json({ product: findProduct(id), syncedDraftId, masterSynced, syncedFields })
 })
 
 // ---------- 软删：移到回收站（DELETE /:id） ----------

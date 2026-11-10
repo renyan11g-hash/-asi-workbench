@@ -297,10 +297,23 @@ const SECTION_FIELDS = {
   summary: ['summary', 'summaryZh'],
   description: ['description', 'descriptionZh'],
   keywords: ['keywords', 'keywordsZh'],
-  category: ['category', 'typeOfProduct', 'categories', 'themes', 'material', 'materials'],
+  category: ['category', 'typeOfProduct', 'categories', 'themes'],
   material: ['material', 'materials'],
   colors: ['colors', 'colorChips'],
   imprint: ['imprintMethods'],
+  /** 印刷区块：材质 + 印刷方式（材质决定工艺，所以放一起刷） */
+  imprintBlock: ['material', 'materials', 'imprintMethods', 'imprintArea'],
+  /** 整块英文文案：标题/摘要/描述/关键词（含中文对照，最多 8 个字段是接口上限） */
+  copy: [
+    'title',
+    'summary',
+    'description',
+    'keywords',
+    'titleZh',
+    'summaryZh',
+    'descriptionZh',
+    'keywordsZh',
+  ] as unknown as readonly string[],
   warnings: ['warnings'],
 } as const
 
@@ -845,6 +858,47 @@ export default function ListingEditor() {
   // ---------- 本产品定价参数（汇率 / 运费 / 印刷费 / 样品费 / 杂费 / 会员折扣） ----------
   const [visualBusy, setVisualBusy] = useState(false)
   const [evalBusy, setEvalBusy] = useState(false)
+  // 印刷方式推导（材质 → 工艺），用于「为什么选这些印刷方式」折叠窗
+  const [imprintReco, setImprintReco] = useState<Awaited<ReturnType<typeof api.imprintRecommend>> | null>(null)
+  const loadImprintReason = async () => {
+    if (!product) return
+    try {
+      const r = await api.imprintRecommend({
+        ...product.source,
+        materialCn: listing?.material || product.source.materialCn,
+      })
+      setImprintReco(r)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  /** 整块文案按一句话指令改：四个字段一起改，避免标题/摘要/描述互相打架 */
+  const [copyInstruction, setCopyInstruction] = useState('')
+  const [copyBusy, setCopyBusy] = useState(false)
+  const applyCopyRewrite = async () => {
+    if (!product || !listing) return
+    const text = copyInstruction.trim()
+    if (!text) {
+      toast.error('请先写一句修改要求，例如「描述里补充可打印面积，关键词换成礼品场景」')
+      return
+    }
+    setCopyBusy(true)
+    try {
+      const r = await api.regenerateFields(
+        product.id,
+        ['title', 'summary', 'description', 'keywords'],
+        text
+      )
+      applyValues(r.values)
+      setCopyInstruction('')
+      toast.success('已按你的要求整体改写文案（未保存），核对后点「保存修改」')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setCopyBusy(false)
+    }
+  }
   const [priceForm, setPriceForm] = useState<Record<string, number>>({})
   useEffect(() => {
     if (!settings) return
@@ -1417,7 +1471,33 @@ export default function ListingEditor() {
               </Alert>
             )}
 
+                        {/* 整块文案改写：标题/摘要/描述/关键词要一起改，才不会被各自的用词带偏 */}
             <SectionCard
+              title="整体改写文案（一句话指令）"
+              hint="同时改标题 / 摘要 / 详细描述 / 关键词，保证四者口径一致；改完先落进编辑区，核对后点顶部「保存修改」才生效"
+            >
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <Textarea
+                  className="min-h-[64px] flex-1 text-sm"
+                  placeholder="例：描述里补充「可激光雕刻竹面」的卖点，标题突出 gift set，关键词换成礼品/企业场景"
+                  value={copyInstruction}
+                  onChange={(e) => setCopyInstruction(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  className="h-9 shrink-0"
+                  disabled={copyBusy || !listing}
+                  onClick={() => void applyCopyRewrite()}
+                >
+                  {copyBusy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1 h-4 w-4" />}
+                  按指令整体改写
+                </Button>
+              </div>
+              <p className="mt-1.5 text-[11px] text-slate-400">
+                只改这四个字段；类目/主题/颜色/印刷方式不会被动。只想改其中一个字段，就用下面各卡片右上角的 ⟳。
+              </p>
+            </SectionCard>
+<SectionCard
               title="Product Title"
               right={
                 <div className="flex items-center gap-1">
@@ -1582,53 +1662,7 @@ export default function ListingEditor() {
                     onChange={(next) => patch({ categories: next, category: next[0] ?? listing.category })}
                   />
                 </Field>
-                <Field
-                  label="Material（主材质）"
-                  required
-                  hint="多材质用逗号隔开，chips 可增删；复制格式为「英文逗号隔开」"
-                >
-                  <select
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
-                    value={listing.material}
-                    onChange={(e) => {
-                      const m = e.target.value
-                      const set = new Set(listing.materials ?? [listing.material].filter(Boolean))
-                      set.add(m)
-                      patch({ material: m, materials: Array.from(set) })
-                    }}
-                  >
-                    <option value="">未选择</option>
-                    {ASI_MATERIALS.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="mt-2 flex items-center gap-2">
-                    <ChipList
-                      items={listing.materials ?? (listing.material ? [listing.material] : [])}
-                      variant="blue"
-                      onRemove={(i) => {
-                        const cur = listing.materials ?? (listing.material ? [listing.material] : [])
-                        const next = cur.filter((_, idx) => idx !== i)
-                        patch({
-                          materials: next,
-                          material: next[0] ?? listing.material,
-                        })
-                      }}
-                      onAdd={(v) => {
-                        const cur = listing.materials ?? (listing.material ? [listing.material] : [])
-                        const next = Array.from(new Set([...cur, v.trim()])).filter(Boolean)
-                        patch({
-                          materials: next,
-                          material: listing.material || next[0] || '',
-                        })
-                      }}
-                      placeholder="添加材质（英文，回车确认）"
-                    />
-                    <CopyBtn text={(listing.materials ?? [listing.material].filter(Boolean)).join(', ')} />
-                  </div>
-                </Field>
+                                {/* 材质已移到「Imprint Method（材质 + 印刷方式）」区块：材质决定印刷工艺，放一起才看得出因果 */}
                 <div className="sm:col-span-2">
                   <Field
                     label={`Themes（已选 ${listing.themes.length} / ${LIMITS.themes}，必含 Anniversary + Sustainable）`}
@@ -1713,7 +1747,7 @@ export default function ListingEditor() {
             </SectionCard>
 
             <SectionCard
-              title="Imprint Method"
+              title="Imprint Method（材质 + 印刷方式）"
               right={
                 <div className="flex items-center gap-1">
                   <CopyBtn text={(listing.imprintMethods ?? []).join('/')} />
@@ -1721,26 +1755,71 @@ export default function ListingEditor() {
                     productId={product.id}
                     source={product.source}
                     listing={listing}
-                    fields={SECTION_FIELDS.imprint}
+                    fields={SECTION_FIELDS.imprintBlock}
                     onApply={applyValues}
                   />
                 </div>
               }
-              hint={`可多选，无数量上限；必含 Silkscreen / Unimprinted / Full Color（保存时系统强制补齐）。复制格式用英文 / 隔开、无空格（如 Silkscreen/Unimprinted/Full Color）。`}
+              hint={`材质和印刷方式是一体的（PVC 不能用热升华、深色涤纶会发灰），所以材质放在这里。可多选，必含 Silkscreen / Unimprinted / Full Color。复制格式用英文 / 隔开、无空格。`}
             >
-              <ChipList
-                items={listing.imprintMethods}
-                variant="blue"
-                onRemove={(i) =>
-                  patch({ imprintMethods: listing.imprintMethods.filter((_, idx) => idx !== i) })
-                }
-                onAdd={(v) => {
-                  const next = Array.from(new Set([...listing.imprintMethods, v.trim()])).filter(
-                    Boolean
-                  )
-                  patch({ imprintMethods: next })
-                }}
-              />
+              {/* 材质（原在 ASI 类目区块，按「材质与印刷相关」的规则移到印刷区块） */}
+              <Field label="Material（主材质）" required hint="多材质用逗号隔开，chips 可增删">
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    className="h-9 w-full max-w-[280px] rounded-md border border-slate-200 bg-white px-2 text-sm"
+                    value={listing.material}
+                    onChange={(e) => {
+                      const m = e.target.value
+                      const set = new Set(listing.materials ?? [listing.material].filter(Boolean))
+                      set.add(m)
+                      patch({ material: m, materials: Array.from(set) })
+                    }}
+                  >
+                    <option value="">未选择</option>
+                    {ASI_MATERIALS.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                  <CopyBtn
+                    text={(listing.materials ?? [listing.material].filter(Boolean)).join(', ')}
+                  />
+                </div>
+                <div className="mt-2">
+                  <ChipList
+                    items={listing.materials ?? (listing.material ? [listing.material] : [])}
+                    variant="blue"
+                    onRemove={(i) => {
+                      const cur = listing.materials ?? (listing.material ? [listing.material] : [])
+                      const next = cur.filter((_, idx) => idx !== i)
+                      patch({ materials: next, material: next[0] ?? listing.material })
+                    }}
+                    onAdd={(v) => {
+                      const cur = listing.materials ?? (listing.material ? [listing.material] : [])
+                      const next = Array.from(new Set([...cur, v.trim()])).filter(Boolean)
+                      patch({ materials: next, material: listing.material || next[0] || '' })
+                    }}
+                    placeholder="添加材质（英文，回车确认）"
+                  />
+                </div>
+              </Field>
+
+              <div className="mt-4">
+                <ChipList
+                  items={listing.imprintMethods}
+                  variant="blue"
+                  onRemove={(i) =>
+                    patch({ imprintMethods: listing.imprintMethods.filter((_, idx) => idx !== i) })
+                  }
+                  onAdd={(v) => {
+                    const next = Array.from(new Set([...listing.imprintMethods, v.trim()])).filter(
+                      Boolean
+                    )
+                    patch({ imprintMethods: next })
+                  }}
+                />
+              </div>
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {ASI_IMPRINT_METHODS.filter((m) => !listing.imprintMethods.includes(m)).map((m) => (
                   <button
@@ -1753,6 +1832,61 @@ export default function ListingEditor() {
                   </button>
                 ))}
               </div>
+
+              {/* 为什么是这几种印刷方式：把材质 → 工艺的推导摊开给业务员看 */}
+              <details className="mt-4 rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2">
+                <summary className="cursor-pointer text-xs font-semibold text-slate-700">
+                  为什么选这些印刷方式？（材质 → 工艺推导，含排除原因）
+                </summary>
+                <div className="mt-2 space-y-2 text-[11px] leading-relaxed text-slate-600">
+                  {!imprintReco && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={() => void loadImprintReason()}
+                    >
+                      计算本产品的材质与工艺适配
+                    </Button>
+                  )}
+                  {imprintReco && (
+                    <>
+                      {imprintReco.summary ? (
+                        <div className="rounded bg-white p-2 text-slate-700">{imprintReco.summary}</div>
+                      ) : null}
+                      {imprintReco.recommendations?.slice(0, 8).map((r) => (
+                        <div key={r.method} className="rounded bg-white p-2">
+                          <div className="font-medium text-slate-700">
+                            {r.method}
+                            <span className="ml-1 text-[10px] text-slate-400">{r.nameZh}</span>
+                            <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">
+                              {r.tier === 'required' ? '平台必含' : r.tier === 'primary' ? '首选' : r.tier === 'suitable' ? '适合' : '有条件'}
+                            </span>
+                          </div>
+                          <div className="mt-0.5 text-slate-600">{r.why}</div>
+                          {r.pros?.length ? (
+                            <div className="text-emerald-700">优点：{r.pros.join('；')}</div>
+                          ) : null}
+                          {r.cons?.length ? (
+                            <div className="text-amber-700">注意：{r.cons.join('；')}</div>
+                          ) : null}
+                          {r.bestFor ? <div className="text-slate-500">适合：{r.bestFor}</div> : null}
+                        </div>
+                      ))}
+                      {imprintReco.excluded?.length ? (
+                        <div className="rounded bg-rose-50 p-2 text-rose-700">
+                          <div className="font-medium">这些工艺不适合本产品：</div>
+                          {imprintReco.excluded.map((e) => (
+                            <div key={e.method}>
+                              · {e.method}：{e.reason}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              </details>
             </SectionCard>
 
             <SectionCard
@@ -1940,9 +2074,29 @@ export default function ListingEditor() {
               title="阶梯报价 (8C · 前 4 空运 / 后 4 海运)"
               hint="数量、售价均可直接改，毛利自动重算。计费重 = max(体积重, 箱毛重) 后向上取到 0.5kg；计费重、倍率可手填重算；点「空运/海运」徽标即可切换该档运输方式"
               right={
-                <Button variant="ghost" size="sm" onClick={() => void reprice()}>
-                  <RefreshCw className="mr-1 h-3 w-3" /> 重算
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => void reprice()} title="按当前定价参数重算整张阶梯表（会立刻保存）">
+                    <RefreshCw className="mr-1 h-3 w-3" /> 刷新价格
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={saving}
+                    title="只保存这张价格表，不动文案和评估"
+                    onClick={() =>
+                      void runEditable('保存价格', async (force) => {
+                        if (!product || !listing) return
+                        await api.updateProduct(product.id, { listing, ...(force ? { force: true } : {}) })
+                        setDirty(false)
+                        qc.invalidateQueries({ queryKey: ['product', id] })
+                        toast.success('价格表已保存（文案与评估未改动）')
+                      })
+                    }
+                  >
+                    <Save className="mr-1 h-3 w-3" /> 保存价格
+                  </Button>
+                </div>
               }
             >
               <div className="mb-3 rounded-lg border border-slate-200 bg-white p-2">
