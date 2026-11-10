@@ -52,6 +52,26 @@ describe('分销商页面解析', () => {
   })
 })
 
+describe('分销商页面缓存', () => {
+  it('同一个搜索词 30 分钟内只抓一次（批量选品不重复打站点）', async () => {
+    const calls: string[] = []
+    ;(globalThis as unknown as { fetch: unknown }).fetch = jest.fn(async (url: string) => {
+      calls.push(url)
+      const body = url.includes('qualitylogoproducts')
+        ? '<span class="js-total-results">3 Items</span><div class="prod-box-cat"><a href="/x.htm" class="prod-box-cat__info-title">Bamboo Notebook Set</a><p class="prod-box__info-price"><strong>$6.00</strong></p></div>'
+        : '<a class="product-card-link" aria-label="Bamboo Notebook Kit, Item #K1, Price from $7.00" href="/k1">'
+      return { ok: true, status: 200, text: async () => body }
+    })
+    jest.resetModules()
+    const { probeDistributors } = require('../services/distributor-probe') as typeof import('../services/distributor-probe')
+    const first = await probeDistributors(['bamboo notebook'], 5000, { productForm: 'set' })
+    const after = calls.length
+    const second = await probeDistributors(['bamboo notebook'], 5000, { productForm: 'set' })
+    expect(calls.length).toBe(after)
+    expect(second.carriers).toBe(first.carriers)
+  })
+})
+
 describe('形态识别（套装 vs 单件）', () => {
   it('中文标题能认出套装', () => {
     expect(formOfSource('竹面笔记本+茶渣环保杯+笔筒+牛皮礼盒 三件套')).toBe('set')

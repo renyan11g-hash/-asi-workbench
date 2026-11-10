@@ -90,7 +90,9 @@ systemRouter.get('/health/market-probe', async (req: Request, res: Response) => 
     .map((s) => s.trim())
     .filter(Boolean)
   const productType = String(req.query.pt ?? '').trim()
-  const diag = await probeWithDiag(q, 9000, { coreKeywords: core, productType })
+  const formRaw = String(req.query.form ?? '').trim()
+  const productForm = formRaw === 'set' || formRaw === 'single' ? formRaw : undefined
+  const diag = await probeWithDiag(q, 9000, { coreKeywords: core, productType, productForm })
   const esp = diag.esp?.snapshot ?? null
   res.json({
     ok: Boolean(diag.snapshot),
@@ -121,12 +123,37 @@ systemRouter.get('/health/market-probe', async (req: Request, res: Response) => 
       sampleSize: esp?.sampleSize ?? 0,
       fallback: esp?.fallback ?? null,
       densityScore: esp?.densityScore ?? null,
+      productForm: esp?.productForm ?? null,
+      sameFormCount: esp?.sameFormCount ?? null,
+      sameFormPrice: esp?.priceSameForm ?? null,
       categories: esp?.categories ?? [],
       price: esp?.price ?? null,
       relevanceNote: esp?.relevanceNote ?? null,
       perQuery: diag.esp?.perQuery ?? [],
       sample: esp?.items?.slice(0, 3) ?? [],
     },
+    /** 分销商需求侧（多家分销商目录：几家在卖、各多少条） */
+    demand: diag.snapshot?.demand
+      ? {
+          carriers: diag.snapshot.demand.carriers,
+          checked: diag.snapshot.demand.sources.length,
+          reachable: diag.snapshot.demand.sources.filter((s) => s.ok).length,
+          demandScore: diag.snapshot.demand.demandScore,
+          note: diag.snapshot.demand.note,
+          price: diag.snapshot.demand.price,
+          sources: diag.snapshot.demand.sources.map((s) => ({
+            id: s.id,
+            name: s.name,
+            ok: s.ok,
+            total: s.total,
+            matched: s.matched,
+            sampleSize: s.sampleSize,
+            via: s.via ?? null,
+            error: s.error ?? null,
+            sample: s.items.slice(0, 2),
+          })),
+        }
+      : null,
   })
 })
 

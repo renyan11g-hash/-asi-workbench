@@ -235,6 +235,37 @@ function noteOf(sources: DistributorSource[]): { note: string; carriers: number;
   return { note, carriers, bestCount }
 }
 
+/**
+ * 页面缓存（30 分钟）：批量选品时同一批英文词会被反复用，
+ * 每家分销商每词一页 200-800KB，不缓存会把预算全烧在重复请求上。
+ */
+const CACHE_TTL_MS = 30 * 60 * 1000
+const CACHE_MAX = 120
+const pageCache = new Map<string, { at: number; value: { total: number | null; items: DistributorItem[] } }>()
+
+function cacheGet(key: string) {
+  const hit = pageCache.get(key)
+  if (!hit) return null
+  if (Date.now() - hit.at > CACHE_TTL_MS) {
+    pageCache.delete(key)
+    return null
+  }
+  return hit.value
+}
+
+function cacheSet(key: string, value: { total: number | null; items: DistributorItem[] }) {
+  if (pageCache.size >= CACHE_MAX) {
+    const oldest = pageCache.keys().next().value
+    if (oldest) pageCache.delete(oldest)
+  }
+  pageCache.set(key, { at: Date.now(), value })
+}
+
+/** 清缓存（测试用） */
+export function clearDistributorCache() {
+  pageCache.clear()
+}
+
 /** 跑一家分销商：两条搜索词合并去重 */
 async function probeOne(
   adapter: Adapter,
@@ -252,7 +283,21 @@ async function probeOne(
   let via: 'direct' | 'jina' | undefined
 
   for (const q of queries) {
-    const r = await fetchWithJinaFallback(adapter.searchUrl(q), {
+    const url = adapter.searchUrl(q)
+    const cached = cacheGet(url)
+    if (cached) {
+      ok = true
+      if (cached.total != null && (total == null || cached.total > total)) total = cached.total
+      for (const it of cached.items) {
+        const key = it.url || it.title.toLowerCase()
+        if (seen.has(key)) continue
+        seen.add(key)
+        items.push(it)
+      }
+      continue
+    }
+
+    const r = await fetchWithJinaFallback(url, {
       timeoutMs,
       looksOk: adapter.looksOk,
     })
@@ -264,6 +309,7 @@ async function probeOne(
     ok = true
     via = r.via
     const parsed = adapter.parse(r.text)
+    cacheSet(url, parsed)
     if (parsed.total != null && (total == null || parsed.total > total)) total = parsed.total
     for (const it of parsed.items) {
       const key = it.url || it.title.toLowerCase()
