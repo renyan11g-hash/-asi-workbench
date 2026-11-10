@@ -69,6 +69,19 @@ export function MarketEvidenceBlock({ snap }: { snap: MarketEvidenceSnap }) {
           {band(esp.priceLow, esp.priceHigh, esp.median) ? (
             <span className="text-slate-500"> · 样本价 {band(esp.priceLow, esp.priceHigh, esp.median)}</span>
           ) : null}
+          {snap.queries?.length ? (
+            <a
+              href={`https://supplier.espwebsite.com/ProductResults/?SearchTerms=${encodeURIComponent(
+                snap.queries[0]
+              )}&PCUrl=1`}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-1 inline-flex items-center text-blue-600 underline decoration-blue-200 underline-offset-2"
+            >
+              去 ESP 核验
+              <ExternalLink className="ml-0.5 h-2.5 w-2.5" />
+            </a>
+          ) : null}
           {esp.fallback ? <span className="ml-1 text-amber-700">（泛匹配兜底，密度不可信）</span> : null}
           {cats ? <div className="mt-0.5 text-slate-500">类目分布：{cats}</div> : null}
           {esp.samples?.length ? (
@@ -102,7 +115,9 @@ export function MarketEvidenceBlock({ snap }: { snap: MarketEvidenceSnap }) {
           <span className="text-slate-700">没有匹配到任何产品</span>
         </div>
       ) : (
-        <div className="mt-1 text-slate-400">ESP · 这次没取到数据（老评估或探针失败）</div>
+        <div className="mt-1 text-slate-400">
+          ESP · 这条评估是旧版本做的（当时只用 4imprint），重新评估即可补上全 ASI 供应商证据
+        </div>
       )}
 
       <div className="mt-1">
