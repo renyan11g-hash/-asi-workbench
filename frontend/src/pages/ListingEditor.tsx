@@ -47,6 +47,7 @@ import {
   VerdictBadge,
 } from '@/components/ui/primitives'
 import EvaluationChat from '@/components/EvaluationChat'
+import { EvaluationDetail } from '@/components/EvaluationDetail'
 import { api, getErrorMessage, listingToText } from '@/lib/api'
 import { useProduct, useSettings } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
@@ -2259,19 +2260,21 @@ export default function ListingEditor() {
             </SectionCard>
 
             {product.evaluation && (
-              <SectionCard title="选品评估回顾">
-                <p className="text-[13px] leading-relaxed text-slate-600">
-                  {product.evaluation.summary}
-                </p>
-                {product.evaluation.listingHooks?.length > 0 && (
-                  <ul className="mt-3 space-y-1">
-                    {product.evaluation.listingHooks.map((h, i) => (
-                      <li key={i} className="text-xs text-slate-500">
-                        · {h}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+              <SectionCard
+                title="选品评估"
+                hint="完整评估结果：分数拆解、海外同款证据（ESP 供给 + 分销商需求）、问题点与改善建议"
+                right={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-[11px]"
+                    onClick={() => setEvalDialogOpen(true)}
+                  >
+                    <MessageSquare className="mr-1 h-3 w-3" /> 补充信息
+                  </Button>
+                }
+              >
+                <EvaluationDetail evaluation={product.evaluation} />
               </SectionCard>
             )}
           </div>
