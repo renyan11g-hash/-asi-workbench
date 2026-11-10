@@ -86,13 +86,40 @@ function splitSentences(text: string): string[] {
  * 把一段文案压成「只描述产品」的单段落。
  * @param maxLen 超过就按句子边界截断（描述 800）
  */
+/**
+ * 一句话里只有尾巴是物流话术时，保留前半句产品描述（整句删掉会连用途场景一起丢）。
+ * 例：「A practical giveaway for gyms and spas, with bulk pricing for teams.」→ 保留前半句。
+ * 只有前半句本身干净、且是「A / The / This / It …」这种产品陈述句才保留，避免把
+ * 「Order in bulk for trade shows, with fast shipping…」这种 CTA 留下来。
+ */
+function trimTrailingClause(sentence: string): string | null {
+  const m = /^(.*?)[,;]\s*(with|and|plus|while|so)\s+(.+)$/i.exec(sentence)
+  if (!m) return null
+  const head = m[1].trim()
+  const tail = `${m[2]} ${m[3]}`
+  if (!forbiddenHits(tail).length) return null
+  if (forbiddenHits(head).length) return null
+  if (!/^(a|an|the|this|it|its|each|every|our|made|built|designed)\b/i.test(head)) return null
+  if (head.split(/\s+/).length < 8) return null
+  return `${head}.`
+}
+
 export function sanitizeProductCopy(text: string, maxLen: number): { text: string; removed: string[] } {
   const sentences = splitSentences(text ?? '')
   const kept: string[] = []
   const removed: string[] = []
   for (const s of sentences) {
-    if (forbiddenHits(s).length) removed.push(s)
-    else kept.push(s)
+    if (!forbiddenHits(s).length) {
+      kept.push(s)
+      continue
+    }
+    const trimmed = trimTrailingClause(s)
+    if (trimmed) {
+      kept.push(trimmed)
+      removed.push(s)
+    } else {
+      removed.push(s)
+    }
   }
   // 全被删光：保留原文（QC 会提示人工重生成），不要交一个空描述
   let joined = (kept.length ? kept : sentences).join(' ')

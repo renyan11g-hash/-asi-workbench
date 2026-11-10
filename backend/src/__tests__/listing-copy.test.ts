@@ -55,6 +55,23 @@ describe('详情描述只描述产品：整句剔除', () => {
     expect(clean).not.toMatch(/60 grams/)
   })
 
+  test('只有尾巴是物流话术时，保留前半句产品描述', () => {
+    const { text: clean } = sanitizeProductCopy(
+      'A practical giveaway for gyms, spas, swim clubs and outdoor events, with bulk pricing for teams and camps.',
+      800
+    )
+    expect(clean).toContain('A practical giveaway for gyms, spas, swim clubs and outdoor events.')
+    expect(clean).not.toMatch(/bulk pricing/i)
+  })
+
+  test('CTA 句（Order in bulk…）不保留半句', () => {
+    const { text: clean } = sanitizeProductCopy(
+      `${PRODUCT_ONLY} Order in bulk for trade shows and welcome kits, with fast shipping on in-stock colors.`,
+      800
+    )
+    expect(clean).not.toMatch(/Order in bulk/i)
+  })
+
   test('换行被压成单段落', () => {
     const multi = 'Line one about the product.\nLine two about the material.\r\nLine three.'
     expect(singleParagraph(multi)).toBe('Line one about the product. Line two about the material. Line three.')
