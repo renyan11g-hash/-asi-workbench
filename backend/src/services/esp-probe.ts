@@ -74,6 +74,8 @@ export interface EspProbeDiag {
     bytes: number
     status?: number
     error?: string
+    /** 这一页是怎么拿到的：直连 / jina 兜底 / 缓存 */
+    via?: 'direct' | 'jina' | 'cache'
   }>
   snapshot: EspSnapshot | null
   error?: string
@@ -115,7 +117,13 @@ export function parseEspResults(html: string): {
 
   const categories: EspCategory[] = []
   const seenCat = new Set<string>()
-  for (const m of html.matchAll(/SelectDimStats\("CTGR","([^"]+)","(\d+)"\)/g)) {
+  /*
+   * 类目分面写在 onclick 的 JS 里。直连拿到的 HTML 是裸引号，
+   * 但经 jina 渲染回来后引号会被转义成 &quot;（机房 IP 直连会被 Cloudflare 挡，jina 是主通路），
+   * 所以先把实体还原再匹配，否则 ESP 这一路会永远没有类目分布。
+   */
+  const catText = html.replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+  for (const m of catText.matchAll(/SelectDimStats\("CTGR","([^"]+)","(\d+)"\)/g)) {
     const name = stripTags(m[1])
     const count = Number(m[2])
     if (!name || !Number.isFinite(count) || count <= 0 || seenCat.has(name)) continue
@@ -203,31 +211,66 @@ export function clearEspCache() {
   pageCache.clear()
 }
 
-async function fetchPage(
-  query: string,
-  timeoutMs: number
-): Promise<{ ok: boolean; text?: string; status?: number; error?: string }> {
-  if (!nativeFetch) return { ok: false, error: '运行时没有 fetch（Node 版本过低）' }
+/**
+ * 抓一页搜索结果。
+ *
+ * 2026-11-10 实测：从 Render（机房 IP）直连 supplier.espwebsite.com 会被 Cloudflare 挡成
+ * HTTP 403，而本机（住宅 IP）直连是 200。所以这里先直连，失败就退到 r.jina.ai 渲染服务
+ * （带 x-return-format: html 时它返回的是**原始 HTML**，解析逻辑一行都不用改）。
+ * 这类站点没有公开 API，jina 是当前唯一稳定通路；它失败时评估照常进行，只是少了这一路证据。
+ */
+const JINA_PREFIX = 'https://r.jina.ai/'
+
+type FetchOutcome = { ok: boolean; text?: string; status?: number; error?: string; via: 'direct' | 'jina' }
+
+async function fetchOnce(
+  url: string,
+  timeoutMs: number,
+  via: 'direct' | 'jina'
+): Promise<FetchOutcome> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const res = await nativeFetch(ENDPOINT + encodeURIComponent(query) + '&PCUrl=1', {
+    const res = await nativeFetch!(url, {
       signal: ctrl.signal,
-      headers: {
-        'User-Agent': UA,
-        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
+      headers:
+        via === 'jina'
+          ? { 'User-Agent': UA, Accept: 'text/html', 'x-return-format': 'html' }
+          : {
+              'User-Agent': UA,
+              Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9',
+            },
     })
-    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` }
+    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}`, via }
     const text = await res.text()
-    return { ok: true, status: res.status, text }
+    return { ok: true, status: res.status, text, via }
   } catch (e) {
     const msg = (e as Error)?.message ?? String(e)
-    return { ok: false, error: /abort/i.test(msg) ? `超时（${timeoutMs}ms）` : msg }
+    return { ok: false, error: /abort/i.test(msg) ? `超时（${timeoutMs}ms）` : msg, via }
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** 页面到底是不是搜索结果页（防止把 Cloudflare 挑战页当成"0 条结果"） */
+const looksLikeResultsPage = (html: string) =>
+  html.includes('ltAlgoliaProductCount') || html.includes('RptProductsGrid') || html.includes('prodTile')
+
+async function fetchPage(query: string, timeoutMs: number): Promise<FetchOutcome> {
+  if (!nativeFetch) return { ok: false, error: '运行时没有 fetch（Node 版本过低）', via: 'direct' }
+  const target = ENDPOINT + encodeURIComponent(query) + '&PCUrl=1'
+
+  const direct = await fetchOnce(target, timeoutMs, 'direct')
+  if (direct.ok && direct.text && looksLikeResultsPage(direct.text)) return direct
+
+  // 直连被挡 / 拿到的是挑战页 → 走 jina 渲染（给足时间，它要自己去抓一次）
+  const jina = await fetchOnce(JINA_PREFIX + target, Math.max(timeoutMs, 15000), 'jina')
+  if (jina.ok && jina.text && looksLikeResultsPage(jina.text)) return jina
+
+  // 都不行：优先报告直连的状态码（更能说明是被挡还是页面变了）
+  if (direct.ok) return { ...jina, error: jina.error ?? direct.error }
+  return direct.error ? direct : jina
 }
 
 /** 带诊断的 ESP 探测：失败也能说清失败在哪一步 */
@@ -248,47 +291,38 @@ export async function probeEspWithDiag(
   let total = 0
   let categories: EspCategory[] = []
 
-  for (const q of clean) {
-    const cached = readCache(q)
-    if (cached) {
-      perQuery.push({
-        query: q,
-        ok: true,
-        total: cached.total,
-        items: cached.items.length,
-        matched: cached.items.filter((it) => isRelevant(it.title, matchTokens, need)).length,
-        bytes: 0,
-        status: 200,
-      })
-      if (typeof cached.total === 'number' && cached.total > total) total = cached.total
-      if (!categories.length && cached.categories.length) categories = cached.categories
-      for (const it of cached.items) {
-        const key = it.url || it.title.toLowerCase()
-        if (seen.has(key)) continue
-        seen.add(key)
-        items.push(it)
-      }
-      continue
-    }
+  /*
+   * 两条搜索词并行抓：jina 兜底要 10-20 秒，串行会拖到 40 秒，直接卡住评估。
+   * 抓到的结果按 clean 的原顺序合并，保证"第一条更具体"的口径不变。
+   */
+  const fetched = await Promise.all(
+    clean.map(async (q) => {
+      const cached = readCache(q)
+      if (cached) return { q, parsed: cached, bytes: 0, status: 200, ok: true, via: 'cache' as const }
+      const r = await fetchPage(q, timeoutMs)
+      const parsed = r.ok && r.text ? parseEspResults(r.text) : { total: null, categories: [], items: [] }
+      if (r.ok && (parsed.items.length || parsed.total != null)) writeCache(q, parsed)
+      return { q, parsed, bytes: r.text?.length ?? 0, status: r.status, ok: r.ok, error: r.error, via: r.via }
+    })
+  )
 
-    const r = await fetchPage(q, timeoutMs)
-    const parsed = r.ok && r.text ? parseEspResults(r.text) : { total: null, categories: [], items: [] }
-    if (r.ok && (parsed.items.length || parsed.total != null)) writeCache(q, parsed)
+  for (const f of fetched) {
     perQuery.push({
-      query: q,
-      ok: r.ok,
-      total: parsed.total,
-      items: parsed.items.length,
-      matched: parsed.items.filter((it) => isRelevant(it.title, matchTokens, need)).length,
-      bytes: r.text?.length ?? 0,
-      status: r.status,
-      error: r.error,
+      query: f.q,
+      ok: f.ok,
+      total: f.parsed.total,
+      items: f.parsed.items.length,
+      matched: f.parsed.items.filter((it) => isRelevant(it.title, matchTokens, need)).length,
+      bytes: f.bytes,
+      status: f.status,
+      ...(f.error ? { error: f.error } : {}),
+      via: f.via,
     })
     // 密度取各条搜索词里**匹配最多**的那一次：宁可按"竞争更激烈"算，不再高估差异化
-    if (typeof parsed.total === 'number' && parsed.total > total) total = parsed.total
+    if (typeof f.parsed.total === 'number' && f.parsed.total > total) total = f.parsed.total
     // 类目分布用第一条有结果的那次搜索（它是更具体的那个词）
-    if (!categories.length && parsed.categories.length) categories = parsed.categories
-    for (const it of parsed.items) {
+    if (!categories.length && f.parsed.categories.length) categories = f.parsed.categories
+    for (const it of f.parsed.items) {
       const key = it.url || it.title.toLowerCase()
       if (seen.has(key)) continue
       seen.add(key)

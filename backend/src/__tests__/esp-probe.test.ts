@@ -107,6 +107,21 @@ describe('parseEspResults', () => {
     const r = parseEspResults(html)
     expect(r.items[0].title).toBe('Bamboo Notebook 10" x 13" & Pen')
   })
+
+  it('jina 渲染回来的页面把 onclick 里的引号转义成 &quot;，类目分面照样要解析出来', () => {
+    // sidejina（供机房 IP 用）序列化后 onclick='SelectDimStats(&quot;CTGR&quot;,&quot;NOTEBOOKS&quot;,&quot;153&quot;)'
+    const html = `<html><body>
+<span id="ltAlgoliaProductCount" class="prdrebResCount"> 260+ </span> item(s) are found
+<ul><li><a href="#" onclick="javascript:SelectDimStats(&quot;CTGR&quot;,&quot;NOTEBOOKS&quot;,&quot;153&quot;); SelectDimension(&quot;1&quot;,&quot;NOTEBOOKS&quot;,&quot;CTGR:NOTEBOOKS&quot;); return false;"><span>NOTEBOOKS</span>&nbsp;<span class="prdrebCount">(153)</span></a></li>
+<li><a href="#" onclick="javascript:SelectDimStats(&quot;CTGR&quot;,&quot;GIFT SETS&quot;,&quot;62&quot;);"><span>GIFT SETS</span>&nbsp;<span class="prdrebCount">(62)</span></a></li></ul>
+</body></html>`
+    const r = parseEspResults(html)
+    expect(r.total).toBe(260)
+    expect(r.categories).toEqual([
+      { name: 'NOTEBOOKS', count: 153 },
+      { name: 'GIFT SETS', count: 62 },
+    ])
+  })
 })
 
 describe('espDensityScore', () => {
@@ -271,6 +286,33 @@ describe('probeWithDiag — 两路合并', () => {
     // 兜底页不可信 → 密度回到 4imprint 的 3 条同类口径
     expect(s!.densityScore).toBe(92)
     expect(s!.esp?.relevanceNote ?? '').toContain('泛匹配')
+  })
+
+  it('直连被 Cloudflare 挡成 403 时自动改走 jina 渲染，解析结果一致', async () => {
+    // 顺序很重要：jina 的 URL 里也含 espwebsite.com，必须排在前面先命中
+    mockFetch([
+      ['r.jina.ai', { body: espPage({ total: '260+', cats: [['NOTEBOOKS', 153]], items: NB_ITEMS }) }],
+      ['espwebsite.com', { status: 403, body: '<html>blocked</html>' }],
+    ])
+    jest.resetModules() // 页面缓存是模块级的，换 mock 前必须清掉，否则会读到上一条用例的缓存
+    const { probeEspWithDiag } = require('../services/esp-probe') as typeof import('../services/esp-probe')
+    const diag = await probeEspWithDiag(['bamboo notebook'], 5000, opts)
+    expect(diag.snapshot?.total).toBe(260)
+    expect(diag.snapshot?.categories[0]).toEqual({ name: 'NOTEBOOKS', count: 153 })
+    expect(diag.snapshot?.items).toHaveLength(3)
+    expect(diag.perQuery[0].via).toBe('jina')
+    expect(diag.perQuery[0].ok).toBe(true)
+  })
+
+  it('返回 200 但其实是挑战页（没有结果结构）也算失败，不会误判成 0 条', async () => {
+    mockFetch([
+      ['espwebsite.com', { body: '<html><title>Just a moment...</title>checking your browser</html>' }],
+    ])
+    jest.resetModules() // 页面缓存是模块级的，换 mock 前必须清掉，否则会读到上一条用例的缓存
+    const { probeEspWithDiag } = require('../services/esp-probe') as typeof import('../services/esp-probe')
+    const diag = await probeEspWithDiag(['bamboo notebook'], 5000, opts)
+    expect(diag.snapshot).toBeNull()
+    expect(diag.error).toBeTruthy()
   })
 
   it('同一个搜索词在 30 分钟内只用抓一次页面（批量选品不重复打站点）', async () => {
