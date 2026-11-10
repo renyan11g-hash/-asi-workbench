@@ -42,9 +42,10 @@ export const FORBIDDEN_COPY: ForbiddenPattern[] = [
     re: /\b(sampl(e|es|ing)|moq|minimum order|oem|odm|factory[- ]direct|lead time|turnaround time|production time|bulk pricing|wholesale pricing|price negotiable|welcome to inquire)\b/i,
   },
   // ---- 克重（只有具体数字才删；lightweight 属于产品属性，保留） ----
+  // 注意 oz / 盎司：在本行业几乎都是「容量」（20 oz tumbler、12 oz can），不是克重，不能当克重删掉
   {
     label: '克重/重量',
-    re: /\b\d+(?:\.\d+)?\s*(?:g|gram|grams|kg|kgs|kilogram|kilograms|lb|lbs|pound|pounds|oz|ounce|ounces|mg)\b/i,
+    re: /\b\d+(?:\.\d+)?\s*(?:g|gram|grams|kg|kgs|kilogram|kilograms|lb|lbs|pound|pounds|mg)\b/i,
   },
   {
     label: '克重/重量',
@@ -52,10 +53,14 @@ export const FORBIDDEN_COPY: ForbiddenPattern[] = [
   },
   // ---- 箱规 / 尺寸 / 包装参数 ----
   { label: '箱规/尺寸/包装', re: /\b\d+(?:\.\d+)?\s*(?:cm|mm|inch|inches|in\.|ft)\b/i },
+  // 只删「箱规/尺寸参数」本身，不删产品本身在讲包装（例如「套在纸箱外做展示」「替代一次性包装」这类卖点）
   {
     label: '箱规/尺寸/包装',
-    re: /\b(carton|cartons|ctn|ctns|pcs per carton|pieces per carton|per carton|packaging|packed in|box size|dimension|dimensions|measurement|measurements|product size|item size|pack density|pack tight|pack down)\b/i,
+    re: /\b(pcs per carton|pieces per carton|per carton|carton size|carton dimensions|packed in|box size|product size|item size|dimension|dimensions|pack density|pack tight|pack down)\b/i,
   },
+  { label: '箱规/尺寸/包装', re: /\bcarton\s+(holds|contains|fits|packs)\b|\b(pcs|pieces)\s+per\s+(carton|box|case)\b/i },
+  // 下单流程话术也不是产品描述
+  { label: '下单流程', re: /\b(contact us|order now|to place an order|how to order|call us|email us)\b/i },
 ]
 
 /** 判断一句话是否命中「不该出现在产品描述里」的内容 */
