@@ -13,6 +13,8 @@ import { z } from 'zod'
 import { db, getSetting, setSetting } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { renumberToGls, syncGlsSeq } from '../services/numbering'
+import { sanitizeProductCopy, singleParagraph } from '../services/listing-copy'
+import { LIMITS } from '../constants/asi'
 
 export const adminRouter: Router = Router()
 
@@ -146,5 +148,107 @@ adminRouter.post('/migrate-gls', (req: Request, res: Response) => {
     nextGls: `GLS${String(renumbered.lastSeq + 1).padStart(4, '0')}`,
     kept: kept.length,
     doneAt: now,
+  })
+})
+
+
+/**
+ * 存量文案清理：把已经有英文链接的产品，按「详细描述只描述产品」规则重新清洗一遍。
+ *
+ * 为什么需要：规则是 2026-11-10 才加进生成链路的，之前生成的那批文案里还留着
+ * 「发货快 / 运费低 / 打样方便 / 60 grams / carton 尺寸」这类句子，用户看到的还是老文案。
+ * 这里不调 AI、不重写措辞，只整句剔除违规内容并压成单段落，所以：
+ *   - 默认 dryRun：只统计会改哪几条、删了哪些句子，不写库；
+ *   - 传 apply=true 才写回，并把删掉的句子记进该 listing 的 qc.issues，界面上能看到改动。
+ */
+adminRouter.post('/clean-descriptions', (req: Request, res: Response) => {
+  const body = z
+    .object({ apply: z.boolean().optional(), limit: z.coerce.number().min(1).max(2000).optional() })
+    .parse(req.body ?? {})
+  const rows = db
+    .prepare("SELECT id, code, listing FROM products WHERE listing IS NOT NULL AND listing <> '' ORDER BY code")
+    .all() as unknown as Array<{ id: string; code: string; listing: string }>
+
+  const changed: Array<{ code: string; removed: string[]; beforeLen: number; afterLen: number }> = []
+  const now = new Date().toISOString()
+  let written = 0
+
+  for (const r of rows) {
+    let listing: Record<string, unknown>
+    try {
+      listing = JSON.parse(r.listing) as Record<string, unknown>
+    } catch {
+      continue
+    }
+    const before = typeof listing.description === 'string' ? listing.description : ''
+    if (!before) continue
+    const { text, removed } = sanitizeProductCopy(before, LIMITS.description)
+    const after = singleParagraph(text)
+    if (!removed.length && after === before) continue
+
+    changed.push({ code: r.code, removed, beforeLen: before.length, afterLen: after.length })
+    if (body.apply) {
+      listing.description = after
+      // 记一笔：界面 QC 卡会显示「已清理」，不至于内容悄悄变了没人知道
+      const qc = (listing.qc ?? {}) as Record<string, unknown>
+      const issues = Array.isArray(qc.issues) ? (qc.issues as unknown[]).map(String) : []
+      const note = `已按「只描述产品」规则清理 ${removed.length} 句运输/克重/箱规内容`
+      if (!issues.includes(note)) issues.push(note)
+      listing.qc = { ...qc, issues }
+      db.prepare('UPDATE products SET listing = ?, updated_at = ? WHERE id = ?').run(
+        JSON.stringify(listing),
+        now,
+        r.id
+      )
+      written += 1
+    }
+    if (body.limit && changed.length >= body.limit) break
+  }
+
+  // 待审核中心里的文案也一起清：这些记录批准后会直接变成产品链接，不能留旧话术
+  const reviewRows = db
+    .prepare("SELECT id, listing FROM listing_reviews WHERE listing IS NOT NULL AND listing <> ''")
+    .all() as unknown as Array<{ id: string; listing: string }>
+  let reviewChanged = 0
+  let reviewWritten = 0
+  for (const r of reviewRows) {
+    let listing: Record<string, unknown>
+    try {
+      listing = JSON.parse(r.listing) as Record<string, unknown>
+    } catch {
+      continue
+    }
+    const before = typeof listing.description === 'string' ? listing.description : ''
+    if (!before) continue
+    const { text, removed } = sanitizeProductCopy(before, LIMITS.description)
+    const after = singleParagraph(text)
+    if (!removed.length && after === before) continue
+    reviewChanged += 1
+    if (body.apply) {
+      listing.description = after
+      db.prepare('UPDATE listing_reviews SET listing = ?, updated_at = ? WHERE id = ?').run(
+        JSON.stringify(listing),
+        now,
+        r.id
+      )
+      reviewWritten += 1
+    }
+  }
+
+  res.json({
+    ok: true,
+    scanned: rows.length,
+    changed: changed.length,
+    written,
+    reviewScanned: reviewRows.length,
+    reviewChanged,
+    reviewWritten,
+    applied: Boolean(body.apply),
+    samples: changed.slice(0, 12).map((c) => ({
+      code: c.code,
+      beforeLen: c.beforeLen,
+      afterLen: c.afterLen,
+      removed: c.removed.slice(0, 4).map((s) => s.slice(0, 160)),
+    })),
   })
 })
