@@ -843,6 +843,7 @@ export default function ListingEditor() {
   }
 
   // ---------- 本产品定价参数（汇率 / 运费 / 印刷费 / 样品费 / 杂费 / 会员折扣） ----------
+  const [visualBusy, setVisualBusy] = useState(false)
   const [priceForm, setPriceForm] = useState<Record<string, number>>({})
   useEffect(() => {
     if (!settings) return
@@ -2418,6 +2419,32 @@ export default function ListingEditor() {
                   </Button>
                 }
               >
+                <div className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
+                  <span>
+                    价格对比只认「识图同款」。识别较慢（约 30-60 秒），需要时点一下：
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 border-amber-300 bg-white text-xs"
+                    disabled={visualBusy}
+                    onClick={() =>
+                      void runEditable('识图比价', async (force) => {
+                        setVisualBusy(true)
+                        try {
+                          await api.visualPriceCheck(product.id, { force })
+                          qc.invalidateQueries({ queryKey: ['product', product.id] })
+                          toast.success('识图比价完成，已更新评估里的同款价格带')
+                        } finally {
+                          setVisualBusy(false)
+                        }
+                      })
+                    }
+                  >
+                    {visualBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                    识图比价
+                  </Button>
+                </div>
                 <EvaluationDetail evaluation={product.evaluation} />
                 <details className="mt-3 rounded-md border border-slate-200 bg-white px-2 py-1.5">
                   <summary className="cursor-pointer text-[11px] font-semibold text-slate-700">

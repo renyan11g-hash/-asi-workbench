@@ -19,8 +19,7 @@ import { buildAssistantPrompt, buildCatalogKeywordsPrompt, buildChatEvaluationPr
 import { recommendImprintMethods } from './imprint-recommend'
 import { composeScore, parseBreakdown, scoreBand } from './eval-score'
 import { applyMemberDiscount, probeWithDiag, type MarketSnapshot } from './market-probe'
-import { formOfSource, formOfTitle, formLabel } from './market-text'
-import { buildVisualPriceCheck } from './visual-price'
+import { formOfSource, formOfTitle } from './market-text'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
@@ -620,25 +619,12 @@ export async function evaluateSource(
       market = diag.snapshot
       if (!market) marketError = diag.error ?? '未取到海外同款数据'
       /*
-       * 识图比价：标题能说明"品类有多挤"，说明不了"是不是同一个货"。
-       * 三件套礼盒按标题会匹配到单本笔记本，价格对不上——所以价格结论只认识图。
-       * 这里失败不影响评估，只是标记"没有可比样本"。
+       * 识图比价（buildVisualPriceCheck）已经挪到独立接口
+       * POST /products/:id/visual-price-check。
+       * 原因：视觉调用每次 40-60 秒，放在评估主链路里会把整次评估拖到 180 秒以上，
+       * 被 Cloudflare 判成超时（520）。评估先出结果，识图比价由用户点一下单独跑。
        */
-      if (market) {
-        try {
-          const check = await buildVisualPriceCheck(
-            settings,
-            (source.images ?? []).slice(0, 2),
-            `${source.sourceTitle}（${formLabel(productForm ?? 'unknown')}）`,
-            market
-          )
-          if (check) market.priceCheck = check
-          // 统一折算成我们的定价口径：我们的价 = 网站 list 价 × 会员折扣（ESP 默认六折）
-          market = applyMemberDiscount(market, settings.espMemberDiscount ?? 0.6)
-        } catch {
-          // 识图挂了就当作没有比价样本
-        }
-      }
+      if (market) market = applyMemberDiscount(market, settings.espMemberDiscount ?? 0.6)
     }
   } catch (e) {
     marketError = (e as Error)?.message ?? '海外探针异常'

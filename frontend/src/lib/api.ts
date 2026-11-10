@@ -627,6 +627,16 @@ export const api = {
     return data.product
   },
 
+  /** 识图比价（单独跑，约 30-60 秒）：只把视觉确认的同款并入评估 */
+  async visualPriceCheck(id: string, opts?: { force?: boolean }): Promise<{ product: Product }> {
+    const { data } = await apiClient.post<{ product: Product }>(
+      `/products/${id}/visual-price-check`,
+      opts?.force ? { force: true } : {},
+      LONG_TIMEOUT
+    )
+    return data
+  },
+
   /** 本产品定价参数（汇率/运费/印刷费/样品费/杂费/会员折扣）：保存后自动重算阶梯价 */
   async updatePriceSettings(
     id: string,

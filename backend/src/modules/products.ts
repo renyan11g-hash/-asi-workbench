@@ -6,6 +6,10 @@ import { z } from 'zod'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { AiError, callChatJson } from '../services/ai'
+import { probeWithDiag } from '../services/market-probe'
+import { applyMemberDiscount } from '../services/market-probe'
+import { buildVisualPriceCheck } from '../services/visual-price'
+import { formOfSource } from '../services/market-text'
 import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
 import type { ResearchMatch } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
@@ -1992,6 +1996,74 @@ productsRouter.patch('/:id/price-settings', async (req: Request, res: Response) 
     )
   }
   res.json({ product: findProduct(id), priceSettings: next, effective: settings })
+})
+// ---------- 识图比价（单独跑：视觉调用慢，不能塞进评估主链路，否则整次评估会被 Cloudflare 判超时） ----------
+productsRouter.post('/:id/visual-price-check', async (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const current = findProduct(id)
+  const force = (req.body as Record<string, unknown> | undefined)?.force
+  assertEditable(id, force, '识图比价')
+  const settings = settingsForProduct(current)
+  const ev = current.evaluation
+  const ms = ev?.marketSnapshot
+  const queries = (ms?.queries ?? []).filter(Boolean).slice(0, 2)
+  if (!queries.length) throw new AppError(400, '这条评估还没有海外搜索词，请先重新评估一次')
+
+  const form = formOfSource(current.source.sourceTitle, current.source.description)
+  const diag = await probeWithDiag(queries, 9000, {
+    coreKeywords: ms?.matchTokens ?? [],
+    ...(form !== 'unknown' ? { productForm: form } : {}),
+  })
+  if (!diag.snapshot) throw new AppError(502, diag.error ?? '海外探针没取到数据')
+
+  const raw = applyMemberDiscount(diag.snapshot, settings.espMemberDiscount ?? 0.6)
+  const check = await buildVisualPriceCheck(
+    settings,
+    (current.source.images ?? []).slice(0, 2),
+    `${current.source.sourceTitle}（${form}）`,
+    raw
+  )
+  if (!check) throw new AppError(502, '识图比价失败（视觉模型没有返回结果）')
+
+  // 合并进已有评估：只更新识图比价与建议报价，其它字段不动
+  const nextEvaluation = ev
+    ? {
+        ...ev,
+        marketSnapshot: {
+          ...ms,
+          priceCheck: {
+            checked: check.checked,
+            confirmedCount: check.confirmedCount,
+            sameCount: check.sameCount,
+            priceLow: check.price?.p25 ?? null,
+            priceHigh: check.price?.p75 ?? null,
+            median: check.price?.median ?? null,
+            note: check.note,
+            items: check.items.slice(0, 8).map((i) => ({
+              title: i.title,
+              priceMin: i.priceMin,
+              source: i.source,
+              url: i.url,
+              same: i.same,
+              confidence: i.confidence,
+              ...(i.reason ? { reason: i.reason } : {}),
+              ...(i.suspicious ? { suspicious: true } : {}),
+            })),
+          },
+          ...(raw.memberDiscount ? { memberDiscount: raw.memberDiscount } : {}),
+        },
+        priceAdviceUsd: check.price
+          ? { min: check.price.p25, max: check.price.p75 }
+          : (ev.priceAdviceUsd ?? { min: 0, max: 0 }),
+      }
+    : null
+
+  db.prepare('UPDATE products SET evaluation=?, updated_at=? WHERE id=?').run(
+    nextEvaluation ? JSON.stringify(nextEvaluation) : null,
+    new Date().toISOString(),
+    id
+  )
+  res.json({ product: findProduct(id), priceCheck: nextEvaluation?.marketSnapshot?.priceCheck ?? null })
 })
 
 // ---------- 印刷方式推荐（材质适配 + 优缺点分析，本地规则引擎，无需 AI） ----------
