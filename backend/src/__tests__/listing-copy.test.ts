@@ -37,6 +37,24 @@ describe('详情描述只描述产品：整句剔除', () => {
     expect(clean).toBe(PRODUCT_ONLY)
   })
 
+  test('产品属性与用途场景不要误伤：lightweight / giveaway 保留', () => {
+    const keep =
+      'Built from lightweight aluminum alloy, it holds its shape. A practical giveaway for golf tournaments and trade shows.'
+    const { text: clean, removed } = sanitizeProductCopy(keep, 800)
+    expect(removed).toHaveLength(0)
+    expect(clean).toBe(keep)
+  })
+
+  test('具体克重数字要删，但「light」这类形容词保留', () => {
+    const { text: clean, removed } = sanitizeProductCopy(
+      'Light and compact, so it rides a keyring without bulk. At just 60 grams it stays unnoticeable in a pocket.',
+      800
+    )
+    expect(removed).toHaveLength(1)
+    expect(clean).toContain('Light and compact')
+    expect(clean).not.toMatch(/60 grams/)
+  })
+
   test('换行被压成单段落', () => {
     const multi = 'Line one about the product.\nLine two about the material.\r\nLine three.'
     expect(singleParagraph(multi)).toBe('Line one about the product. Line two about the material. Line three.')
@@ -60,7 +78,7 @@ describe('forbiddenHits 分类', () => {
   test('认得克重、箱规、运输、派发', () => {
     expect(forbiddenHits('Weighs 17g per piece')).toContain('克重/重量')
     expect(forbiddenHits('Carton size 50 x 40 x 40 cm')).toContain('箱规/尺寸/包装')
-    expect(forbiddenHits('Fast delivery to your door')).toContain('运输方式/物流')
+    expect(forbiddenHits('Fast delivery to your door')).toContain('运输/物流')
     expect(forbiddenHits('Easy to hand out at events')).toContain('派发/分发')
   })
 

@@ -1,15 +1,19 @@
 /**
  * 英文文案的「只描述产品」硬过滤。
  *
- * 背景（2026-11-10 用户第 N 次反馈）：1688 页面大量是卖家话术——发货快、运费便宜、
- * 打样方便、起订量低、厂家直销、大货分装好派发；再加上克重、箱规尺寸这些物流参数。
- * 这些内容在 ASI 目录里既不专业也不是卖点，但 AI 总会顺手带进 Full Description。
+ * 背景（2026-11-10 用户反馈）：1688 页面大量是卖家话术——发货快、运费便宜、打样方便、
+ * 起订量低、箱规紧凑好运输、大货好派发；再加上克重、箱规尺寸这些物流参数。
+ * 这些内容出现在 ASI 目录里既不专业也不是产品卖点，但 AI 总会顺手带进 Full Description。
  *
- * 光靠提示词写过三次仍然会漏，所以在程序侧兜底：
+ * 提示词已经加严过几轮仍会漏，所以程序侧兜底：
  *   1) 描述必须先压成「单段落」——用户明确要求不允许换行；
  *   2) 逐句扫描，命中运输 / 打样 / 起订量 / 克重 / 箱规 / 派发 的句子整句剔除；
  *   3) 剔完再按 800 字符硬截断。
- * 剔除结果会写进 QC issues，界面能看到「删掉了哪几句」，方便人工复核。
+ *
+ * 注意「不能误伤产品卖点」：
+ *   - Lightweight / compact 这类是产品属性，保留；只有出现具体克重数字（60 grams / 17g / 0.2 lb）才删；
+ *   - giveaway / handout 作为「用途场景」是 ASI 常用语（trade show giveaway），保留；
+ *     只有「好派发」这类便利性描述（easy to hand out / hand out easily）才删。
  */
 
 export interface ForbiddenPattern {
@@ -21,40 +25,36 @@ export interface ForbiddenPattern {
 export const FORBIDDEN_COPY: ForbiddenPattern[] = [
   // ---- 运输 / 物流 ----
   {
-    label: '运输方式/物流',
-    re: /\b(ship|ships|shipped|shipping|freight|delivery|deliver|dispatch|logistics|courier|transport|air ?freight|ocean|sea ?freight|express|truck|drop ?ship)\b/i,
+    label: '运输/物流',
+    re: /\b(ship|ships|shipped|shipping|freight|dispatch|logistics|courier|drop ?ship|sea ?freight|air ?freight)\b/i,
   },
-  {
-    label: '到货速度',
-    re: /\b(fast|quick|rapid|prompt|speedy|same[- ]day|next[- ]day|24[- ]?hour)\s+(shipping|delivery|dispatch)\b/i,
-  },
-  // ---- 派发 / 分发（促销行业的"派发方便"不是产品卖点） ----
+  { label: '运输/物流', re: /\b(fast|quick|rapid|speedy|same[- ]day|next[- ]day)\s+(delivery|shipping|dispatch)\b/i },
+  { label: '运输/物流', re: /\b(express|air|ocean|sea)\s+(delivery|freight|shipping)\b/i },
+  { label: '运输/物流', re: /\bdelivery\s+(time|cost|window|fee)\b/i },
+  // ---- 派发（只说「好派发」这种便利性，不删 giveaway / 用途场景） ----
   {
     label: '派发/分发',
-    re: /\b(hand ?out|handing out|distribut(e|ed|ing|ion)|giveaway|give ?away|giveaways|swag bag filler)\b/i,
+    re: /\b(easy|easily|quick|quickly|simple|simply)\s+to\s+(hand ?out|distribut\w*)\b|\bhand ?out\s+(easily|quickly|without effort)\b|\bbulk\s+distribution\b|\beasy\s+distribution\b/i,
   },
   // ---- 打样 / 起订量 / 工厂服务 ----
   {
     label: '打样/起订量/工厂服务',
-    re: /\b(sampl(e|es|ing)|moq|minimum order|oem|odm|factory[- ]direct|lead time|turnaround|production time|bulk order|wholesale price|price negotiable|welcome to inquire)\b/i,
+    re: /\b(sampl(e|es|ing)|moq|minimum order|oem|odm|factory[- ]direct|lead time|turnaround time|production time|bulk pricing|wholesale pricing|price negotiable|welcome to inquire)\b/i,
   },
-  // ---- 克重（含 g / kg / lb / oz 等重量单位） ----
+  // ---- 克重（只有具体数字才删；lightweight 属于产品属性，保留） ----
   {
     label: '克重/重量',
     re: /\b\d+(?:\.\d+)?\s*(?:g|gram|grams|kg|kgs|kilogram|kilograms|lb|lbs|pound|pounds|oz|ounce|ounces|mg)\b/i,
   },
   {
     label: '克重/重量',
-    re: /\b(weight|weights|weighted|net weight|gross weight|lightweight|heavyweight)\b/i,
+    re: /\b(net|gross|unit|item|product)\s+weight\b|\bweigh(s|ed|ing)?\s+\d/i,
   },
   // ---- 箱规 / 尺寸 / 包装参数 ----
+  { label: '箱规/尺寸/包装', re: /\b\d+(?:\.\d+)?\s*(?:cm|mm|inch|inches|in\.|ft)\b/i },
   {
     label: '箱规/尺寸/包装',
-    re: /\b\d+(?:\.\d+)?\s*(?:cm|mm|inch|inches|in\.|ft|"|'')\b/i,
-  },
-  {
-    label: '箱规/尺寸/包装',
-    re: /\b(carton|cartons|ctn|ctns|pcs per carton|pieces per carton|per carton|packaging|packed in|packing|box size|dimension|dimensions|measurement|measurements|product size|item size)\b/i,
+    re: /\b(carton|cartons|ctn|ctns|pcs per carton|pieces per carton|per carton|packaging|packed in|box size|dimension|dimensions|measurement|measurements|product size|item size|pack density|pack tight|pack down)\b/i,
   },
 ]
 
@@ -67,7 +67,7 @@ export function forbiddenHits(sentence: string): string[] {
   return Array.from(new Set(hits))
 }
 
-/** 是否是「标题/卖点」句而不是物流句（避免把正常产品句误删时过度过滤） */
+/** 按句号/问号/叹号切句（先压空白，避免换行影响判断） */
 function splitSentences(text: string): string[] {
   return text
     .replace(/\s+/g, ' ')
@@ -86,13 +86,11 @@ export function sanitizeProductCopy(text: string, maxLen: number): { text: strin
   const kept: string[] = []
   const removed: string[] = []
   for (const s of sentences) {
-    const hits = forbiddenHits(s)
-    if (hits.length) removed.push(s)
+    if (forbiddenHits(s).length) removed.push(s)
     else kept.push(s)
   }
-  // 全被删光：宁可保留原文（下一步 QC 会标出来让人工重生成），也不要交一个空描述
-  let joined = kept.length ? kept.join(' ') : sentences.join(' ')
-  if (!kept.length) joined = sentences.join(' ')
+  // 全被删光：保留原文（QC 会提示人工重生成），不要交一个空描述
+  let joined = (kept.length ? kept : sentences).join(' ')
   if (joined.length > maxLen) {
     // 按句子边界截断，尽量不切在单词/句子中间
     const cut = joined.slice(0, maxLen)
