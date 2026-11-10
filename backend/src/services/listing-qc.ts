@@ -16,6 +16,7 @@
 import { ASI_MATERIALS, LIMITS, MATERIAL_DICT } from '../constants/asi'
 import type { Listing, ProductSpecs, SourceInfo } from '../types'
 import { SPEC_FIELDS, UNKNOWN } from './spec-fields'
+import { forbiddenHits } from './listing-copy'
 
 export type QcLevel = 'error' | 'warn'
 
@@ -201,6 +202,24 @@ export function runListingQc(input: QcInput): ListingQcReport {
     ok: serviceHits.length === 0,
     level: 'warn',
     detail: serviceHits.length === 0 ? '未出现卖家服务话术' : `命中：${serviceHits.join('、')}，建议改写成产品卖点`,
+  })
+
+  // 详细描述只讲产品本身：不允许换行、不允许运输/派发/打样/起订量/克重/箱规
+  checks.push({
+    key: 'descriptionSingleParagraph',
+    label: 'Description 单段落（不允许换行）',
+    ok: !/[\r\n]/.test(description),
+    level: 'warn',
+    detail: /[\r\n]/.test(description) ? `发现 ${(description.match(/[\r\n]/g) ?? []).length} 个换行` : '单段落',
+  })
+
+  const descHits = Array.from(new Set(forbiddenHits(description)))
+  checks.push({
+    key: 'descriptionProductOnly',
+    label: 'Description 只描述产品（无运输/派发/打样/起订量/克重/箱规）',
+    ok: descHits.length === 0,
+    level: 'warn',
+    detail: descHits.length ? `命中：${descHits.join('、')}` : '只描述产品本身',
   })
 
   const overCount = keywords.length > LIMITS.keywordMax

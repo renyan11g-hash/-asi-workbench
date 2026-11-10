@@ -23,6 +23,7 @@ import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
 import { estimateImprintArea, estimateToImprintString } from './imprint'
+import { sanitizeProductCopy, singleParagraph } from './listing-copy'
 const arr = (v: unknown, fallback: string[] = []): string[] => {
   if (Array.isArray(v)) return v.map((x) => String(x)).filter(Boolean)
   if (typeof v === 'string' && v.trim()) return v.split(',').map((x) => x.trim()).filter(Boolean)
@@ -633,15 +634,23 @@ export function applyQc(listing: Listing): Listing {
     issues.push(`标题 ${title.length} 字符，超出 ${LIMITS.title} 限制`)
     title = enforceLength(title, LIMITS.title)
   }
-  summary = ensureRushSuffix(summary)
-  if (summary.length > LIMITS.summary) {
-    issues.push(`摘要 ${summary.length} 字符，超出 ${LIMITS.summary} 限制`)
-    summary = enforceLength(summary, LIMITS.summary - ' Rush service is available'.length)
-    summary = ensureRushSuffix(summary)
+  // 详细描述只允许写产品本身：先剔除运输/派发/打样/起订量/克重/箱规句子，再压成单段落。
+  // 用户明确要求「详细描述不允许换行」，所以换行在这里一律压成空格。
+  const cleanedDesc = sanitizeProductCopy(description, LIMITS.description)
+  if (cleanedDesc.removed.length) {
+    issues.push(
+      `描述里剔除了 ${cleanedDesc.removed.length} 句运输/派发/打样/克重/箱规内容（只保留产品本身）`
+    )
   }
+  description = singleParagraph(cleanedDesc.text)
   if (description.length > LIMITS.description) {
     issues.push(`描述 ${description.length} 字符，超出 ${LIMITS.description} 限制`)
     description = enforceLength(description, LIMITS.description)
+  }
+  summary = singleParagraph(ensureRushSuffix(singleParagraph(summary)))
+  if (summary.length > LIMITS.summary) {
+    issues.push(`摘要 ${summary.length} 字符，超出 ${LIMITS.summary} 限制`)
+    summary = ensureRushSuffix(enforceLength(summary, LIMITS.summary - ' Rush service is available'.length))
   }
   title = title.replace(/\s+/g, ' ').trim()
 
