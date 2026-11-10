@@ -48,6 +48,7 @@ import {
 } from '@/components/ui/primitives'
 import EvaluationChat from '@/components/EvaluationChat'
 import { EvaluationDetail } from '@/components/EvaluationDetail'
+import { ImprintReasoning } from '@/components/ImprintReasoning'
 import { api, getErrorMessage, listingToText } from '@/lib/api'
 import { useProduct, useSettings } from '@/hooks/use-data'
 import { useDraft, loadDraft } from '@/hooks/useDraft'
@@ -1838,53 +1839,12 @@ export default function ListingEditor() {
                 <summary className="cursor-pointer text-xs font-semibold text-slate-700">
                   为什么选这些印刷方式？（材质 → 工艺推导，含排除原因）
                 </summary>
-                <div className="mt-2 space-y-2 text-[11px] leading-relaxed text-slate-600">
-                  {!imprintReco && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-xs"
-                      onClick={() => void loadImprintReason()}
-                    >
-                      计算本产品的材质与工艺适配
-                    </Button>
-                  )}
-                  {imprintReco && (
-                    <>
-                      {imprintReco.summary ? (
-                        <div className="rounded bg-white p-2 text-slate-700">{imprintReco.summary}</div>
-                      ) : null}
-                      {imprintReco.recommendations?.slice(0, 8).map((r) => (
-                        <div key={r.method} className="rounded bg-white p-2">
-                          <div className="font-medium text-slate-700">
-                            {r.method}
-                            <span className="ml-1 text-[10px] text-slate-400">{r.nameZh}</span>
-                            <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">
-                              {r.tier === 'required' ? '平台必含' : r.tier === 'primary' ? '首选' : r.tier === 'suitable' ? '适合' : '有条件'}
-                            </span>
-                          </div>
-                          <div className="mt-0.5 text-slate-600">{r.why}</div>
-                          {r.pros?.length ? (
-                            <div className="text-emerald-700">优点：{r.pros.join('；')}</div>
-                          ) : null}
-                          {r.cons?.length ? (
-                            <div className="text-amber-700">注意：{r.cons.join('；')}</div>
-                          ) : null}
-                          {r.bestFor ? <div className="text-slate-500">适合：{r.bestFor}</div> : null}
-                        </div>
-                      ))}
-                      {imprintReco.excluded?.length ? (
-                        <div className="rounded bg-rose-50 p-2 text-rose-700">
-                          <div className="font-medium">这些工艺不适合本产品：</div>
-                          {imprintReco.excluded.map((e) => (
-                            <div key={e.method}>
-                              · {e.method}：{e.reason}
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </>
-                  )}
+                <div className="mt-2">
+                  <ImprintReasoning
+                    reco={imprintReco}
+                    title={listing.title}
+                    onLoad={() => void loadImprintReason()}
+                  />
                 </div>
               </details>
             </SectionCard>

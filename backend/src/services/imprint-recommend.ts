@@ -269,6 +269,17 @@ export function extractMaterialTags(text: string): string[] {
   for (const [re, en] of CN_TO_EN) {
     if (re.test(text) && !tags.includes(en)) tags.push(en)
   }
+  /*
+   * 英文 ASI 材质名兜底：业务员在文案里直接写 Oxford / Stainless Steel 时也要认出来。
+   * 以前只认中文别名（牛津布），所以材质栏写 Oxford 会显示"未识别到材质"——
+   * 这是排版上最容易被踩到的坑：文案里本来就是英文。
+   */
+  for (const prof of MATERIAL_PROFILES) {
+    const escaped = prof.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const re = new RegExp(`(^|[^a-z])${escaped}([^a-z]|$)`, "i")
+    if (re.test(text) && !tags.includes(prof.name)) tags.push(prof.name)
+  }
+
   // 泛词兜底：只有没识别出任何具体材质时，才把「塑料」当成硬塑
   if (tags.includes('Rigid Plastic Placeholder')) {
     const concrete = tags.filter((t) => t !== 'Rigid Plastic Placeholder')
