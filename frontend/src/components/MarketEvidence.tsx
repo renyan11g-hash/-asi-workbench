@@ -70,6 +70,7 @@ export interface MarketEvidenceSnap {
   /** 识图比价：只有视觉确认的同款才进价格带 */
   priceCheck?: {
     checked: number
+    confirmedCount?: number
     sameCount: number
     priceLow?: number | null
     priceHigh?: number | null
@@ -230,7 +231,11 @@ export function MarketEvidenceBlock({ snap }: { snap: MarketEvidenceSnap }) {
                 <span className="font-medium text-slate-800">
                   同款价格带 {band(snap.priceCheck.priceLow, snap.priceCheck.priceHigh, snap.priceCheck.median)}
                 </span>
-                <span className="text-slate-400"> · 识图确认 {snap.priceCheck.sameCount} 款</span>
+                <span className="text-slate-400">
+                  {' '}
+                  · 识图确认 {snap.priceCheck.confirmedCount ?? snap.priceCheck.sameCount} 条 / 可用{' '}
+                  {snap.priceCheck.sameCount} 条
+                </span>
               </>
             ) : (
               <span className="text-amber-700">没有识图确认的同款，本次不做价格对比</span>

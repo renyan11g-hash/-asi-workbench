@@ -298,6 +298,7 @@ function normalizeEvaluation(
             ? {
                 priceCheck: {
                   checked: market.priceCheck.checked,
+                  confirmedCount: market.priceCheck.confirmedCount,
                   sameCount: market.priceCheck.sameCount,
                   priceLow: market.priceCheck.price?.p25 ?? null,
                   priceHigh: market.priceCheck.price?.p75 ?? null,

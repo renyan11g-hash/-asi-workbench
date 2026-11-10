@@ -29,7 +29,9 @@ export interface CheckedItem {
 export interface VisualPriceCheck {
   /** 送去识图的候选数量 */
   checked: number
-  /** 识图确认的同款数量 */
+  /** 识图确认的同款数量（含价格异常被剔除的） */
+  confirmedCount: number
+  /** 真正进价格带的同款数量（剔除异常价、低把握之后） */
   sameCount: number
   /** 识图同款的价格带（只有这个能拿来比价） */
   price: { min: number; p25: number; median: number; p75: number; max: number } | null
@@ -38,20 +40,28 @@ export interface VisualPriceCheck {
   note: string
 }
 
-/** 候选挑法：ESP 取最便宜的若干条 + 每家分销商取最便宜的两条（贵的先不看，比价看下限更狠） */
-function pickCandidates(market: MarketSnapshot, limit = 8): VisualCandidate[] {
+/**
+ * 候选挑法：ESP 按价格**均匀取样**（不是只挑最便宜的）。
+ * 只挑最便宜会集中撞上单本笔记本和供应商错价——真正同款的三件套往往在中高价位段。
+ * 再加每家分销商最便宜的 2 条。
+ */
+function pickCandidates(market: MarketSnapshot, limit = 12): VisualCandidate[] {
   const out: VisualCandidate[] = []
-  const esp = market.esp?.items ?? []
-  for (const it of esp.slice(0, 6)) {
-    if (!it.image) continue
-    out.push({
-      index: out.length,
-      title: it.title,
-      image: it.image,
-      priceMin: it.priceMin,
-      source: 'ESP',
-      url: it.url,
-    })
+  const esp = (market.esp?.items ?? []).filter((i) => i.image)
+  if (esp.length) {
+    const want = Math.min(8, esp.length)
+    const step = Math.max(1, Math.floor(esp.length / want))
+    for (let i = 0; i < esp.length && out.length < want; i += step) {
+      const it = esp[i]
+      out.push({
+        index: out.length,
+        title: it.title,
+        image: it.image!,
+        priceMin: it.priceMin,
+        source: 'ESP',
+        url: it.url,
+      })
+    }
   }
   for (const s of market.demand?.sources ?? []) {
     for (const it of (s.items ?? []).slice(0, 2)) {
@@ -81,6 +91,7 @@ export async function buildVisualPriceCheck(
   if (!candidates.length) {
     return {
       checked: 0,
+      confirmedCount: 0,
       sameCount: 0,
       price: null,
       items: [],
@@ -90,6 +101,7 @@ export async function buildVisualPriceCheck(
   if (!ourImages.length) {
     return {
       checked: candidates.length,
+      confirmedCount: 0,
       sameCount: 0,
       price: null,
       items: [],
@@ -101,6 +113,7 @@ export async function buildVisualPriceCheck(
   if (!verdicts) {
     return {
       checked: candidates.length,
+      confirmedCount: 0,
       sameCount: 0,
       price: null,
       items: [],
@@ -142,6 +155,7 @@ export async function buildVisualPriceCheck(
   const price = usable.length >= 3 ? priceBandOf(usable.map((i) => i.priceMin)) : null
 
   const noteParts: string[] = []
+  if (items.length && !verdicts.length) noteParts.push('视觉模型没有返回任何判断，本次不做识图比价')
   if (!confirmed.length) {
     noteParts.push(`识图比对 ${items.length} 条候选，没有一条是真同款：本次没有可比价格，别拿标题同类的价格带下结论`)
   } else if (suspiciousCount) {
@@ -155,5 +169,12 @@ export async function buildVisualPriceCheck(
     noteParts.push(`按 ${usable.length} 条识图同款算价格带`)
   }
 
-  return { checked: items.length, sameCount: usable.length, price, items, note: noteParts.join('；') }
+  return {
+    checked: items.length,
+    confirmedCount: confirmed.length,
+    sameCount: usable.length,
+    price,
+    items,
+    note: noteParts.join('；'),
+  }
 }

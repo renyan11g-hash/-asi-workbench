@@ -118,7 +118,9 @@ export interface Evaluation {
     priceCheck?: {
       /** 送去识图的候选数 */
       checked: number
-      /** 识图确认的同款数 */
+      /** 识图确认的同款数（含价格异常被剔除的） */
+      confirmedCount?: number
+      /** 真正进价格带的同款数 */
       sameCount: number
       priceLow: number | null
       priceHigh: number | null
