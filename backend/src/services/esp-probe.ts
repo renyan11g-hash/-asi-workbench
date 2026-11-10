@@ -39,6 +39,8 @@ export interface EspItem {
   url: string
   /** 卡片上的短描述（截断，仅用于给 AI 判断同款） */
   description?: string
+  /** 产品主图（识图比价用；ESP 的图在 media-asicdn 上，公开可访问） */
+  image?: string
   /** 形态：套装 / 单件（价格带必须按形态分组才可比） */
   form?: ProductForm
 }
@@ -162,6 +164,8 @@ export function parseEspResults(html: string): {
     if (!Number.isFinite(price) || price <= 0) continue
     const productNo = stripTags(chunk.match(/litProdNo"[^>]*>([^<]*)</)?.[1] ?? '')
     const description = stripTags(chunk.match(/<div class="prodDescr">([\s\S]*?)<\/div>/)?.[1] ?? '')
+    // 主图：优先 data-original（src 是懒加载占位图）
+    const imageRaw = chunk.match(/data-original="([^"]+)"/)?.[1] ?? chunk.match(/<img[^>]+src="([^"]+)"/)?.[1] ?? ''
     const key = productId || title.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
@@ -171,6 +175,7 @@ export function parseEspResults(html: string): {
       priceMin: Math.round(price * 1000) / 1000,
       url: productId ? `${DETAIL_BASE}${productId}&PCUrl=1` : '',
       ...(description ? { description: description.slice(0, 240) } : {}),
+      ...(imageRaw ? { image: decode(imageRaw) } : {}),
       form: formOfTitle(title),
     })
   }

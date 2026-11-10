@@ -19,7 +19,8 @@ import { buildAssistantPrompt, buildCatalogKeywordsPrompt, buildChatEvaluationPr
 import { recommendImprintMethods } from './imprint-recommend'
 import { composeScore, parseBreakdown, scoreBand } from './eval-score'
 import { probeWithDiag, type MarketSnapshot } from './market-probe'
-import { formOfSource, formOfTitle } from './market-text'
+import { formOfSource, formOfTitle, formLabel } from './market-text'
+import { buildVisualPriceCheck } from './visual-price'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
 import { AiError, callChatJson } from './ai'
 import { buildPriceGrid, convertUnits } from './pricing'
@@ -163,9 +164,15 @@ function normalizeEvaluation(
         : verdictByScore) as Evaluation['verdict'])
 
   const price = (raw.priceAdviceUsd ?? {}) as Record<string, unknown>
-  // 有真实市场价 → 直接用海外目录价区间，不再让 AI 猜
-  const priceAdviceUsd =
-    market?.price != null
+  /*
+   * 有真实市场价 → 直接用目录价区间，不再让 AI 猜。
+   * 优先级：识图确认的同款价格带 > 4imprint 同类目录价（标题口径，兜底）。
+   * 识图样本存在才用，是因为"三件套 vs 单本笔记本"这种标题匹配出来的价格带会误导报价。
+   */
+  const visualBand = market?.priceCheck?.price ?? null
+  const priceAdviceUsd = visualBand
+    ? { min: visualBand.p25, max: visualBand.p75 }
+    : market?.price != null
       ? { min: market.price.p25, max: market.price.p75 }
       : { min: num(price.min, 0), max: num(price.max, 0) }
 
@@ -283,6 +290,27 @@ function normalizeEvaluation(
                       ...(i.form ? { form: i.form } : {}),
                       url: i.url,
                     })),
+                  })),
+                },
+              }
+            : {}),
+          ...(market.priceCheck
+            ? {
+                priceCheck: {
+                  checked: market.priceCheck.checked,
+                  sameCount: market.priceCheck.sameCount,
+                  priceLow: market.priceCheck.price?.p25 ?? null,
+                  priceHigh: market.priceCheck.price?.p75 ?? null,
+                  median: market.priceCheck.price?.median ?? null,
+                  note: market.priceCheck.note,
+                  items: market.priceCheck.items.slice(0, 8).map((i) => ({
+                    title: i.title,
+                    priceMin: i.priceMin,
+                    source: i.source,
+                    url: i.url,
+                    same: i.same,
+                    confidence: i.confidence,
+                    ...(i.reason ? { reason: i.reason } : {}),
                   })),
                 },
               }
@@ -588,6 +616,24 @@ export async function evaluateSource(
       })
       market = diag.snapshot
       if (!market) marketError = diag.error ?? '未取到海外同款数据'
+      /*
+       * 识图比价：标题能说明"品类有多挤"，说明不了"是不是同一个货"。
+       * 三件套礼盒按标题会匹配到单本笔记本，价格对不上——所以价格结论只认识图。
+       * 这里失败不影响评估，只是标记"没有可比样本"。
+       */
+      if (market) {
+        try {
+          const check = await buildVisualPriceCheck(
+            settings,
+            (source.images ?? []).slice(0, 2),
+            `${source.sourceTitle}（${formLabel(productForm ?? 'unknown')}）`,
+            market
+          )
+          if (check) market.priceCheck = check
+        } catch {
+          // 识图挂了就当作没有比价样本
+        }
+      }
     }
   } catch (e) {
     marketError = (e as Error)?.message ?? '海外探针异常'

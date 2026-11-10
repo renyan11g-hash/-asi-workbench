@@ -90,6 +90,24 @@ export interface Evaluation {
         }>
       }>
     }
+    /** 识图比价：只有视觉确认的同款才进价格带 */
+    priceCheck?: {
+      checked: number
+      sameCount: number
+      priceLow: number | null
+      priceHigh: number | null
+      median: number | null
+      note: string
+      items: Array<{
+        title: string
+        priceMin: number
+        source: string
+        url: string
+        same: boolean
+        confidence: number
+        reason?: string
+      }>
+    }
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
     fetchedAt: string
   }

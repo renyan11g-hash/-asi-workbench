@@ -30,6 +30,8 @@ export interface DistributorItem {
   priceMin: number
   url: string
   sku?: string
+  /** 商品主图（识图比价用） */
+  image?: string
   form: ProductForm
 }
 
@@ -115,10 +117,13 @@ export function parseQlp(html: string): { total: number | null; items: Distribut
     const key = href || title.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
+    // 主图（识图比价用）
+    const imgRaw = chunk.match(/<img[^>]+src="(\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i)?.[1] ?? ''
     items.push({
       title,
       priceMin: price,
       url: href ? `https://www.qualitylogoproducts.com${href}` : '',
+      ...(imgRaw ? { image: `https://www.qualitylogoproducts.com${decode(imgRaw)}` } : {}),
       form: formOfTitle(title),
     })
   }
@@ -132,9 +137,7 @@ export function parseQlp(html: string): { total: number | null; items: Distribut
 export function parsePrintglobe(html: string): { total: number | null; items: DistributorItem[] } {
   const items: DistributorItem[] = []
   const seen = new Set<string>()
-  for (const m of html.matchAll(
-    /<a class="product-card-link" aria-label="([^"]+)" href="(\/[^"]+)"/g
-  )) {
+  for (const m of html.matchAll(/<a class="product-card-link" aria-label="([^"]+)" href="(\/[^"]+)"/g)) {
     const label = decode(m[1])
     const href = m[2]
     // 形如 "Albany Bamboo Notebooks with Pen, Item #JOU0182, Price from $9.32"
@@ -146,11 +149,16 @@ export function parsePrintglobe(html: string): { total: number | null; items: Di
     const key = href || title.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
+    // 卡片里的图片：从锚点位置往后截一段找 <img>
+    const at = html.indexOf(m[0])
+    const tail = at >= 0 ? html.slice(at, at + 2500) : ''
+    const imgRaw = tail.match(/<img[^>]+src="(\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i)?.[1] ?? ''
     items.push({
       title,
       priceMin: price,
       url: href ? `https://www.printglobe.com${href}` : '',
       ...(sku ? { sku } : {}),
+      ...(imgRaw ? { image: `https://www.printglobe.com${decode(imgRaw)}` } : {}),
       form: formOfTitle(title),
     })
   }

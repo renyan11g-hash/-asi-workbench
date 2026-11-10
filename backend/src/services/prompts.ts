@@ -214,6 +214,35 @@ ${demand.sources
 `
     : ''
 
+  /*
+   * 识图比价：唯一可以拿来判断"我们的报价贵不贵"的证据。
+   * 标题匹配只能看品类拥挤度——三件套礼盒按标题会匹配到单本笔记本，价格完全不可比。
+   */
+  const vp = market?.priceCheck
+  const priceBlock = vp
+    ? `PRICE COMPARISON — VISION-VERIFIED SAME PRODUCTS ONLY
+- Candidates checked by image: ${vp.checked}, confirmed as the SAME product: ${vp.sameCount}
+- ${vp.note}
+${
+  vp.price
+    ? `- Same-product price band (THIS is the only band you may use for a price verdict): $${vp.price.p25} – $${vp.price.p75} (median $${vp.price.median}, overall $${vp.price.min} – $${vp.price.max})`
+    : '- There is NO vision-confirmed same product, therefore NO comparable price exists.'
+}
+- Verified items:
+${vp.items
+  .filter((i) => i.same)
+  .slice(0, 6)
+  .map((i) => `  ✔ ${i.title} (${i.source}) — $${i.priceMin}${i.url ? ` — ${i.url}` : ''}`)
+  .join('\n') || '  (none)'}
+- Rejected examples (same title family, different product — do NOT use their prices):
+${vp.items
+  .filter((i) => !i.same)
+  .slice(0, 4)
+  .map((i) => `  ✘ ${i.title} (${i.source}) — $${i.priceMin}${i.reason ? ` — ${i.reason}` : ''}`)
+  .join('\n') || '  (none)'}
+`
+    : ''
+
   const marketBlock = market
     ? `OVERSEAS MARKET EVIDENCE — three independent REAL sources (catalogue data, not guesses)
 
@@ -228,15 +257,16 @@ ${market.items
   .map((i) => `  · ${i.title} — $${i.priceMin} - $${i.priceMax}`)
   .join('\n')}
 
-${demandBlock}MARKET-DERIVED ROUGH ESTIMATES (already computed from the sources above): differentiation ≈ ${market.diffEstimate} (supply only), competition ≈ ${market.competitionEstimate} (supply crowding + distributor demand)
+${demandBlock}${priceBlock}MARKET-DERIVED ROUGH ESTIMATES (already computed from the sources above): differentiation ≈ ${market.diffEstimate} (supply only), competition ≈ ${market.competitionEstimate} (supply crowding + distributor demand)
 ${market.relevanceNote ? `- Probing caveats: ${market.relevanceNote}\n` : ''}
 HOW TO USE THIS EVIDENCE:
 - "differentiation" MUST be judged on SOURCE A (the whole ASI ESP supplier network), NOT on 4imprint alone. 4imprint is a single distributor: a product with 1 hit there can still have hundreds of ASI suppliers making it. Never call a category "thin / niche" just because 4imprint is thin.
 - "competition" MUST combine SOURCE A (how many suppliers make it) with SOURCE C (how many distributors already sell it). Many distributors selling it = a real, contested market; say so plainly instead of promising an easy niche.
 - DEMAND IS THE GATEKEEPER: our goods are sold TO distributors. If SOURCE C shows 0 distributors carrying anything similar, say it in "issues" and in "summary" ("分销商目录里没人卖同类，需求未验证") — do not present it as a hidden opportunity. If several distributors carry it, the product is validated but contested.
 - Land within ±15 of the market-derived estimates above; if you go outside that window, explain in one short Chinese sentence inside "cons" why this product is materially different from the sample.
-- PRICE — read this carefully: never compare our multi-piece SET against a single item. Use ONLY the same-form band. A set is supposed to cost more than a single notebook; quoting the whole-catalogue band as "the market price" is wrong and misleading. If there is no same-form band, write "缺同形态可比样本" instead of a price verdict.
-- "priceAdviceUsd" MUST come from the real price bands above (not a guess): 4imprint's tiered list prices are the most reliable reference; cross-check with SOURCE C's distributor prices. Give a sensible sub-range for THIS product's tier.
+- PRICE — read this carefully. Price verdicts may ONLY use the "PRICE COMPARISON — VISION-VERIFIED SAME PRODUCTS" band: a same-TITLE product is not a same PRODUCT (a 3-piece gift set vs a single notebook are not comparable, and title tokens cannot tell them apart). If that block says there is no vision-confirmed same product, write "缺识图可比样本" and give NO price verdict — silence is correct, a fabricated band is not.
+- Title-based matching (SOURCE A's same-form band, SOURCE C's same-type counts) is for ONE purpose only: judging how crowded the category is. Never quote those numbers as the market price of this product.
+- "priceAdviceUsd" MUST come from the vision-verified band when it exists; otherwise fall back to 4imprint's tiered list prices (real distributor prices for this product type) and say in "cons" that the sample is title-level only. Give a sensible sub-range for THIS product's tier.
 - If a sample is obviously off-target (different product type), say so in "cons" and still score on product merits.
 
 `

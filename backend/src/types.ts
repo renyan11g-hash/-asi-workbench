@@ -111,6 +111,29 @@ export interface Evaluation {
         }>
       }>
     }
+    /**
+     * 识图比价：只有视觉确认"是同一个货"的竞品才进价格带。
+     * 标题匹配只能看类目，不能拿来比价（三件套 vs 单本笔记本价格天然不同）。
+     */
+    priceCheck?: {
+      /** 送去识图的候选数 */
+      checked: number
+      /** 识图确认的同款数 */
+      sameCount: number
+      priceLow: number | null
+      priceHigh: number | null
+      median: number | null
+      note: string
+      items: Array<{
+        title: string
+        priceMin: number
+        source: string
+        url: string
+        same: boolean
+        confidence: number
+        reason?: string
+      }>
+    }
     samples: Array<{ title: string; priceMin: number; priceMax: number; url: string }>
     fetchedAt: string
   }

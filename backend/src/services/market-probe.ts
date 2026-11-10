@@ -31,6 +31,7 @@ import {
   type ProductForm,
 } from './market-text'
 import { probeEspWithDiag, type EspProbeDiag, type EspSnapshot } from './esp-probe'
+import type { VisualPriceCheck } from './visual-price'
 import {
   demandPriceOf,
   probeDistributors,
@@ -78,6 +79,8 @@ export interface MarketSnapshot {
   esp?: EspSnapshot
   /** 分销商需求侧证据（多家分销商目录：几家在卖、各多少条）。旧数据没有 */
   demand?: DistributorDemand
+  /** 识图比价结果（只保留视觉确认的同款；旧数据没有） */
+  priceCheck?: VisualPriceCheck
   fetchedAt: string
 }
 

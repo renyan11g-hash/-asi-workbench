@@ -67,6 +67,24 @@ export interface MarketEvidenceSnap {
       samples?: Array<{ title: string; priceMin: number; form?: 'set' | 'single' | 'unknown'; url?: string }>
     }>
   }
+  /** 识图比价：只有视觉确认的同款才进价格带 */
+  priceCheck?: {
+    checked: number
+    sameCount: number
+    priceLow?: number | null
+    priceHigh?: number | null
+    median?: number | null
+    note: string
+    items: Array<{
+      title: string
+      priceMin: number
+      source: string
+      url: string
+      same: boolean
+      confidence: number
+      reason?: string
+    }>
+  }
 }
 
 const comma = (n: number) => Math.round(n).toLocaleString('en-US')
@@ -163,19 +181,16 @@ export function MarketEvidenceBlock({ snap }: { snap: MarketEvidenceSnap }) {
             {esp.fallback ? <span className="ml-1 text-amber-700">（泛匹配兜底，密度不可信）</span> : null}
             {cats ? <div className="mt-0.5 text-slate-500">类目分布：{cats}</div> : null}
             <div className="mt-0.5">
+              <span className="text-slate-400">标题同类（{formText(esp.productForm)}）价格带 </span>
               {esp.sameFormPriceLow != null ? (
                 <>
-                  <span className="text-slate-400">同形态（{formText(esp.productForm)}）价格带 </span>
-                  <span className="font-medium text-slate-800">
+                  <span className="text-slate-600">
                     {band(esp.sameFormPriceLow, esp.sameFormPriceHigh, esp.sameFormMedian)}
                   </span>
-                  <span className="text-slate-400"> · {esp.sameFormCount ?? 0} 款可比样本</span>
+                  <span className="text-slate-400"> · {esp.sameFormCount ?? 0} 款 · 仅看类目，不能比价</span>
                 </>
               ) : (
-                <>
-                  <span className="text-slate-400">同形态（{formText(esp.productForm)}）价格带 </span>
-                  <span className="text-amber-700">可比样本不足，暂不给结论</span>
-                </>
+                <span className="text-slate-400">样本不足</span>
               )}
             </div>
             {esp.priceLow != null ? (
@@ -203,6 +218,50 @@ export function MarketEvidenceBlock({ snap }: { snap: MarketEvidenceSnap }) {
           </div>
         )}
       </div>
+
+      {/* 识图比价：唯一能拿来判断"我们的报价贵不贵"的证据 */}
+      {snap.priceCheck ? (
+        <div className="border-t border-slate-100 pt-1.5">
+          <div>
+            <span className="rounded bg-amber-50 px-1 py-0.5 font-medium text-amber-700">识图比价</span>{' '}
+            {snap.priceCheck.priceLow != null ? (
+              <>
+                <span className="font-medium text-slate-800">
+                  同款价格带 {band(snap.priceCheck.priceLow, snap.priceCheck.priceHigh, snap.priceCheck.median)}
+                </span>
+                <span className="text-slate-400"> · 识图确认 {snap.priceCheck.sameCount} 款</span>
+              </>
+            ) : (
+              <span className="text-amber-700">没有识图确认的同款，本次不做价格对比</span>
+            )}
+          </div>
+          {snap.priceCheck.items?.length ? (
+            <div className="mt-0.5 space-y-0.5">
+              {snap.priceCheck.items.slice(0, 6).map((it, i) => (
+                <div key={i} className="truncate text-slate-500">
+                  {it.same ? <span className="mr-1 text-emerald-600">✔ 同款</span> : <span className="mr-1 text-slate-400">✘ 不同</span>}
+                  {it.url ? (
+                    <a
+                      href={it.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-slate-600 underline decoration-slate-300 underline-offset-2 hover:text-blue-600"
+                    >
+                      {it.title}
+                      <ExternalLink className="ml-0.5 inline h-2.5 w-2.5" />
+                    </a>
+                  ) : (
+                    it.title
+                  )}{' '}
+                  — ${it.priceMin} <span className="text-slate-400">（{it.source}）</span>
+                  {it.reason ? <span className="text-slate-400"> · {it.reason}</span> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="mt-0.5 text-slate-500">{snap.priceCheck.note}</div>
+        </div>
+      ) : null}
 
       {/* 需求：分销商 */}
       {demand ? (
