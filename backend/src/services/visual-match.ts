@@ -71,8 +71,9 @@ export async function matchSameProductByImage(
   const list = candidates.filter((c) => /^https?:\/\//i.test(c.image) || c.image.startsWith('data:image/'))
   if (!ours.length || !list.length || !settings.aiApiKey?.trim()) return null
 
-  const batchSize = opts.batchSize ?? 4
-  const maxBatches = opts.maxBatches ?? 3
+  // 视觉调用很慢（单批 6 张图约 40-60 秒），一批就够：宁可样本少，也不要超过代理超时
+  const batchSize = opts.batchSize ?? 5
+  const maxBatches = opts.maxBatches ?? 1
   const batches = chunk(list, batchSize).slice(0, maxBatches)
   const out: VisualVerdict[] = []
 

@@ -45,7 +45,7 @@ export interface VisualPriceCheck {
  * 只挑最便宜会集中撞上单本笔记本和供应商错价——真正同款的三件套往往在中高价位段。
  * 再加每家分销商最便宜的 2 条。
  */
-function pickCandidates(market: MarketSnapshot, limit = 12): VisualCandidate[] {
+function pickCandidates(market: MarketSnapshot, limit = 5): VisualCandidate[] {
   const out: VisualCandidate[] = []
   const esp = (market.esp?.items ?? []).filter((i) => i.image)
   if (esp.length) {
