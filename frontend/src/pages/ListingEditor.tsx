@@ -750,7 +750,9 @@ export default function ListingEditor() {
         setReviewDraft(draft)
         toast.success('已保存：覆盖了这条「待审核」文案（审核状态不变，通过后才进产品库）')
       } else {
-        await api.updateProduct(product.id, { listing })
+        await runEditable('保存文案', async (force) => {
+          await api.updateProduct(product.id, { listing, ...(force ? { force: true } : {}) })
+        })
         toast.success('已保存')
       }
       setDirty(false)
@@ -789,7 +791,7 @@ export default function ListingEditor() {
       })
       setListing(p.listing ?? listing)
       qc.invalidateQueries({ queryKey: ['product', id] })
-      toast.success('已按你填的计费重 / 倍率整表重算')
+      toast.success('已按当前设置重算（每档原有倍率保留）')
     } catch (err) {
       toast.error(getErrorMessage(err))
     }
@@ -806,16 +808,68 @@ export default function ListingEditor() {
   const repriceToggle = async (idx: number, mode: 'air' | 'sea') => {
     if (!product) return
     try {
-      const p = await api.reprice(product.id, { toggle: { idx, mode } })
-      setListing(p.listing ?? listing)
-      qc.invalidateQueries({ queryKey: ['product', id] })
-      toast.success(`第 ${idx + 1} 档已切到${mode === 'air' ? '空运' : '海运'}（其它档不变）`)
+      await runEditable('切换某一档运输方式', async (force) => {
+        const p = await api.reprice(product.id, { toggle: { idx, mode }, ...(force ? { force: true } : {}) })
+        setListing(p.listing ?? listing)
+        qc.invalidateQueries({ queryKey: ['product', id] })
+        toast.success(`第 ${idx + 1} 档已切到${mode === 'air' ? '空运' : '海运'}（其它档不变）`)
+      })
     } catch (err) {
       toast.error(getErrorMessage(err))
     }
   }
 
-  // ---------- 源信息一体化编辑（评估库 ↔ 产品库 ↔ 链接 三处同步） ----------
+  // ---------- RPA 库锁定：进库产品默认不可改，确认后带 force 修改并生成新版本 ----------
+  const isRpaLocked = product?.libraryState === 'rpa'
+  const [rpaPrompt, setRpaPrompt] = useState<{ retry: () => Promise<void>; what: string } | null>(null)
+
+  const runEditable = async (what: string, fn: (force?: boolean) => Promise<void>) => {
+    try {
+      await fn()
+    } catch (err) {
+      const msg = getErrorMessage(err)
+      if (msg.includes('RPA_LOCKED')) {
+        setRpaPrompt({
+          what,
+          retry: async () => {
+            setRpaPrompt(null)
+            await fn(true)
+          },
+        })
+        return
+      }
+      toast.error(msg)
+    }
+  }
+
+  // ---------- 本产品定价参数（汇率 / 运费 / 印刷费 / 样品费 / 杂费 / 会员折扣） ----------
+  const [priceForm, setPriceForm] = useState<Record<string, number>>({})
+  useEffect(() => {
+    if (!settings) return
+    const over = (product?.priceSettings ?? {}) as Record<string, number>
+    setPriceForm({
+      fxRate: Number(over.fxRate ?? settings.fxRate ?? 6.7),
+      airRateCnyPerKg: Number(over.airRateCnyPerKg ?? settings.airRateCnyPerKg ?? 50),
+      seaRateCnyPerKg: Number(over.seaRateCnyPerKg ?? settings.seaRateCnyPerKg ?? 20),
+      printCostCny: Number(over.printCostCny ?? settings.printCostCny ?? 1.5),
+      sampleFeeCny: Number(over.sampleFeeCny ?? settings.sampleFeeCny ?? 300),
+      miscFeePct: Number(over.miscFeePct ?? settings.miscFeePct ?? 5),
+      espMemberDiscount: Number(over.espMemberDiscount ?? settings.espMemberDiscount ?? 0.6),
+    })
+  }, [settings, product?.priceSettings, product?.id])
+
+  const hasPriceOverride = Boolean(product?.priceSettings && Object.keys(product.priceSettings).length)
+
+  const savePriceSettings = async (reset = false) =>
+    runEditable(reset ? '恢复全局定价参数' : '修改本产品定价参数', async (force) => {
+      if (!product) return
+      const r = await api.updatePriceSettings(product.id, reset ? { reset: true } : priceForm, { force })
+      setListing(r.product.listing ?? listing)
+      qc.invalidateQueries({ queryKey: ['product', id] })
+      toast.success(reset ? '已恢复为全局定价参数并重算' : '定价参数已保存，阶梯价已按新参数重算')
+    })
+
+
   const [editingSource, setEditingSource] = useState(false)
   const [sourceForm, setSourceForm] = useState<SourceInfo | null>(null)
   const [savingSource, setSavingSource] = useState(false)
@@ -826,11 +880,11 @@ export default function ListingEditor() {
     setEditingSource(true)
   }
 
-  const saveSource = async () => {
+  const saveSource = async (forceSource = false) => {
     if (!product || !sourceForm) return
     setSavingSource(true)
     try {
-      const r = await api.updateProductSource(product.id, sourceForm)
+      const r = await api.updateProductSource(product.id, sourceForm, { force: forceSource })
       // 联动后的 listing（价格表/英制换算/包装已重算）直接采用后端返回值
       setListing(r.product.listing ?? listing)
       setDirty(false)
@@ -850,7 +904,12 @@ export default function ListingEditor() {
           : '已保存：产品库与链接派生数据已同步更新'
       )
     } catch (err) {
-      toast.error(getErrorMessage(err))
+      const msg = getErrorMessage(err)
+      if (msg.includes('RPA_LOCKED')) {
+        setRpaPrompt({ what: '修改产品资料', retry: async () => saveSource(true) })
+      } else {
+        toast.error(msg)
+      }
     } finally {
       setSavingSource(false)
     }
@@ -959,6 +1018,40 @@ export default function ListingEditor() {
 
   return (
     <div className="space-y-5">
+      {isRpaLocked && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-violet-300 bg-violet-50 px-4 py-2.5 text-xs text-violet-900">
+          <div className="flex items-start gap-2">
+            <ClipboardCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              该产品已进入 <b>RPA 档案库</b>（编号 {product.code}
+              {typeof product.rev === 'number' && product.rev > 0 ? ` · 版本 v${product.rev}` : ''}
+              ）：默认锁定，不能直接改。确实需要改就照常操作，系统会弹窗确认；确认后本次修改会
+              <b>生成新版本</b>并同步资料库 / 评估库。
+            </span>
+          </div>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => navigate('/rpa-archive')}>
+            去 RPA 档案库
+          </Button>
+        </div>
+      )}
+      <Dialog open={Boolean(rpaPrompt)} onOpenChange={(v) => !v && setRpaPrompt(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>该产品在 RPA 档案库中</DialogTitle>
+            <DialogDescription>
+              「{rpaPrompt?.what}」会改动一个已进库的产品。确认修改将生成新版本（旧版本留底可回溯），
+              并同步资料库与评估库。是否继续？
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRpaPrompt(null)}>
+              取消
+            </Button>
+            <Button onClick={() => void rpaPrompt?.retry()}>仍然修改</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {product.status === 'pending_review' && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">
           <div className="flex items-start gap-2">
@@ -1850,6 +1943,57 @@ export default function ListingEditor() {
                 </Button>
               }
             >
+              <div className="mb-3 rounded-lg border border-slate-200 bg-white p-2">
+                <details open={!hasPriceOverride ? false : true}>
+                  <summary className="cursor-pointer text-[11px] font-semibold text-slate-700">
+                    定价参数（本产品）
+                    <span className="ml-1 font-normal text-slate-400">
+                      {hasPriceOverride ? '· 已按本产品参数计算' : '· 当前跟随全局设置'} · 汇率 / 运费 / 印刷费 / 样品费 / 杂费 / 会员折扣
+                    </span>
+                  </summary>
+                  <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
+                    {[
+                      { k: 'fxRate', label: '汇率 (¥/$)', step: 0.001 },
+                      { k: 'espMemberDiscount', label: '会员折扣 (0.6=六折)', step: 0.05 },
+                      { k: 'airRateCnyPerKg', label: '空运 ¥/kg', step: 0.1 },
+                      { k: 'seaRateCnyPerKg', label: '海运 ¥/kg', step: 0.1 },
+                      { k: 'printCostCny', label: '印刷费 ¥/件', step: 0.1 },
+                      { k: 'sampleFeeCny', label: '样品费 ¥（首档摊）', step: 10 },
+                      { k: 'miscFeePct', label: '杂费 % 售价', step: 0.5 },
+                    ].map((f) => (
+                      <label key={f.k} className="text-[11px] text-slate-600">
+                        {f.label}
+                        <Input
+                          className="mt-0.5 h-7 text-xs"
+                          type="number"
+                          step={f.step}
+                          value={priceForm[f.k] ?? ''}
+                          onChange={(e) =>
+                            setPriceForm((s) => ({ ...s, [f.k]: Number(e.target.value || 0) }))
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <Button size="sm" className="h-7 text-xs" onClick={() => void savePriceSettings(false)}>
+                      保存并重算
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={() => void savePriceSettings(true)}
+                      disabled={!hasPriceOverride}
+                    >
+                      恢复全局
+                    </Button>
+                    <span className="text-[10px] text-slate-400">
+                      改完立刻按新参数重算整张阶梯表；「网站 list 价」= 这里算出的售价 ÷ 会员折扣
+                    </span>
+                  </div>
+                </details>
+              </div>
               <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 p-2">
                 <label className="text-[11px] text-slate-600">
                   计费重 kg
@@ -1894,7 +2038,7 @@ export default function ListingEditor() {
                     <th className="pb-2">方式</th>
                     <th className="pb-2">计费</th>
                     <th className="pb-2">×倍率</th>
-                    <th className="pb-2">售价 $</th>
+                    <th className="pb-2">售价 $<span className="ml-0.5 font-normal text-slate-400">（我们价）</span></th>
                     <th className="pb-2">总毛利 ¥</th>
                     <th className="pb-2">毛利率</th>
                   </tr>
@@ -2055,7 +2199,7 @@ export default function ListingEditor() {
                     >
                       取消
                     </Button>
-                    <Button size="sm" className="h-7 text-xs" onClick={saveSource} disabled={savingSource}>
+                    <Button size="sm" className="h-7 text-xs" onClick={() => void saveSource()} disabled={savingSource}>
                       {savingSource ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
                       保存并同步
                     </Button>
@@ -2275,6 +2419,26 @@ export default function ListingEditor() {
                 }
               >
                 <EvaluationDetail evaluation={product.evaluation} />
+                <details className="mt-3 rounded-md border border-slate-200 bg-white px-2 py-1.5">
+                  <summary className="cursor-pointer text-[11px] font-semibold text-slate-700">
+                    补充信息 / 与 AI 对话（会重新评估，可能改分数）
+                  </summary>
+                  <div className="mt-2">
+                    <EvaluationChat
+                      productId={product.id}
+                      evaluation={product.evaluation}
+                      chatFn={api.chatEvaluation as unknown as (
+                        id: string,
+                        messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>
+                      ) => Promise<unknown>}
+                      onEvaluationUpdated={() => {
+                        qc.invalidateQueries({ queryKey: ['product', product.id] })
+                        qc.invalidateQueries({ queryKey: ['products'] })
+                        qc.invalidateQueries({ queryKey: ['drafts'] })
+                      }}
+                    />
+                  </div>
+                </details>
               </SectionCard>
             )}
           </div>

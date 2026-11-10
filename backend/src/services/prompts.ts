@@ -245,7 +245,11 @@ ${vp.items
 
   const marketBlock = market
     ? `OVERSEAS MARKET EVIDENCE — three independent REAL sources (catalogue data, not guesses)
-
+${
+  market.memberDiscount
+    ? `PRICE BASIS: every price below has ALREADY been multiplied by ${market.memberDiscount} (the ASI/ESP member discount) so it is directly comparable with OUR tier prices. Never multiply or divide again; when you quote a competitor price in the output, say the band is already on our basis.\n`
+    : ''
+}
 ${espBlock}SOURCE B — 4IMPRINT (also just ONE distributor — see SOURCE C for the multi-distributor picture)
 - Raw hits: ${market.total} (RSS caps around 28 per query, so treat as "at least this many")
 - Same-product hits after matching on keywords [${market.matchTokens.join(', ') || 'n/a'}]: ${market.matched}

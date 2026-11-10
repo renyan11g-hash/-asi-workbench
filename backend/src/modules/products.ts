@@ -10,6 +10,7 @@ import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilar
 import type { ResearchMatch } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
 import { buildPriceGrid, convertUnits, retogglePriceRow } from '../services/pricing'
+import type { Settings } from '../types'
 import { buildGlsWorkbook } from '../services/gls-export'
 import { recommendImprintMethods } from '../services/imprint-recommend'
 import { Evaluation, Listing, PriceRow, Product, ProductStatus, SimilarResearch, SourceInfo } from '../types'
@@ -17,7 +18,7 @@ import { loadSettings } from './settings'
 import { env } from '../config/env'
 import { computeScoreV2 } from '../services/scoring'
 import { createTask, getTask, runTask, TaskRecord } from '../services/task-manager'
-import { findMasterByUrl, MasterProduct } from './master-products'
+import { applyProductSourceToMaster, findMasterByUrl, MasterProduct } from './master-products'
 
 export const productsRouter: Router = Router()
 
@@ -101,6 +102,8 @@ interface Row {
   source_url: string
   description: string
   source_keywords: string
+  price_settings?: string | null
+  library_state?: string | null
   amazon_title: string
   price_cny: number | null
   price_max_cny: number | null
@@ -187,6 +190,8 @@ function rowToProduct(r: Row): Product {
     listing: migrateListing(parseJson<any>(r.listing, null)),
     similar: parseJson<SimilarResearch | null>(r.similar, null),
     status: r.status as ProductStatus,
+    ...(r.price_settings ? { priceSettings: parseJson(r.price_settings, null) } : {}),
+    libraryState: r.library_state ?? '',
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     trashedAt: r.trashed_at ?? null,
@@ -270,6 +275,87 @@ export function findProduct(id: string): Product {
   const row = db.prepare('SELECT * FROM products WHERE id = ?').get(id) as unknown as Row | undefined
   if (!row) throw new AppError(404, '产品不存在')
   return rowToProduct(row)
+}
+
+/**
+ * 单产品定价参数：把产品上的 priceSettings 覆盖到全局设置上。
+ * 为什么需要：不同产品印刷处数、运费谈判价都不一样，必须能逐产品调，
+ * 而不是改一次全局设置影响所有产品。
+ */
+const PRICE_KEYS = [
+  'fxRate',
+  'airRateCnyPerKg',
+  'seaRateCnyPerKg',
+  'volumetricDivisor',
+  'markupAir',
+  'markupSea',
+  'printCostCny',
+  'sampleFeeCny',
+  'miscFeePct',
+  'espMemberDiscount',
+  'rounding',
+] as const
+
+export function settingsForProduct(product: { priceSettings?: Record<string, unknown> | null }): Settings {
+  const base = loadSettings()
+  const over = product.priceSettings
+  if (!over || typeof over !== 'object') return base
+  const merged: Settings = { ...base }
+  for (const k of PRICE_KEYS) {
+    const v = (over as Record<string, unknown>)[k]
+    if (typeof v === 'number' && Number.isFinite(v)) (merged as unknown as Record<string, number>)[k] = v
+  }
+  return merged
+}
+
+/** 库状态：'' 普通 / 'pre' 预产品库 / 'rpa' RPA 档案库 */
+function libraryStateOf(id: string): string {
+  const r = db.prepare('SELECT library_state FROM products WHERE id = ?').get(id) as
+    | { library_state?: string | null }
+    | undefined
+  return r?.library_state ?? ''
+}
+
+/**
+ * RPA 锁：进了 RPA 档案库的产品默认不允许改任何信息。
+ * 前端确认"确实要改"后带 force=true 重试；这时先留一版历史再改（保存后版本 +1）。
+ */
+function assertEditable(id: string, force: unknown, reason: string) {
+  const forced = force === true || force === 'true' || force === 1
+  if (forced) {
+    recordRevision(id, reason)
+    return
+  }
+  if (libraryStateOf(id) === 'rpa') {
+    throw new AppError(
+      409,
+      'RPA_LOCKED：该产品已进入 RPA 档案库，修改会影响已上架信息。确认修改请点「仍然修改」（会生成新版本）'
+    )
+  }
+}
+
+/** 记一版历史（存改之前的 listing/source），并把版本号 +1 */
+function recordRevision(id: string, reason: string) {
+  try {
+    const row = db.prepare('SELECT listing, source, COALESCE(rev,0) AS rev FROM products WHERE id = ?').get(id) as
+      | { listing: string | null; source: string | null; rev: number }
+      | undefined
+    if (!row) return
+    db.prepare(
+      'INSERT INTO product_revisions (id, product_id, rev, reason, listing, source, created_at) VALUES (?,?,?,?,?,?,?)'
+    ).run(
+      randomUUID(),
+      id,
+      row.rev + 1,
+      reason,
+      row.listing,
+      row.source,
+      new Date().toISOString()
+    )
+    db.prepare('UPDATE products SET rev = ? WHERE id = ?').run(row.rev + 1, id)
+  } catch {
+    // 留底失败不阻塞保存
+  }
 }
 
 export async function runAi<T>(fn: () => Promise<T>): Promise<T> {
@@ -1406,6 +1492,8 @@ productsRouter.get('/:id', async (req: Request, res: Response) => {
 // ---------- 更新 ----------
 productsRouter.patch('/:id', async (req: Request, res: Response) => {
   const id = String(req.params.id)
+  const force = (req.body as Record<string, unknown> | undefined)?.force
+  assertEditable(id, force, '修改产品资料/文案')
   const current = findProduct(id)
   const patch = updateSchema.parse(req.body ?? {})
 
@@ -1447,12 +1535,14 @@ productsRouter.patch('/:id', async (req: Request, res: Response) => {
 //   ③ listing 派生字段联动重算（英制换算/价格表/包装文案/材质颜色标签）
 productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
   const id = String(req.params.id)
+  const force = (req.body as Record<string, unknown> | undefined)?.force
+  assertEditable(id, force, '修改产品资料')
   const current = findProduct(id)
   const patch = updateSchema.parse(req.body ?? {})
   if (!patch.source) throw new AppError(400, '缺少 source 字段')
 
   const source = toSourceInfo({ ...current.source, ...patch.source })
-  const settings = loadSettings()
+  const settings = settingsForProduct(current)
 
   // ① listing 派生字段联动重算（不改动 AI 生成的文案内容，只同步与源信息强相关的数据）
   let listing = current.listing
@@ -1475,6 +1565,8 @@ productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
 
   // ② 更新产品库（source + 联动后的 listing）
   updateProductRow(id, source, current.evaluation, listing, current.status, new Date().toISOString())
+  // ④ 反向同步资料库：同链接的那条记录一起更新，下次同款直接复用新数据
+  const masterSynced = applyProductSourceToMaster(source)
 
   // ③ 同步评估库草稿（评估库 ↔ 产品库 双向一致）
   let syncedDraftId: string | null = null
@@ -1503,7 +1595,7 @@ productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
     }
   }
 
-  res.json({ product: findProduct(id), syncedDraftId })
+  res.json({ product: findProduct(id), syncedDraftId, masterSynced })
 })
 
 // ---------- 软删：移到回收站（DELETE /:id） ----------
@@ -1556,7 +1648,7 @@ productsRouter.delete('/:id/purge', async (req: Request, res: Response) => {
 productsRouter.post('/:id/evaluate', async (req: Request, res: Response) => {
   const id = String(req.params.id)
   const current = findProduct(id)
-  const settings = loadSettings()
+  const settings = settingsForProduct(current)
   // 优先用请求里带的词；没有就复用这个产品保存时存下的「类似商品调研」关键词（免费的，不用再调 AI）
   const fromBody = parseSearchTerms((req.body as Record<string, unknown>)?.searchTerms)
   const searchTerms = fromBody.length ? fromBody : searchTermsFromSimilar(current.similar)
@@ -1629,6 +1721,31 @@ productsRouter.post('/:id/chat-evaluation', async (req: Request, res: Response) 
     new Date().toISOString(),
     id
   )
+  // 同步评估库草稿：对话改了评估分，评估库那条也要跟着变（否则两处分数不一致）
+  if (current.draftId) {
+    try {
+      const draftRow = db.prepare('SELECT content FROM drafts WHERE id = ?').get(current.draftId) as
+        | { content: string }
+        | undefined
+      if (draftRow) {
+        let content: Record<string, unknown> = {}
+        try {
+          content = JSON.parse(draftRow.content) as Record<string, unknown>
+        } catch {
+          content = {}
+        }
+        content.evaluation = evaluation
+        content.score = evaluation.score
+        db.prepare('UPDATE drafts SET content = ?, updated_at = ? WHERE id = ?').run(
+          JSON.stringify(content),
+          new Date().toISOString(),
+          current.draftId
+        )
+      }
+    } catch {
+      // 草稿同步失败不影响产品
+    }
+  }
   res.json({ product: findProduct(id) })
 })
 
@@ -1638,7 +1755,7 @@ productsRouter.post('/:id/chat-evaluation', async (req: Request, res: Response) 
 productsRouter.post('/:id/listing', async (req: Request, res: Response) => {
   const id = String(req.params.id)
   const current = findProduct(id)
-  const settings = loadSettings()
+  const settings = settingsForProduct(current)
   const body = z
     .object({
       answers: z
@@ -1715,7 +1832,7 @@ productsRouter.post('/:id/regenerate-fields', async (req: Request, res: Response
   const id = String(req.params.id)
   const current = findProduct(id)
   const body = regenFieldsSchema.parse(req.body ?? {})
-  const settings = loadSettings()
+  const settings = settingsForProduct(current)
   const values = await runAi(() =>
     regenerateListingFields(
       current.source,
@@ -1735,7 +1852,7 @@ productsRouter.post('/:id/regenerate-fields', async (req: Request, res: Response
 productsRouter.post('/:id/find-similar', async (req: Request, res: Response) => {
   const id = String(req.params.id)
   const current = findProduct(id)
-  const settings = loadSettings()
+  const settings = settingsForProduct(current)
   const similar = await runAi(() => findSimilarForSource(current.source, settings))
   db.prepare('UPDATE products SET similar=?, updated_at=? WHERE id=?').run(
     JSON.stringify(similar),
@@ -1748,8 +1865,10 @@ productsRouter.post('/:id/find-similar', async (req: Request, res: Response) => 
 // ---------- 价格表重算 ----------
 productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
   const id = String(req.params.id)
+  const force = (req.body as Record<string, unknown> | undefined)?.force
+  assertEditable(id, force, '重算价格')
   const current = findProduct(id)
-  const settings = loadSettings()
+  const settings = settingsForProduct(current)
   // 计费重 / 倍率允许人工指定：改了就用人工值重算整张阶梯表
   const body = z
     .object({
@@ -1794,11 +1913,20 @@ productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
     return
   }
 
+  // 整表重算时保留每一档原本的倍率（除非用户显式改了全局倍率）：
+  // 否则「改了运费再重算」会把人工调过的 1.35 之类冲回默认 1.4，价格看起来乱跳。
+  const prevRows = (current.listing?.priceGrid ?? []) as PriceRow[]
+  const preserveMarkups =
+    body.markupAir == null && body.markupSea == null && prevRows.length
+      ? Object.fromEntries(prevRows.map((r, i) => [i, r.markupRate]).filter(([, v]) => typeof v === 'number'))
+      : undefined
+
   const overrides: Parameters<typeof buildPriceGrid>[2] = {
     billableKg: body.billableKg,
     markupAir: body.markupAir,
     markupSea: body.markupSea,
     shippingModes: body.shippingModes,
+    ...(preserveMarkups ? { markupByIndex: preserveMarkups as Record<number, number> } : {}),
   }
 
   const { rows } = buildPriceGrid(current.source, settings, overrides)
@@ -1813,6 +1941,57 @@ productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
     )
   }
   res.json({ priceGrid: rows, product: findProduct(id) })
+})
+// ---------- 单产品定价参数（汇率 / 空运海运价 / 印刷费 / 样品费 / 杂费 / 会员折扣） ----------
+// 不同产品印刷处数、谈下来的运费都不一样，所以这些参数要能逐产品改，而不是改全局影响所有产品。
+productsRouter.patch('/:id/price-settings', async (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const force = (req.body as Record<string, unknown> | undefined)?.force
+  assertEditable(id, force, '修改定价参数')
+  const current = findProduct(id)
+  const body = z
+    .object({
+      fxRate: z.number().positive().optional(),
+      airRateCnyPerKg: z.number().min(0).optional(),
+      seaRateCnyPerKg: z.number().min(0).optional(),
+      volumetricDivisor: z.number().min(100).optional(),
+      markupAir: z.number().min(1).max(5).optional(),
+      markupSea: z.number().min(1).max(5).optional(),
+      printCostCny: z.number().min(0).optional(),
+      sampleFeeCny: z.number().min(0).optional(),
+      miscFeePct: z.number().min(0).max(50).optional(),
+      espMemberDiscount: z.number().min(0.1).max(1).optional(),
+      /** true = 清空覆盖，回到全局设置 */
+      reset: z.boolean().optional(),
+    })
+    .parse(req.body ?? {})
+
+  const next = body.reset ? null : { ...(current.priceSettings ?? {}) }
+  if (next) {
+    for (const k of PRICE_KEYS) {
+      const v = (body as Record<string, unknown>)[k]
+      if (typeof v === 'number' && Number.isFinite(v)) (next as Record<string, number>)[k] = v
+    }
+  }
+  db.prepare('UPDATE products SET price_settings=?, updated_at=? WHERE id=?').run(
+    next ? JSON.stringify(next) : null,
+    new Date().toISOString(),
+    id
+  )
+
+  // 改完立刻按新参数重算阶梯价（否则用户还要再点一次重算）
+  const settings = settingsForProduct({ priceSettings: next as Record<string, unknown> | null })
+  let listing = current.listing
+  if (listing) {
+    const { rows } = buildPriceGrid(current.source, settings)
+    listing = { ...listing, priceGrid: rows }
+    db.prepare('UPDATE products SET listing=?, updated_at=? WHERE id=?').run(
+      JSON.stringify(listing),
+      new Date().toISOString(),
+      id
+    )
+  }
+  res.json({ product: findProduct(id), priceSettings: next, effective: settings })
 })
 
 // ---------- 印刷方式推荐（材质适配 + 优缺点分析，本地规则引擎，无需 AI） ----------

@@ -56,6 +56,7 @@ const settingsSchema = z.object({
   printCostCny: z.number().min(0).optional(),
   sampleFeeCny: z.number().min(0).optional(),
   miscFeePct: z.number().min(0).max(50).optional(),
+  espMemberDiscount: z.number().min(0.1).max(1).optional(),
   rounding: z.enum(['none', 'cent05', 'end99']).optional(),
   qtyLevels: z.array(z.number().int().positive()).optional(),
   qtyLevelsMode: z.enum(['auto', 'manual']).optional(),

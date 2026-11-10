@@ -551,6 +551,20 @@ export default function SettingsPage() {
               onChange={(e) => patch({ miscFeePct: Number(e.target.value || 0) })}
             />
           </Field>
+          <Field
+            label="ASI/ESP 会员折扣（0.6 = 六折）"
+            hint="我们挂出去的价 ÷ 该系数 = 网站上给非会员看的 list 价。比价时别人的 list 价会乘以它再和我们的阶梯价比"
+          >
+            <Input
+              className="h-9 text-sm"
+              type="number"
+              step="0.05"
+              min="0.1"
+              max="1"
+              value={form.espMemberDiscount ?? 0.6}
+              onChange={(e) => patch({ espMemberDiscount: Number(e.target.value || 0.6) })}
+            />
+          </Field>
           <Field label="空运（¥/kg）" hint="前 airQtyLevels 档使用">
             <Input
               className="h-9 text-sm"

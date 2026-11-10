@@ -189,6 +189,44 @@ function insertMaster(input: MasterInput): string {
   return id
 }
 
+/**
+ * 产品档案改了源信息 → 反向同步到资料库（同一个 1688 链接的那条记录）。
+ * 资料库是"这个货的事实"，产品档案只是它的一种用法；在链接编辑页改了尺寸/箱规/价格，
+ * 下次同款再录就该直接用新数据。这里只更新字段，不触发 syncMasterToProductsById，
+ * 避免和产品侧写入互相覆盖。
+ */
+export function applyProductSourceToMaster(source: SourceInfo): boolean {
+  const m = findMasterByUrl(source.sourceUrl)
+  if (!m) return false
+  try {
+    db.prepare(
+      `UPDATE master_products SET title=?, price_cny=?, size_cn=?, weight_g=?, carton_l_cm=?, carton_w_cm=?,
+        carton_h_cm=?, pcs_per_carton=?, carton_gw_kg=?, images=?, notes=?, supplier=?, alt_suppliers=?,
+        material_cn=?, colors_cn=?, updated_at=? WHERE id=?`
+    ).run(
+      source.sourceTitle,
+      source.priceCny ?? null,
+      source.sizeCn,
+      source.weightG ?? null,
+      source.cartonLCm ?? null,
+      source.cartonWCm ?? null,
+      source.cartonHCm ?? null,
+      source.pcsPerCarton ?? null,
+      source.cartonGwKg ?? null,
+      JSON.stringify(source.images ?? []),
+      source.notes,
+      source.supplier,
+      source.altSuppliers ?? '',
+      source.materialCn,
+      source.colorsCn,
+      new Date().toISOString(),
+      m.id
+    )
+    return true
+  } catch {
+    return false
+  }
+}
 function updateMaster(id: string, input: MasterInput): MasterSyncResult {
   db.prepare(
     `UPDATE master_products SET offer_id=?, source_url=?, title=?, price_cny=?, size_cn=?, weight_g=?,

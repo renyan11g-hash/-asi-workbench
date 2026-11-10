@@ -90,6 +90,8 @@ export interface Evaluation {
         }>
       }>
     }
+    /** 已折算的会员折扣系数（0.6=六折） */
+    memberDiscount?: number
     /** 识图比价：只有视觉确认的同款才进价格带 */
     priceCheck?: {
       checked: number
@@ -373,6 +375,24 @@ export interface Product {
   status: ProductStatus
   createdAt: string
   updatedAt: string
+  /** 单产品定价参数覆盖（缺省 = 跟随全局设置） */
+  priceSettings?: Partial<{
+    fxRate: number
+    airRateCnyPerKg: number
+    seaRateCnyPerKg: number
+    volumetricDivisor: number
+    markupAir: number
+    markupSea: number
+    printCostCny: number
+    sampleFeeCny: number
+    miscFeePct: number
+    espMemberDiscount: number
+    rounding: 'none' | 'cent05' | 'end99'
+  }> | null
+  /** 库状态：'' 普通 / 'pre' 预产品库 / 'rpa' RPA 档案库（进 RPA 后默认锁编辑） */
+  libraryState?: string
+  /** 产品版本号（强制改 RPA 库产品时 +1） */
+  rev?: number
   /** 进入回收站的时间（status='trashed' 时才有） */
   trashedAt: string | null
   /** 评分 v2（按市场 list 反算，只读展示；原 evaluation 不动） */
@@ -425,6 +445,8 @@ export interface Settings {
   sampleFeeCny?: number
   /** 杂费比例（% 售价，默认 5） */
   miscFeePct?: number
+  /** ASI/ESP 会员折扣：我们挂的价 ÷ 该系数 = 网站 list 价（默认 0.6 六折），比价时别人的 list 价要乘它 */
+  espMemberDiscount?: number
   rounding: 'none' | 'cent05' | 'end99'
   qtyLevels: number[]
   /** 档位模式：auto=首档 数量×售价 > $200 自动选 30/50/100 整数档 */

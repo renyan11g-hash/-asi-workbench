@@ -206,6 +206,8 @@ export const api = {
       evaluation?: Evaluation | null
       listing?: Listing | null
       status?: ProductStatus
+      /** RPA 库产品：确认修改后带 force 重试（会生成新版本） */
+      force?: boolean
     }
   ): Promise<Product> {
     const { data } = await apiClient.patch<{ product: Product }>(`/products/${id}`, patch)
@@ -215,11 +217,12 @@ export const api = {
   /** 更新源信息（链接生成页编辑）：后端联动重算 listing 派生字段并同步评估库草稿 */
   async updateProductSource(
     id: string,
-    source: Partial<SourceInfo>
+    source: Partial<SourceInfo>,
+    opts?: { force?: boolean }
   ): Promise<{ product: Product; syncedDraftId: string | null }> {
     const { data } = await apiClient.patch<{ product: Product; syncedDraftId: string | null }>(
       `/products/${id}/source`,
-      { source }
+      { source, ...(opts?.force ? { force: true } : {}) }
     )
     return data
   },
@@ -612,6 +615,8 @@ export const api = {
       shippingModes?: Array<'air' | 'sea' | null>
       /** 只切换某一档运输方式（其它档价格保持不变） */
       toggle?: { idx: number; mode: 'air' | 'sea' }
+      /** RPA 库产品：确认修改后带 force 重试 */
+      force?: boolean
     }
   ): Promise<Product> {
     const { data } = await apiClient.post<{ product: Product }>(
@@ -620,6 +625,20 @@ export const api = {
       LONG_TIMEOUT
     )
     return data.product
+  },
+
+  /** 本产品定价参数（汇率/运费/印刷费/样品费/杂费/会员折扣）：保存后自动重算阶梯价 */
+  async updatePriceSettings(
+    id: string,
+    patch: Record<string, number | boolean | undefined>,
+    opts?: { force?: boolean }
+  ): Promise<{ product: Product }> {
+    const { data } = await apiClient.patch<{ product: Product }>(
+      `/products/${id}/price-settings`,
+      { ...patch, ...(opts?.force ? { force: true } : {}) },
+      LONG_TIMEOUT
+    )
+    return data
   },
 
   /** 每种图的出图计划（参考哪些产品图 + 哪种风格参考图 + 生成前对话） */

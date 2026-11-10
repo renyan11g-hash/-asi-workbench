@@ -18,7 +18,7 @@ import {
 import { buildAssistantPrompt, buildCatalogKeywordsPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, pickRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
 import { recommendImprintMethods } from './imprint-recommend'
 import { composeScore, parseBreakdown, scoreBand } from './eval-score'
-import { probeWithDiag, type MarketSnapshot } from './market-probe'
+import { applyMemberDiscount, probeWithDiag, type MarketSnapshot } from './market-probe'
 import { formOfSource, formOfTitle, formLabel } from './market-text'
 import { buildVisualPriceCheck } from './visual-price'
 import { GLS_CATEGORIES } from '../constants/gls-categories'
@@ -632,6 +632,8 @@ export async function evaluateSource(
             market
           )
           if (check) market.priceCheck = check
+          // 统一折算成我们的定价口径：我们的价 = 网站 list 价 × 会员折扣（ESP 默认六折）
+          market = applyMemberDiscount(market, settings.espMemberDiscount ?? 0.6)
         } catch {
           // 识图挂了就当作没有比价样本
         }

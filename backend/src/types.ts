@@ -354,6 +354,25 @@ export interface Product {
   status: ProductStatus
   createdAt: string
   updatedAt: string
+  /** 单产品定价参数覆盖（汇率/空运海运价/印刷费/样品费/杂费/会员折扣）：null = 跟随全局设置 */
+  priceSettings?: Partial<
+    Pick<
+      Settings,
+      | 'fxRate'
+      | 'airRateCnyPerKg'
+      | 'seaRateCnyPerKg'
+      | 'volumetricDivisor'
+      | 'markupAir'
+      | 'markupSea'
+      | 'printCostCny'
+      | 'sampleFeeCny'
+      | 'miscFeePct'
+      | 'espMemberDiscount'
+      | 'rounding'
+    >
+  > | null
+  /** 库状态：'' / 'pre' 预产品库 / 'rpa' RPA 档案库（进 RPA 后默认锁编辑） */
+  libraryState?: string
   /** 进入回收站的时间（status='trashed' 时才有） */
   trashedAt: string | null
   /** 评分 v2（按市场 list 反算）：0-100，null=未评分 */
@@ -434,6 +453,11 @@ export interface Settings {
   sampleFeeCny: number
   /** 杂费比例（% 售价：手续费 3% + 损耗 1% + 汇率缓冲 1%，默认 5） */
   miscFeePct: number
+  /**
+   * ASI/ESP 会员折扣：我们挂出去的价格 ÷ 该系数 = 网站上非会员看到的 list 价（默认 0.6 = 六折）。
+   * 比价时把别人的 list 价乘以该系数，才和我们的阶梯价格同一口径。
+   */
+  espMemberDiscount: number
   // 业务默认
   defaultImprintMethods: string[]
   /** 拼写检查：标题关键词、卖点、默认印花 */
@@ -466,6 +490,7 @@ export const DEFAULT_SETTINGS: Settings = {
   printCostCny: 1.5,
   sampleFeeCny: 300,
   miscFeePct: 5,
+  espMemberDiscount: 0.6,
   defaultImprintMethods: ['Silkscreen', 'Laser Engraved'],
   targetCategories: [],
 }

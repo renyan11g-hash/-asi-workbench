@@ -12,6 +12,8 @@ import { formatEspCategories, formatMarketHits } from '@/lib/market-format'
  * 全网混合价格带只能当参考。
  */
 export interface MarketEvidenceSnap {
+  /** 已折算的会员折扣系数（0.6 = 六折） */
+  memberDiscount?: number
   queries?: string[]
   total: number
   matched?: number
@@ -153,6 +155,11 @@ export function MarketEvidenceBlock({ snap }: { snap: MarketEvidenceSnap }) {
       <div>
         <div className="font-semibold text-slate-700">
           海外同款证据
+          {snap.memberDiscount ? (
+            <span className="ml-1 rounded bg-amber-50 px-1 font-normal text-amber-700">
+              已按 {Math.round(snap.memberDiscount * 100)} 折折算为我们的口径
+            </span>
+          ) : null}
           <span className="ml-1 font-normal text-slate-400">
             （ESP 看全 ASI 供应商供给，下面看分销商需求；套装与单件不混着比价）
           </span>

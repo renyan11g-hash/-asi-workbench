@@ -39,15 +39,13 @@ export interface VisualVerdict {
 const SYSTEM = `You are a product-matching analyst for the US promotional products industry (ASI).
 You are given OUR product photos first, then candidate product photos from supplier/distributor catalogues.
 
-Decide for EACH candidate whether it is effectively THE SAME PRODUCT as ours. "Same product" means ALL of:
-- same number of separate pieces/components (a 3-piece gift set is NOT the same as a 2-piece set or a single notebook)
-- same overall construction and silhouette (shape, closure, lid, handle, layout)
-- same dominant materials (e.g. bamboo + kraft gift box vs solid plastic)
-- same product category and use
-
-NOT the same: different piece count, different components, different proportions, a refill/accessory, a different product family,
-or a catalogue photo that is merely the same colour/style.
-If the candidate is the same item in a different colour or with a different logo, it IS the same product.
+Decide for EACH candidate whether it is CLOSE ENOUGH TO COMPARE PRICES with ours.
+- "Same" means: the same kind of product for the same purpose, with roughly the same form factor and components.
+  Minor differences are FINE and still count as same: slightly different piece count, a different accessory,
+  different sizes/capacities, different material finish, a different colour or logo.
+- "Not same" means: a different product category or a clearly different form (e.g. a single notebook vs a gift set,
+  a mug vs a notebook, a bag vs a stationery set). The price of such an item says nothing about ours.
+Use judgement like a buyer would: if a distributor could reasonably offer it as an alternative to ours, it is same.
 
 Respond with STRICT JSON only:
 {"results":[{"n":1,"same":true,"confidence":0.0-1.0,"reason":"<one short Chinese sentence>"}]}

@@ -707,6 +707,26 @@ ensureTableColumn('batch_jobs', 'last_stage', "last_stage TEXT NOT NULL DEFAULT 
 // 资料库老表补「备选供应商」列（表已存在时 CREATE TABLE 不会新增列）
 ensureTableColumn('master_products', 'alt_suppliers', "alt_suppliers TEXT NOT NULL DEFAULT ''")
 
+// 单产品定价参数覆盖（汇率/空运海运价/印刷费/样品费/杂费/会员折扣）：null = 用全局设置
+ensureTableColumn('products', 'price_settings', 'price_settings TEXT')
+// 产品版本号：强制修改 RPA 库产品时 +1，配合 product_revisions 留底
+ensureTableColumn('products', 'rev', 'rev INTEGER NOT NULL DEFAULT 0')
+// 产品修改历史：强制修改 RPA 库产品时先留底（保存后版本 +1）
+tryExec('product_revisions', () => {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS product_revisions (
+      id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL,
+      rev INTEGER NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      listing TEXT,
+      source TEXT,
+      created_at TEXT NOT NULL
+    )`
+  )
+  db.exec('CREATE INDEX IF NOT EXISTS idx_product_revisions_product ON product_revisions(product_id, rev DESC)')
+})
+
 // 订单运营中心表兼容性检查
 function ensureTableColumn(tableName: string, name: string, ddl: string) {
   tryExec(`${tableName}.${name}`, () => {

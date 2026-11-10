@@ -81,6 +81,8 @@ export interface MarketSnapshot {
   demand?: DistributorDemand
   /** 识图比价结果（只保留视觉确认的同款；旧数据没有） */
   priceCheck?: VisualPriceCheck
+  /** 已折算的会员折扣系数（0.6 = 六折）；价格字段都已乘过该系数 */
+  memberDiscount?: number
   fetchedAt: string
 }
 
@@ -454,3 +456,62 @@ export async function probeOverseasMarket(
 /** 供测试/诊断用：把一段标题按同款口径分词 */
 export const marketTokensOf = tokensOf
 export { round2 }
+
+/**
+ * 把海外目录价折算成"我们的定价口径"。
+ *
+ * 业务事实：我们在 ASI/ESP 上挂的价格 ÷ 折扣系数 = 网站上给非会员看的 list 价
+ * （ESP 会员价默认六折，即我们的价是 list 价的 0.6）。
+ * 所以拿到别人的 list 价后必须 ×0.6，才能和我们的阶梯价放在同一把尺子上比。
+ *
+ * 这里对整份证据统一折算（含竞品单条价格），避免"区间折算了、样本没折算"的错位。
+ */
+export function applyMemberDiscount(market: MarketSnapshot, discountRaw: number): MarketSnapshot {
+  const d = Number(discountRaw)
+  if (!Number.isFinite(d) || d <= 0 || d >= 1) return market
+  const scale = (v: number) => Math.round(v * d * 100) / 100
+  const band = <T extends { min: number; p25: number; median: number; p75: number; max: number } | null>(b: T): T =>
+    b
+      ? ({ ...b, min: scale(b.min), p25: scale(b.p25), median: scale(b.median), p75: scale(b.p75), max: scale(b.max) } as T)
+      : b
+
+  const esp = market.esp
+    ? {
+        ...market.esp,
+        price: band(market.esp.price),
+        priceSameForm: band(market.esp.priceSameForm ?? null),
+        items: market.esp.items.map((i) => ({ ...i, priceMin: scale(i.priceMin) })),
+      }
+    : undefined
+
+  const demand = market.demand
+    ? {
+        ...market.demand,
+        price: band(market.demand.price),
+        sources: market.demand.sources.map((s) => ({
+          ...s,
+          price: band(s.price),
+          priceSameForm: band(s.priceSameForm),
+          items: s.items.map((i) => ({ ...i, priceMin: scale(i.priceMin) })),
+        })),
+      }
+    : undefined
+
+  const priceCheck = market.priceCheck
+    ? {
+        ...market.priceCheck,
+        price: band(market.priceCheck.price),
+        items: market.priceCheck.items.map((i) => ({ ...i, priceMin: scale(i.priceMin) })),
+      }
+    : undefined
+
+  return {
+    ...market,
+    price: band(market.price),
+    items: market.items.map((i) => ({ ...i, priceMin: scale(i.priceMin), priceMax: scale(i.priceMax) })),
+    ...(esp ? { esp } : {}),
+    ...(demand ? { demand } : {}),
+    ...(priceCheck ? { priceCheck } : {}),
+    memberDiscount: d,
+  }
+}
