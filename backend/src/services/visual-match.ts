@@ -74,44 +74,56 @@ export async function matchSameProductByImage(
   if (!ours.length || !list.length || !settings.aiApiKey?.trim()) return null
 
   const batchSize = opts.batchSize ?? 4
-  const maxBatches = opts.maxBatches ?? 2
+  const maxBatches = opts.maxBatches ?? 3
   const batches = chunk(list, batchSize).slice(0, maxBatches)
   const out: VisualVerdict[] = []
 
-  for (const batch of batches) {
-    const lines = batch
-      .map((c, i) => `Candidate ${i + 1}: "${c.title}" — $${c.priceMin} (${c.source})`)
-      .join('\n')
-    const user = `OUR PRODUCT: ${ourLabel}
+  /*
+   * 各批并行：视觉调用每批要 10-20 秒，串行 3 批会把整个评估拖到 100 秒以上
+   * （Render 前置代理对单请求有时限）。并行后总耗时≈最慢的那一批。
+   */
+  const results = await Promise.all(
+    batches.map(async (batch) => {
+      const lines = batch
+        .map((c, i) => `Candidate ${i + 1}: "${c.title}" — $${c.priceMin} (${c.source})`)
+        .join('\n')
+      const user = `OUR PRODUCT: ${ourLabel}
 
 The first ${ours.length} image(s) are OURS. Then come ${batch.length} candidate photo(s), in order:
 ${lines}
 
 Compare each candidate photo against OUR photos and answer same / not-same.`
-    try {
-      const data = await callChatJson<{ results?: Array<Record<string, unknown>> }>(
-        settings,
-        SYSTEM,
-        user,
-        0,
-        [...ours, ...batch.map((c) => c.image)]
-      )
-      const rows = Array.isArray(data?.results) ? data.results : []
-      for (const r of rows) {
-        const n = Number(r.n ?? r.index ?? 0)
-        const cand = batch[n - 1]
-        if (!cand) continue
-        out.push({
-          index: cand.index,
-          same: r.same === true || String(r.same).toLowerCase() === 'true',
-          confidence: Math.max(0, Math.min(1, Number(r.confidence ?? 0.5))),
-          ...(typeof r.reason === 'string' && r.reason.trim() ? { reason: r.reason.trim().slice(0, 120) } : {}),
-        })
+      try {
+        const data = await callChatJson<{ results?: Array<Record<string, unknown>> }>(
+          settings,
+          SYSTEM,
+          user,
+          0,
+          [...ours, ...batch.map((c) => c.image)]
+        )
+        const rows = Array.isArray(data?.results) ? data.results : []
+        const verdicts: VisualVerdict[] = []
+        for (const r of rows) {
+          const n = Number(r.n ?? r.index ?? 0)
+          const cand = batch[n - 1]
+          if (!cand) continue
+          verdicts.push({
+            index: cand.index,
+            same: r.same === true || String(r.same).toLowerCase() === 'true',
+            confidence: Math.max(0, Math.min(1, Number(r.confidence ?? 0.5))),
+            ...(typeof r.reason === 'string' && r.reason.trim()
+              ? { reason: r.reason.trim().slice(0, 120) }
+              : {}),
+          })
+        }
+        return verdicts
+      } catch {
+        // 这一批失败不影响其它批
+        return [] as VisualVerdict[]
       }
-    } catch {
-      // 这一批失败：继续下一批；全失败时返回 null
-    }
-  }
+    })
+  )
+  for (const r of results) out.push(...r)
 
   return out.length ? out : null
 }
