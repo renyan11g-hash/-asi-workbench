@@ -8,7 +8,7 @@
  */
 
 import { GLS_CATEGORIES } from '../constants/gls-categories'
-import { marketCategoryTexts, pickRelevantCategories, rankRelevantCategories } from '../services/prompts'
+import { espCategoryNames, marketCategoryTexts, pickRelevantCategories, rankRelevantCategories } from '../services/prompts'
 import { resolveListingCategories } from '../services/workbench'
 import type { Evaluation, SimilarResearch, SourceInfo } from '../types'
 
@@ -92,17 +92,45 @@ describe('类目选择：市场证据 + 类目表约束', () => {
     expect(ranked.slice(0, 5).some((r) => /BACKPACK/i.test(r.cat))).toBe(true)
   })
 
-  it('ESP 类目分布也参与打分（无同款标题时靠 ASI 自己的归类口径）', () => {
-    const source = baseSource()
+  it('ESP 类目分布只当证据，不参与打分（否则泛匹配的 BAGS 会把鞋类挤下去）', () => {
+    // ESP 命中集合是泛匹配：找沙滩拖鞋会连带命中 BAGS/BACKPACKS，不能拿它当类目信号
+    const slipper = baseSource({
+      sourceTitle: '户外露营速干防滑折叠便携沙滩凉鞋 轻量化溯溪鞋',
+      description: 'EVA 鞋底，折叠收纳，速干',
+      materialCn: 'EVA,布',
+    })
+    const similar: SimilarResearch = {
+      productType: 'Foldable Travel Slide Slippers',
+      amazonItems: [],
+      asiItems: [{ title: 'Hotel Amenity Slipper - Bulk Case Packed' }, { title: 'Quick-Dry Water Shoe for Beach' }],
+      suggestions: [],
+      asiSearchTerms: ['travel slippers'],
+    }
     const evaluation = {
       marketSnapshot: {
-        esp: { categories: [{ name: 'Drinkware', count: 120 }, { name: 'Bottles', count: 80 }] },
+        esp: {
+          categories: [
+            { name: 'BAGS', count: 144 },
+            { name: 'SHOES', count: 141 },
+            { name: 'SLIPPERS', count: 28 },
+          ],
+        },
       },
     } as unknown as Evaluation
-    const texts = marketCategoryTexts(null, evaluation)
-    expect(texts.join(' ')).toMatch(/Drinkware/i)
-    const ranked = rankRelevantCategories(source, texts, 10)
+
+    // 证据文本里不该出现 ESP 的类目名（BAGS 这类泛匹配信号会被挡在打分之外）
+    const texts = marketCategoryTexts(similar)
+    expect(texts.join(' ')).not.toMatch(/\bBAGS\b/)
+    // ESP 类目名单独取，只用于给 AI 看的证据块
+    expect(espCategoryNames(evaluation)).toContain('SLIPPERS')
+
+    const ranked = rankRelevantCategories(slipper, texts, 10)
     expect(ranked.every((r) => inLibrary(r.cat))).toBe(true)
+    // 正确的鞋类类目必须排在「Bags-Shoe」这种包类前面
+    const shoeIdx = ranked.findIndex((r) => /^(SLIPPERS|SHOES|FLIP FLOPS)$/.test(r.cat))
+    const bagIdx = ranked.findIndex((r) => r.cat === 'Bags-Shoe')
+    expect(shoeIdx).toBeGreaterThanOrEqual(0)
+    if (bagIdx >= 0) expect(shoeIdx).toBeLessThan(bagIdx)
   })
 
   describe('resolveListingCategories：最终类目判定', () => {

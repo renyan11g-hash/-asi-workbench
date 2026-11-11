@@ -1201,7 +1201,7 @@ export async function generateListing(
     task: 'listing',
     productId: productId ?? null,
   })
-  const marketTexts = marketCategoryTexts(similar, evaluation)
+  const marketTexts = marketCategoryTexts(similar)
   const listing = normalizeListing(raw, rows, source, settings, marketTexts)
   return applyQc(listing, marketTexts)
 }
@@ -1441,7 +1441,7 @@ export async function regenerateListingFields(
   }
   // 类目单独重生成时同样做「高度匹配」校验：跟产品 + 市场证据都不沾边的，替换成证据榜榜首
   if ('category' in out || 'categories' in out) {
-    const rank = rankRelevantCategories(source, marketCategoryTexts(similar, evaluation), 10)
+    const rank = rankRelevantCategories(source, marketCategoryTexts(similar), 10)
     const wellMatched = new Set(rank.map((r) => r.cat))
     const strongTop = rank[0] && rank[0].score >= 3 ? rank[0].cat : undefined
     const ordered = Array.from(

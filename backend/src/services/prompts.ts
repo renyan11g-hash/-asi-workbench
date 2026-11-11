@@ -7,16 +7,17 @@ import { specsToPromptBlock } from './product-specs'
 import type { MarketSnapshot } from './market-probe'
 
 /**
- * 市场证据文本：ASI/Amazon 上「同款商品」的标题、品牌、视觉品类判断、ESP 类目分布。
+ * 市场证据文本（用于类目打分）：ASI/Amazon 上「同款商品」的标题、品牌、视觉品类判断。
  *
- * 为什么单独抽出来：类目/主题选错的根因是 AI 只看到 1688 中文标题，只能"凭感觉"归类。
- * ASI 分销商给同类商品归到哪个类目，才是这个行业公认的答案——把他们的标题喂给打分器和
- * 提示词，AI 就是"照着他们的分类抄"，而不是自己猜。
+ * 为什么单独抽出来：类目选错的根因是 AI 只看到 1688 中文标题，只能"凭感觉"归类。
+ * ASI 分销商给同类商品归到哪个类目，才是这个行业公认的答案——把他们的标题喂给打分器，
+ * 类目候选就是"照着同行的分类"排出来的。
+ *
+ * 注意：**不要**把 ESP 类目分布（marketSnapshot.esp.categories）算进这里。
+ * ESP 的命中集合是泛匹配（找沙滩拖鞋会连带命中 144 个 BAGS），把 BAGS/BACKPACKS 当信号
+ * 会让 "Bags-Shoe" 这类类目压过 "SLIPPERS"——ESP 类目只作为证据展示给 AI，不参与打分。
  */
-export function marketCategoryTexts(
-  similar?: SimilarResearch | null,
-  evaluation?: Evaluation | null
-): string[] {
+export function marketCategoryTexts(similar?: SimilarResearch | null): string[] {
   const out: string[] = []
   if (similar) {
     for (const it of similar.asiItems ?? []) out.push(it.title, it.brand ?? '', it.note ?? '')
@@ -27,11 +28,13 @@ export function marketCategoryTexts(
     if (similar.productType) out.push(similar.productType)
     if (similar.categoryGuess) out.push(similar.categoryGuess)
   }
-  // ESP 全站类目分布（如 Drinkware / Bags）——ASI 自己的归类口径
-  const esp = evaluation?.marketSnapshot?.esp
-  for (const c of esp?.categories ?? []) out.push(c.name)
-  for (const s of esp?.samples ?? []) if (s?.title) out.push(s.title)
   return out.map((t) => String(t ?? '').trim()).filter(Boolean)
+}
+
+/** ESP 类目分布（ASI 自己的归类口径）——只给 AI 当证据看，不参与打分 */
+export function espCategoryNames(evaluation?: Evaluation | null): string[] {
+  const esp = evaluation?.marketSnapshot?.esp
+  return (esp?.categories ?? []).map((c) => String(c?.name ?? '').trim()).filter(Boolean)
 }
 
 /**
@@ -69,7 +72,17 @@ function scoreCategories(
 
   // 提取产品侧有效词（≥2 字符的英文词）
   const signals = new Set<string>()
-  for (const w of haystack.match(/[a-z]{2,}/g) ?? []) signals.add(w)
+  // 泛词黑名单：这些词在 ASI/Amazon 标题里满天飞（"Bulk Case Packed" / "Custom Logo Gift Set"），
+  // 当类目信号会把 Cases-* / Boxes-* 这类噪音家族顶到正确类目前面。
+  // 中文桥接（CN_CATEGORY_SIGNALS）是显式加词，不受这个黑名单影响。
+  const stop = new Set([
+    'the','and','for','with','your','you','our','from','this','that','are','was','its','his','her','all','any','new','best','top','plus','more',
+    'custom','customized','personalized','printed','logo','promotional','promo','item','items','product','products','quality','premium','style','styles','design','designs','color','colors','colour','size','sizes',
+    'pack','packed','package','packaging','case','cases','bulk','set','sets','piece','pieces','pcs','wholesale','supplier','factory','oem','odm','free','sample','samples',
+    'hot','sale','cheap','gift','gifts','giveaway','brand','branded','available','rush','service','perfect','great','good','made','make','used','use','using',
+    'including','include','includes','line','series','model','type','kind','large','small','mini','big','light','heavy','durable','portable','outdoor','indoor',
+  ])
+  for (const w of haystack.match(/[a-z]{2,}/g) ?? []) if (!stop.has(w)) signals.add(w)
 
   // 中文品类词 → 英文类目信号词（1688 中文标题/描述的关键 bridge，否则英文类目表完全打不中）
   const CN_CATEGORY_SIGNALS: Array<[RegExp, string[]]> = [
@@ -84,6 +97,8 @@ function scoreCategories(
     [/杯垫/i, ['coaster']],
     [/袋|包|箱包|背包|拎包|收纳包/i, ['bag', 'tote', 'backpack', 'pack']],
     [/帽/i, ['cap', 'hat', 'headwear']],
+    // 鞋类：1688 的「凉鞋/拖鞋/溯溪鞋」在 ASI 里是 SHOES / SLIPPERS / FLIP FLOPS
+    [/拖鞋|凉鞋|溯溪鞋|沙滩鞋|鞋|靴/i, ['shoe', 'slipper', 'sandal', 'footwear']],
     [/笔/i, ['pen', 'pencil', 'writing']],
     [/伞/i, ['umbrella']],
     [/钥匙扣|钥匙链|挂绳|工牌|证件|徽章/i, ['keychain', 'chain', 'lanyard', 'badge', 'holder']],
@@ -130,7 +145,14 @@ function scoreCategories(
     const mainScore = mainHits === 0 ? 0 : mainHits === mainWords.length ? 4 : 2
     const score = mainScore + Math.min(3, restHits)
     return { cat, score }
-  }).sort((a, b) => b.score - a.score)
+  }).sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score
+    // 同分时家族主类目（无连字符，如 SLIPPERS）优先于子类（如 Bags-Shoe），再按短名、字母序
+    const aHead = a.cat.includes("-") ? 1 : 0
+    const bHead = b.cat.includes("-") ? 1 : 0
+    if (aHead !== bHead) return aHead - bHead
+    return a.cat.length - b.cat.length || a.cat.localeCompare(b.cat)
+  })
 }
 
 /**
@@ -539,7 +561,7 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
   const themesPick = ASI_THEMES.join(', ')
   // 类目来自金山文档「Categories」表。候选排序 = 产品自身文本 + 市场证据（ASI/Amazon 同款标题、ESP 类目）。
   // 只给 AI 最相关的 40 个候选（不是 1620 全表），并附上「同行怎么归类的」证据，选错率明显更低。
-  const marketTexts = marketCategoryTexts(similar, evaluation)
+  const marketTexts = marketCategoryTexts(similar)
   const categoriesPick = pickRelevantCategories(source, 40, marketTexts).join(', ')
   // 类目/主题证据：把 ASI/Amazon 同款商品的真实标题摆出来，让 AI 照着同行的分类口径选
   const categoryEvidence = ((): string => {
@@ -555,7 +577,7 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
       parts.push(`- Amazon same-product titles:\n${amazonTitles.slice(0, 5).map((t) => `    · ${t}`).join('\n')}`)
     if (espCats.length)
       parts.push(
-        `- ASI ESP category breakdown of these matches: ${espCats
+        `- ASI ESP category breakdown of these matches (broad search — ignore categories that clearly belong to OTHER products in the set, e.g. bags listed when the product is footwear): ${espCats
           .slice(0, 8)
           .map((c) => `${c.name} (${c.count})`)
           .join(' · ')}`
