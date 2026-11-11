@@ -1063,15 +1063,33 @@ export function resolveListingCategories(input: {
 
   const ordered = Array.from(new Set([...(primaryRaw ? [primaryRaw] : []), ...validRaw]))
   const hit = ordered.filter((c) => wellMatched.has(c))
+
+  /**
+   * 同一家族里挑更贴合的变体：AI 常把「不锈钢啤酒杯」选成 Mugs & Steins-Glass、
+   * 把「帆布托特包」选成 Bags-Paper 这种"家族对、变体错"的类目。
+   * 规则：如果同主词（连字符前）有排名更高（分更高）的兄弟类目，就用它替换——
+   * 分数差来自材质/结构词命中，等价于"材质对得上"。
+   */
+  const betterSibling = (cat: string): string => {
+    const head = cat.split('-')[0]
+    if (!cat.includes('-')) return cat
+    const self = rank.find((r) => r.cat === cat)
+    if (!self) return cat
+    const sibling = rank
+      .filter((r) => r.cat !== cat && r.cat.split('-')[0] === head && r.score > self.score)
+      .sort((a, b) => b.score - a.score)[0]
+    return sibling?.cat ?? cat
+  }
+
   const categories = hit.length
-    ? hit.slice(0, 2)
+    ? hit.slice(0, 2).map(betterSibling)
     : strongTop
       ? [strongTop]
       : ordered.length
-        ? ordered.slice(0, 2)
+        ? ordered.slice(0, 2).map(betterSibling)
         : [pickRelevantCategories(source, 1, marketTexts)[0] ?? GLS_CATEGORIES[0]]
 
-  return { categories, primary: categories[0] }
+  return { categories: Array.from(new Set(categories)), primary: Array.from(new Set(categories))[0] }
 }
 
 function normalizeListing(

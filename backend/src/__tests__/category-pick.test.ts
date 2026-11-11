@@ -44,6 +44,16 @@ const similarWith = (titles: string[]): SimilarResearch => ({
   asiSearchTerms: ['stainless steel bottle'],
 })
 
+/** 同时给 Amazon / ASI 两组标题的便捷构造 */
+const similarWith2 = (input: { productType: string; asi: string[]; amazon: string[] }): SimilarResearch => ({
+  productType: input.productType,
+  amazonItems: input.amazon.map((t) => ({ title: t })),
+  asiItems: input.asi.map((t) => ({ title: t })),
+  suggestions: [],
+  amazonSearchTerms: [],
+  asiSearchTerms: [],
+})
+
 const inLibrary = (cat: string) => (GLS_CATEGORIES as readonly string[]).includes(cat)
 
 describe('类目选择：市场证据 + 类目表约束', () => {
@@ -131,6 +141,55 @@ describe('类目选择：市场证据 + 类目表约束', () => {
     const bagIdx = ranked.findIndex((r) => r.cat === 'Bags-Shoe')
     expect(shoeIdx).toBeGreaterThanOrEqual(0)
     if (bagIdx >= 0) expect(shoeIdx).toBeLessThan(bagIdx)
+  })
+
+  describe('变体选错（家族对、变体不对）', () => {
+    it('托特包 → 落在 Tote Bags 家族，而不是 BACKPACKS', () => {
+      const tote = baseSource({
+        sourceTitle: '东莞厂家定制慵懒风托特包 简约大容量帆布手提包',
+        description: '帆布面料，大容量',
+        materialCn: '帆布',
+      })
+      const ranked = rankRelevantCategories(tote, marketCategoryTexts(similarWith2({
+        productType: 'Canvas Tote Bag',
+        asi: ['Canvas Tote Bag with Gusset - Custom Print'],
+        amazon: ['Heavy Duty Canvas Tote Bag with Handles'],
+      })), 8)
+      expect(ranked[0].cat.startsWith('Tote Bags') || ranked[0].cat === 'TOTE BAGS').toBe(true)
+    })
+
+    it('不锈钢啤酒杯 → Mugs & Steins-Metal，不是 -Glass（材质决定变体）', () => {
+      const mug = baseSource({
+        sourceTitle: '印制LOGO户外304不锈钢啤酒杯野营便携台阶杯',
+        description: '304 不锈钢内胆',
+        materialCn: '304不锈钢',
+      })
+      const ranked = rankRelevantCategories(mug, marketCategoryTexts(similarWith2({
+        productType: 'Stainless Steel Beer Mug',
+        asi: ['Stainless Steel Beer Cup 14 oz - Laser Engraved'],
+        amazon: ['Stainless Steel Beer Mug Double Wall'],
+      })), 8)
+      expect(ranked[0].cat).toBe('Mugs & Steins-Metal')
+    })
+
+    it('AI 选了同家族的错变体（-Glass）→ 自动换成更贴合的兄弟变体（-Metal）', () => {
+      const mug = baseSource({
+        sourceTitle: '印制LOGO户外304不锈钢啤酒杯野营便携台阶杯',
+        description: '304 不锈钢',
+        materialCn: '304不锈钢',
+      })
+      const r = resolveListingCategories({
+        rawCategories: ['Mugs & Steins-Glass'],
+        rawCategory: 'Mugs & Steins-Glass',
+        source: mug,
+        marketTexts: marketCategoryTexts(similarWith2({
+          productType: 'Stainless Steel Beer Mug',
+          asi: ['Stainless Steel Beer Cup 14 oz - Laser Engraved'],
+          amazon: ['Stainless Steel Beer Mug Double Wall'],
+        })),
+      })
+      expect(r.primary).toBe('Mugs & Steins-Metal')
+    })
   })
 
   describe('resolveListingCategories：最终类目判定', () => {

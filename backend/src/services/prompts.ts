@@ -91,11 +91,16 @@ function scoreCategories(
     // 实际行业里这类产品是 Bottles-*（水杯/保温瓶），所以单独补 bottle/flask 信号
     [/保温杯|保温壶|真空杯|真空壶|水杯|随行杯|吸管杯|运动水壶/i, ['bottle', 'flask', 'tumbler', 'cup']],
     [/水瓶|水壶|运动壶|瓶子|壶/i, ['bottle', 'flask']],
-    [/马克杯|咖啡杯|mug/i, ['mug', 'stein']],
+    [/马克杯|咖啡杯|啤酒杯|扎啤|mug|stein/i, ['mug', 'stein']],
+    [/啤酒|beer/i, ['beer', 'pint', 'bar']],
     [/杯/i, ['cup']],
-    [/酒|红酒|葡萄酒|香槟|威士忌/i, ['wine', 'glass', 'bar', 'shot']],
+    // 注意：不要用裸「酒」——「啤酒杯」也含「酒」，会把 Glass / Shot Size / BAR 这些变体全点亮
+    [/红酒|葡萄酒|香槟|威士忌|白酒|洋酒|酒具/i, ['wine', 'glass', 'bar', 'shot']],
     [/杯垫/i, ['coaster']],
-    [/袋|包|箱包|背包|拎包|收纳包/i, ['bag', 'tote', 'backpack', 'pack']],
+    // 包类要分开：中文「包」太泛，全桥接到 backpack 会让托特包/购物袋被归成 BACKPACKS
+    [/背包|双肩|书包/i, ['backpack']],
+    [/托特|手提包|帆布包|购物袋|环保袋|购物包/i, ['tote', 'bag']],
+    [/袋|包|箱包|拎包|收纳包/i, ['bag', 'pack']],
     [/帽/i, ['cap', 'hat', 'headwear']],
     // 鞋类：1688 的「凉鞋/拖鞋/溯溪鞋」在 ASI 里是 SHOES / SLIPPERS / FLIP FLOPS
     [/拖鞋|凉鞋|溯溪鞋|沙滩鞋|鞋|靴/i, ['shoe', 'slipper', 'sandal', 'footwear']],
@@ -123,6 +128,27 @@ function scoreCategories(
     [/印章|印泥/i, ['stamp']],
   ]
   for (const [re, words] of CN_CATEGORY_SIGNALS) {
+    if (re.test(haystack)) for (const w of words) signals.add(w)
+  }
+
+  // 中文材质 → 英文材质词：类目常带连字符变体（Mugs & Steins-Metal / Tote Bags-Canvas），
+  // 只有材质对得上才能选出正确变体，否则 AI 容易挑到 -Glass / -Paper 这种跟实物不符的变体。
+  const CN_MATERIAL_SIGNALS: Array<[RegExp, string[]]> = [
+    [/不锈钢|stainless/i, ['stainless', 'steel', 'metal']],
+    [/铝|aluminum|aluminium/i, ['aluminum', 'metal']],
+    [/玻璃|glass/i, ['glass']],
+    [/陶瓷|ceramic|porcelain/i, ['ceramic', 'porcelain', 'stoneware']],
+    [/塑料|亚克力|acrylic|pp|abs/i, ['plastic', 'acrylic']],
+    [/硅胶|silicone/i, ['silicone', 'rubber']],
+    [/帆布|canvas/i, ['canvas']],
+    [/尼龙|涤纶|nylon|polyester/i, ['nylon', 'polyester']],
+    [/皮革|真皮|leather|pu皮/i, ['leather', 'leatherette']],
+    [/竹|bamboo/i, ['bamboo', 'wood']],
+    [/木|wood/i, ['wood']],
+    [/棉|cotton/i, ['cotton']],
+    [/纸|paper/i, ['paper']],
+  ]
+  for (const [re, words] of CN_MATERIAL_SIGNALS) {
     if (re.test(haystack)) for (const w of words) signals.add(w)
   }
 
