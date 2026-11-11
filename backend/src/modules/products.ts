@@ -10,7 +10,7 @@ import { probeWithDiag } from '../services/market-probe'
 import { applyMemberDiscount } from '../services/market-probe'
 import { buildVisualPriceCheck } from '../services/visual-price'
 import { formOfSource } from '../services/market-text'
-import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
+import { applyQc, assistantChat, chatEvaluateSource, evaluateSource, findSimilarForSource, generateListing, generateListingQuestions, hasSimilarResearch, regenerateListingFields, researchQueryEn, researchSourcing, suggestSourcing } from '../services/workbench'
 import type { ResearchMatch } from '../services/workbench'
 import { buildFindSimilarPrompt, ChatMessage, ListingAnswer } from '../services/prompts'
 import { buildPriceGrid, convertUnits, retogglePriceRow } from '../services/pricing'
@@ -21,7 +21,7 @@ import { Evaluation, Listing, PriceRow, Product, ProductStatus, SimilarResearch,
 import { loadSettings } from './settings'
 import { env } from '../config/env'
 import { computeScoreV2 } from '../services/scoring'
-import { createTask, getTask, runTask, TaskRecord } from '../services/task-manager'
+import { createTask, getTask, runTask, TaskRecord, updateTask } from '../services/task-manager'
 import { applyProductSourceToMaster, findMasterByUrl, MasterProduct } from './master-products'
 
 export const productsRouter: Router = Router()
@@ -1836,13 +1836,36 @@ productsRouter.post('/:id/listing', async (req: Request, res: Response) => {
           })
         )
         .optional(),
+      /** 强制重做市场参考（默认只在还没有市场参考时自动补做，省一次识图调用） */
+      refreshSimilar: z.boolean().optional(),
     })
     .parse(req.body ?? {})
 
   const task = createTask('generate-listing')
   runTask(task, async () => {
+    // 生成英文文案前先补「看图找类似」：listing 里的标题用词、description 写法、30 组 keywords
+    // 本来就靠这份 Amazon/ASI 市场参考；缺了 AI 只能自己编，编出来的词多半搜不到流量。
+    // 只有完全没有市场参考（或用户显式要求刷新）时才跑识图，避免每次重生成都多花一次图片 token。
+    let similar = current.similar
+    if (body.refreshSimilar || !hasSimilarResearch(similar)) {
+      updateTask(task.id, { progress: '正在看图找类似（Amazon / ASI 市场参考）…' })
+      try {
+        similar = await findSimilarForSource(current.source, settings)
+        db.prepare('UPDATE products SET similar=?, updated_at=? WHERE id=?').run(
+          JSON.stringify(similar),
+          new Date().toISOString(),
+          id
+        )
+      } catch {
+        // 市场参考失败不能挡住文案生成：降级成「没有参考」，提示词少这一段而已
+        similar = hasSimilarResearch(similar) ? similar : null
+      }
+    }
+    updateTask(task.id, {
+      progress: hasSimilarResearch(similar) ? '市场参考已就绪，正在生成英文链接…' : '正在生成英文链接…',
+    })
     const listing = await runAi(() =>
-      generateListing(current.source, settings, body.answers as ListingAnswer[] | undefined, current.similar, current.evaluation ?? null)
+      generateListing(current.source, settings, body.answers as ListingAnswer[] | undefined, similar, current.evaluation ?? null)
     )
     // 生成后先把档案推进「待审核」，**不直接当正式产品**：
     // 无论是单品页还是批量，没人工核对过的英文链接都不该直接进产品库。
@@ -1852,7 +1875,7 @@ productsRouter.post('/:id/listing', async (req: Request, res: Response) => {
       listing,
       status: 'pending_review',
     })
-    return { productId: id }
+    return { productId: id, similarReady: hasSimilarResearch(similar) }
   })
 
   res.json({ taskId: task.id, status: task.status })

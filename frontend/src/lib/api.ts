@@ -554,11 +554,16 @@ export const api = {
   async generateProductListing(
     id: string,
     answers?: Array<{ id: string; question: string; answer: string }>,
-    onProgress?: (elapsedSec: number) => void
+    onProgress?: (elapsedSec: number, stage?: string) => void,
+    /** 强制重做「看图找类似」市场参考（默认只在还没有市场参考时后端自动补做） */
+    opts?: { refreshSimilar?: boolean }
   ): Promise<Product> {
     const { data: start } = await apiClient.post<{ taskId: string; status: string }>(
       `/products/${id}/listing`,
-      answers ? { answers } : {}
+      {
+        ...(answers ? { answers } : {}),
+        ...(opts?.refreshSimilar ? { refreshSimilar: true } : {}),
+      }
     )
     const taskId = start.taskId
     if (!taskId) throw new Error('后端未返回 taskId，请检查后端版本')
@@ -574,11 +579,15 @@ export const api = {
       if (elapsed > MAX_WAIT_MS) {
         throw new Error('生成超时（超过 10 分钟），请重试或检查 AI 服务商状态')
       }
-      let task: { status: string; result?: { productId?: string }; error?: string; hint?: string }
+      let task: { status: string; result?: { productId?: string }; error?: string; hint?: string; progress?: string }
       try {
-        const { data } = await apiClient.get<{ status: string; result?: { productId?: string }; error?: string; hint?: string }>(
-          `/products/tasks/${taskId}`
-        )
+        const { data } = await apiClient.get<{
+          status: string
+          result?: { productId?: string }
+          error?: string
+          hint?: string
+          progress?: string
+        }>(`/products/tasks/${taskId}`)
         task = data
       } catch (err) {
         // 404 = 任务不存在（服务重启清空）；其他网络抖动继续轮询
@@ -593,7 +602,8 @@ export const api = {
       if (task.status === 'error') {
         throw new Error(task.error ? `${task.error}${task.hint ? `（${task.hint}）` : ''}` : '生成失败，请重试')
       }
-      // pending / running → 继续轮询
+      // pending / running → 继续轮询（把后端进度文案带出去，让界面说清「在等哪一步」）
+      if (task.progress) onProgress?.(Math.round(elapsed / 1000), task.progress)
     }
   },
 

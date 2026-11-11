@@ -24,7 +24,7 @@ import type {
   Settings,
 } from '../types'
 import { findProduct } from '../modules/products'
-import { evaluateSource, findSimilarForSource, generateListing } from './workbench'
+import { evaluateSource, findSimilarForSource, generateListing, hasSimilarResearch } from './workbench'
 import { extractSpecs, getSpecRecord, saveSpecs, specsSourceHash } from './product-specs'
 import { runListingQc } from './listing-qc'
 import { createStagedListingReview } from '../modules/listing-reviews'
@@ -458,16 +458,34 @@ function ensureEvalDraft(productId: string, title: string, content: string): str
   return id
 }
 
-async function runListingItem(item: ProductionItem, settings: Settings, jobId: string): Promise<void> {  const product = findProduct(item.productId)
+async function runListingItem(item: ProductionItem, settings: Settings, jobId: string): Promise<void> {
+  const product = findProduct(item.productId)
   // 结构化资料存在就用它当事实清单；没有就与原流程完全一致（不强制先做结构化）
   const specRecord = getSpecRecord(product.id)
   const specs: ProductSpecs | null = specRecord?.specs ?? null
+
+  // 文案要用市场参考（Amazon/ASI 同款搜索词与卖点）：评估那一步没跑成/没做识图时，
+  // 这里补一次，保证「生成的英文链接」永远是基于真实市场词、而不是 AI 自己编的词。
+  let similar = product.similar
+  if (!hasSimilarResearch(similar)) {
+    updateItem(jobId, item.idx, { stage: '正在看图找类似（Amazon / ASI 市场参考）' })
+    try {
+      similar = await findSimilarForSource(product.source, settings)
+      db.prepare('UPDATE products SET similar=?, updated_at=? WHERE id=?').run(
+        JSON.stringify(similar),
+        new Date().toISOString(),
+        product.id
+      )
+    } catch {
+      similar = hasSimilarResearch(similar) ? similar : null
+    }
+  }
 
   const listing: Listing = await generateListing(
     product.source,
     settings,
     undefined,
-    product.similar,
+    similar,
     product.evaluation ?? null,
     specs,
     product.id

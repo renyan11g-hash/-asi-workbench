@@ -605,6 +605,8 @@ export default function ListingEditor() {
   const [busy, setBusy] = useState(false)
   const [saving, setSaving] = useState(false)
   const [genElapsed, setGenElapsed] = useState<number | null>(null) // 异步生成已耗时（秒）
+  /** 后台现在跑到哪一步（看图找类似 / 生成文案），由后端任务进度推上来 */
+  const [genStage, setGenStage] = useState<string | null>(null)
   const syncedId = useRef<string | null>(null)
   const [draftMeta, setDraftMeta] = useState<{ savedAt: string } | null>(null)
   const [hasDraft, setHasDraft] = useState(false)
@@ -680,8 +682,9 @@ export default function ListingEditor() {
     if (!product) return
     setBusy(true)
     try {
-      const updated = await api.generateProductListing(product.id, undefined, (sec) => {
+      const updated = await api.generateProductListing(product.id, undefined, (sec, stage) => {
         setGenElapsed(sec)
+        if (stage) setGenStage(stage)
       })
       setListing(updated.listing)
       setDirty(false)
@@ -693,12 +696,13 @@ export default function ListingEditor() {
       }
       qc.invalidateQueries({ queryKey: ['products'] })
       qc.invalidateQueries({ queryKey: ['product', id] })
-      toast.success('英文链接已生成，请逐项核对')
+      toast.success('英文链接已生成（已带上 Amazon / ASI 市场参考），请逐项核对')
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {
       setBusy(false)
       setGenElapsed(null)
+      setGenStage(null)
     }
   }
 
@@ -1196,9 +1200,11 @@ export default function ListingEditor() {
           <Button onClick={generate} disabled={busy}>
             {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Wand2 className="mr-1 h-4 w-4" />}
             {busy
-              ? genElapsed !== null
-                ? `后台生成中… ${genElapsed}s（完成会自动填入）`
-                : '后台生成中…'
+              ? genStage
+                ? `${genStage}${genElapsed !== null ? ` ${genElapsed}s` : ''}`
+                : genElapsed !== null
+                  ? `后台生成中… ${genElapsed}s（完成会自动填入）`
+                  : '后台生成中…'
               : product.listing
                 ? '重新生成'
                 : 'AI 生成 ASI 英文链接'}

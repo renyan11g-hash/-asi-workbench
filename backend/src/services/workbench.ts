@@ -1279,6 +1279,19 @@ function templateSimilar(source: SourceInfo): SimilarResearch {
   }
 }
 
+/** 「看图找类似」的结果里到底有没有内容：库里存了 '{}' 也算没有，得重新看图 */
+export function hasSimilarResearch(similar: SimilarResearch | null | undefined): boolean {
+  if (!similar || typeof similar !== 'object') return false
+  return Boolean(
+    (similar.productType ?? '').trim() ||
+      (similar.amazonItems?.length ?? 0) > 0 ||
+      (similar.asiItems?.length ?? 0) > 0 ||
+      (similar.amazonSearchTerms?.length ?? 0) > 0 ||
+      (similar.asiSearchTerms?.length ?? 0) > 0 ||
+      (similar.suggestions?.length ?? 0) > 0
+  )
+}
+
 export async function findSimilarForSource(source: SourceInfo, settings: Settings): Promise<SimilarResearch> {
   if (!settings.aiApiKey?.trim()) return templateSimilar(source)
   const { system, user } = buildFindSimilarPrompt(source)
