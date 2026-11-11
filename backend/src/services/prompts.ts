@@ -563,6 +563,45 @@ HOW TO USE THE SCREENING ADVICE (mandatory):
 7. If the advice conflicts with any rule above (title length, no colors in title, no imprint method in copy, mandatory themes, ASI enums), the rule wins.`
 }
 
+/**
+ * 类目证据块：ASI 分销商 / Amazon 上同款商品的真实标题 + ESP 类目分布。
+ * 生成与「局部重生成类目」两处提示词共用同一份证据，避免两套口径选出不同类目。
+ */
+export function formatCategoryEvidence(
+  similar?: SimilarResearch | null,
+  evaluation?: Evaluation | null
+): string {
+  const parts: string[] = []
+  const asiTitles = (similar?.asiItems ?? []).map((i) => i.title).filter(Boolean)
+  const amazonTitles = (similar?.amazonItems ?? []).map((i) => i.title).filter(Boolean)
+  const espCats = (evaluation?.marketSnapshot?.esp?.categories ?? []).filter((c) => c?.name)
+  if (similar?.productType) parts.push(`- Visual product type (from the product photos): ${similar.productType}`)
+  if (similar?.categoryGuess) parts.push(`- ASI category guess from the photos: ${similar.categoryGuess}`)
+  if (asiTitles.length)
+    parts.push(
+      `- ASI distributor products that are the same thing:\n${asiTitles
+        .slice(0, 6)
+        .map((t) => `    · ${t}`)
+        .join('\n')}`
+    )
+  if (amazonTitles.length)
+    parts.push(
+      `- Amazon same-product titles:\n${amazonTitles
+        .slice(0, 5)
+        .map((t) => `    · ${t}`)
+        .join('\n')}`
+    )
+  if (espCats.length)
+    parts.push(
+      `- ASI ESP category breakdown of these matches (broad search — ignore categories that clearly belong to OTHER products in the set, e.g. bags listed when the product is footwear): ${espCats
+        .slice(0, 8)
+        .map((c) => `${c.name} (${c.count})`)
+        .join(' · ')}`
+    )
+  if (!parts.length) return ''
+  return `\n\nCATEGORY EVIDENCE — how ASI distributors classify THIS product (mirror their choice; do NOT guess from the Chinese title):\n${parts.join('\n')}`
+}
+
 export function buildListingPrompt(
   source: SourceInfo,
   settings: Settings,
@@ -589,28 +628,8 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
   // 只给 AI 最相关的 40 个候选（不是 1620 全表），并附上「同行怎么归类的」证据，选错率明显更低。
   const marketTexts = marketCategoryTexts(similar)
   const categoriesPick = pickRelevantCategories(source, 40, marketTexts).join(', ')
-  // 类目/主题证据：把 ASI/Amazon 同款商品的真实标题摆出来，让 AI 照着同行的分类口径选
-  const categoryEvidence = ((): string => {
-    const parts: string[] = []
-    const asiTitles = (similar?.asiItems ?? []).map((i) => i.title).filter(Boolean)
-    const amazonTitles = (similar?.amazonItems ?? []).map((i) => i.title).filter(Boolean)
-    const espCats = (evaluation?.marketSnapshot?.esp?.categories ?? []).filter((c) => c?.name)
-    if (similar?.productType) parts.push(`- Visual product type (from the product photos): ${similar.productType}`)
-    if (similar?.categoryGuess) parts.push(`- ASI category guess from the photos: ${similar.categoryGuess}`)
-    if (asiTitles.length)
-      parts.push(`- ASI distributor products that are the same thing:\n${asiTitles.slice(0, 6).map((t) => `    · ${t}`).join('\n')}`)
-    if (amazonTitles.length)
-      parts.push(`- Amazon same-product titles:\n${amazonTitles.slice(0, 5).map((t) => `    · ${t}`).join('\n')}`)
-    if (espCats.length)
-      parts.push(
-        `- ASI ESP category breakdown of these matches (broad search — ignore categories that clearly belong to OTHER products in the set, e.g. bags listed when the product is footwear): ${espCats
-          .slice(0, 8)
-          .map((c) => `${c.name} (${c.count})`)
-          .join(' · ')}`
-      )
-    if (!parts.length) return ''
-    return `\n\nCATEGORY EVIDENCE — how ASI distributors classify THIS product (mirror their choice; do NOT guess from the Chinese title):\n${parts.join('\n')}`
-  })()
+  // 类目/主题证据：把 ASI/Amazon 同款商品的真实标题与 ESP 类目分布摆出来，让 AI 照着同行的分类口径选
+  const categoryEvidence = formatCategoryEvidence(similar, evaluation)
   const materialsPick = ASI_MATERIALS.join(', ')
   const imprintsPick = ASI_IMPRINT_METHODS.join(', ')
   // 印刷方式材质驱动：先用本地规则引擎按 1688 材质算出「能用/必含/绝不能用」，AI 只在该集合里挑
@@ -1042,15 +1061,22 @@ export function buildFieldsRegeneratePrompt(
   listing: Partial<Listing> | null,
   fields: string[],
   instruction?: string,
-  evaluation?: Evaluation | null
+  evaluation?: Evaluation | null,
+  /** 市场参考（看图找类似）：重生成类目时用它当证据，跟整篇生成保持同一口径 */
+  similar?: SimilarResearch | null
 ) {
   // 枚举值域注入：分块重生成时 AI 必须从合法字符串中选择（此前只给规则不给列表 → 编造值被后处理丢弃）
   const needsCategories = fields.includes('categories') || fields.includes('category')
   const needsThemes = fields.includes('themes')
   const needsImprints = fields.includes('imprintMethods')
+  const categoryEvidence = needsCategories ? formatCategoryEvidence(similar, evaluation) : ''
   const enumBlock = [
     needsCategories
-      ? `GLS CATEGORIES (exact strings ONLY — copy verbatim):\n${pickRelevantCategories(source, 80).join(', ')}`
+      ? `GLS CATEGORIES (exact strings ONLY — copy verbatim; ranked by how well each matches this product and the ASI/Amazon evidence below; pick the one that states WHAT THE PRODUCT PHYSICALLY IS and mirrors how ASI distributors classify it):\n${pickRelevantCategories(
+          source,
+          40,
+          marketCategoryTexts(similar)
+        ).join(', ')}`
       : '',
     needsThemes ? `ASI THEMES (exact strings ONLY):\n${ASI_THEMES.join(', ')}` : '',
     needsImprints
@@ -1086,7 +1112,7 @@ CURRENT LISTING (context only — keep the same product facts and style; do NOT 
 ${JSON.stringify(listing ?? {}, null, 2)}
 
 REGENERATE ONLY THESE KEYS: ${fields.join(', ')}
-${instruction ? `Salesperson instruction (MUST be respected): ${instruction}` : '(no special instruction — improve quality while keeping the same product facts)'}${formatEvaluationAdvice(evaluation)}
+${instruction ? `Salesperson instruction (MUST be respected): ${instruction}` : '(no special instruction — improve quality while keeping the same product facts)'}${formatEvaluationAdvice(evaluation)}${categoryEvidence}
 
 Rules:
 - Output ONLY the requested keys. Never output other fields.

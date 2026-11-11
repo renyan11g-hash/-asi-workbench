@@ -1420,7 +1420,7 @@ export async function regenerateListingFields(
   /** 市场参考（看图找类似）：类目重生成时用来校验是否与 ASI 同行归类一致 */
   similar?: SimilarResearch | null
 ): Promise<Record<string, unknown>> {
-  const { system, user } = buildFieldsRegeneratePrompt(source, listing, fields, instruction, evaluation)
+  const { system, user } = buildFieldsRegeneratePrompt(source, listing, fields, instruction, evaluation, similar)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.6)
   // 兼容平铺与 {"value": {...}} 包裹两种返回
   const src = (
