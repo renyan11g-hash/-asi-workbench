@@ -36,6 +36,51 @@ export interface ChatCallOptions {
   productId?: string | null
 }
 
+/**
+ * 台账任务名兜底：调用方没写 opts.task 时，从调用栈里取最近的业务函数名。
+ *
+ * 为什么需要：全站 20 多个 AI 调用点只有 7 个写了 task，剩下 2/3 的 token
+ * 全落在「未标注」里，台账看不出到底哪块功能在烧钱。这里读调用栈拿到
+ * 业务函数名（evaluateSource / matchSameProductByImage / regenerateListingFields …），
+ * 既不用改 20 处调用，以后新加的调用点也自动有名字。
+ * 任何异常都返回空串 —— 记账永远不能反过来影响正常调用。
+ */
+const TASK_STACK_SKIP = new Set([
+  'callChatResult',
+  'callChat',
+  'callChatJson',
+  'callChatJsonDetailed',
+  'logAiCall',
+  'post',
+  'taskFromStack',
+  'runAi',
+  'Object',
+  'handle',
+  'next',
+  'dispatch',
+  'processTicksAndRejections',
+])
+
+function taskFromStack(): string {
+  try {
+    const stack = new Error().stack
+    if (!stack) return ''
+    for (const raw of stack.split('\n').slice(1)) {
+      // 只看我们自己后端代码里的帧：库/框架帧（express、undici、node 内部）拿到的名字没意义
+      if (/node_modules|node:internal/.test(raw)) continue
+      if (!/\/src\/|\/dist\/|\\src\\|\\dist\\/.test(raw)) continue
+      const m = /^\s*at\s+(?:async\s+)?([A-Za-z_$][\w$.]*)\s*(?:\(|$)/.exec(raw)
+      const name = m?.[1]?.split('.').pop()
+      // 匿名箭头函数（runAi(() => callChatJson(...)) 这种）没有名字，继续往上找
+      if (!name || TASK_STACK_SKIP.has(name)) continue
+      return name.slice(0, 40)
+    }
+    return ''
+  } catch {
+    return ''
+  }
+}
+
 /** 一次调用的完整结果（带耗时/token，台账与界面都用它） */
 export interface ChatResult {
   text: string
@@ -167,7 +212,7 @@ export async function callChatResult(
 
   const fail = (err: AiError): never => {
     logAiCall({
-      task: opts?.task ?? '',
+      task: opts?.task ?? taskFromStack(),
       productId: opts?.productId,
       model,
       baseUrl,
@@ -215,7 +260,7 @@ export async function callChatResult(
     const completionTokens =
       typeof data.usage?.completion_tokens === 'number' ? data.usage.completion_tokens : null
     logAiCall({
-      task: opts?.task ?? '',
+      task: opts?.task ?? taskFromStack(),
       productId: opts?.productId,
       model,
       baseUrl,

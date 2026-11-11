@@ -95,7 +95,19 @@ export default function Production() {
 
   const jobsQuery = useQuery({ queryKey: ['production-jobs'], queryFn: () => api.listProductionJobs(8) })
 
-  const logsQuery = useQuery({ queryKey: ['ai-logs'], queryFn: () => api.listAiCallLogs({ limit: 20 }) })
+  const [logHours, setLogHours] = useState(24)
+  const logsQuery = useQuery({
+    queryKey: ['ai-logs', logHours],
+    queryFn: () => api.listAiCallLogs({ limit: 20, hours: logHours }),
+  })
+
+  // 台账合计与排序：按 token 从多到少，先让人看到「谁最烧钱」
+  const logSummary = logsQuery.data?.summary ?? []
+  const totalTokens = logSummary.reduce((n, s) => n + s.promptTokens + s.completionTokens, 0)
+  const totalCalls = logSummary.reduce((n, s) => n + s.calls, 0)
+  const sortedSummary = [...logSummary].sort(
+    (a, b) => b.promptTokens + b.completionTokens - (a.promptTokens + a.completionTokens)
+  )
 
   const cards = candidatesQuery.data?.cards ?? []
   const limits = candidatesQuery.data?.limits ?? { max: 20, suggested: 10 }
@@ -488,28 +500,66 @@ export default function Production() {
           )}
         </SectionCard>
 
-        <SectionCard title="模型调用（近 24 小时）" hint="哪个任务、什么模型、几次、平均多久、多少 token">
+        <SectionCard
+          title="模型调用台账（哪块功能在烧钱）"
+          hint="按任务统计调用次数与 token；「占比」= 该任务 token ÷ 全部 token"
+        >
+          <div className="mb-2 flex flex-wrap items-center gap-1">
+            {[
+              { h: 24, label: '近 24 小时' },
+              { h: 168, label: '近 7 天' },
+              { h: 720, label: '近 30 天' },
+            ].map((o) => (
+              <button
+                key={o.h}
+                type="button"
+                onClick={() => setLogHours(o.h)}
+                className={cn(
+                  'rounded border px-2 py-[3px] text-[11px]',
+                  logHours === o.h
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                )}
+              >
+                {o.label}
+              </button>
+            ))}
+            <span className="ml-auto text-[11px] text-slate-400">
+              合计 {totalTokens.toLocaleString()} token / {totalCalls} 次
+            </span>
+          </div>
           {logsQuery.data?.summary.length ? (
             <table className="w-full text-left text-[12px]">
               <thead className="text-[11px] text-slate-400">
                 <tr>
-                  <th className="py-1 font-medium">任务</th>
+                  <th className="py-1 font-medium">功能</th>
                   <th className="py-1 font-medium">次数</th>
                   <th className="py-1 font-medium">失败</th>
                   <th className="py-1 font-medium">平均耗时</th>
                   <th className="py-1 font-medium">token</th>
+                  <th className="py-1 font-medium">占比</th>
                 </tr>
               </thead>
               <tbody>
-                {logsQuery.data.summary.map((s) => (
-                  <tr key={s.task} className="border-t border-slate-50">
-                    <td className="py-1">{TASK_LABEL[s.task] ?? (s.task || '（未标注）')}</td>
-                    <td className="py-1">{s.calls}</td>
-                    <td className={cn('py-1', s.failed ? 'text-rose-600' : 'text-slate-400')}>{s.failed}</td>
-                    <td className="py-1">{(s.avgMs / 1000).toFixed(1)}s</td>
-                    <td className="py-1 text-slate-500">{s.promptTokens + s.completionTokens}</td>
-                  </tr>
-                ))}
+                {sortedSummary.map((s) => {
+                  const tokens = s.promptTokens + s.completionTokens
+                  const share = totalTokens ? (tokens / totalTokens) * 100 : 0
+                  return (
+                    <tr key={s.task} className="border-t border-slate-50">
+                      <td className="py-1">
+                        {TASK_LABEL[s.task] ?? (s.task || '（未标注）')}
+                        {TASK_LABEL[s.task] && <span className="ml-1 text-[10px] text-slate-300">{s.task}</span>}
+                      </td>
+                      <td className="py-1">{s.calls}</td>
+                      <td className={cn('py-1', s.failed ? 'text-rose-600' : 'text-slate-400')}>{s.failed}</td>
+                      <td className="py-1">{(s.avgMs / 1000).toFixed(1)}s</td>
+                      <td className="py-1 text-slate-500">{tokens.toLocaleString()}</td>
+                      <td className={cn('py-1', share >= 20 ? 'font-medium text-rose-600' : 'text-slate-500')}>
+                        {share.toFixed(1)}%
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           ) : (
@@ -529,4 +579,27 @@ const TASK_LABEL: Record<string, string> = {
   listing: 'Listing 生成',
   'listing-qc': 'AI 复检',
   'settings-test': '连通测试',
+  // 下面这些是「调用方没写任务名」时由调用栈自动补上的功能名
+  evaluateSource: '选品评估（打分+证据）',
+  chatEvaluateSource: '评估对话',
+  generateListingQuestions: '评估补充提问',
+  findSimilarForSource: '看图找类似',
+  assistantChat: 'AI 助手对话',
+  regenerateListingFields: '文案局部重写',
+  suggestSourcing: '采购建议',
+  researchSourcing: '采购调研',
+  researchQueryEn: '英文检索词',
+  marketSearchTerms: '海外市场检索词',
+  matchSameProductByImage: '识图比价（认同款）',
+  searchTermsFromSimilar: '同款搜索词',
+  buildImagePromptSet: '出图提示词',
+  buildIntroSuggestions: '出图开场建议',
+  translateImageEditInstruction: '图片编辑指令翻译',
+  savePlan: '出图计划对话',
+  pickDailyKeywords: '每日线索关键词',
+  findEmailDraft: '邮件草稿',
+  'image-review': '看图认品类',
+  'visual-style-learn': '视觉风格学习',
+  'image-identify': '图片识别',
+  'visual-match': '识图比价（认同款）',
 }

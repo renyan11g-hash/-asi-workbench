@@ -1405,7 +1405,7 @@ export const api = {
     return data
   },
 
-  async listAiCallLogs(params?: { limit?: number; task?: string }): Promise<{
+  async listAiCallLogs(params?: { limit?: number; task?: string; hours?: number }): Promise<{
     logs: AiCallLog[]
     summary: AiCallSummary[]
   }> {
