@@ -51,6 +51,10 @@ export const createApp = (): Application => {
   // Body parsing and compression（以图找源上传 base64 图片，放宽到 8mb）
   // 资料库导入：Excel 转 base64 会膨胀约 33%，这条路由单独放宽（其它接口仍按 8mb）
   app.use(`${env.API_PREFIX}/master-products/import`, express.json({ limit: '48mb' }))
+  // 图片来源上传（资料库补图 / 出图工作台上传本地图）：base64 会比原图大 33%，
+  // 一次可能带几张，单独放宽；前端会分小批（每次 ≤3 张）以免单请求过大
+  app.use(`${env.API_PREFIX}/master-products/images`, express.json({ limit: '32mb' }))
+  app.use(`${env.API_PREFIX}/product-images/product`, express.json({ limit: '32mb' }))
   app.use(express.json({ limit: '8mb' }))
   app.use(express.urlencoded({ extended: true }))
   app.use(compression())

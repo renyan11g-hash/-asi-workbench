@@ -21,6 +21,7 @@ import { SectionCard } from '@/components/ui/primitives'
 import { useNavigate } from 'react-router-dom'
 import { api, getErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { chunkImages, fileToDataUrl as readFileAsDataUrl } from '@/lib/files'
 import { ProductSpecCards } from './ProductSpecs'
 import { MasterProduct, MasterStage } from '@/types'
 
@@ -134,14 +135,9 @@ const numOrNull = (v: string): number | null => {
  * 关键作用：批量处理 / 单品预填去抓 1688 时，先查这里——命中就直接用，
  * 不用再重复补箱规、每箱数、箱毛重，图片也能一次录多张供出图参考。
  */
-/** 本地文件 → data URL（上传由后端压缩入库，前端不做图形处理） */
+/** 本地文件 → data URL 走公共工具（上传压缩在服务端做） */
 function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result ?? ''))
-    reader.onerror = () => reject(new Error('读取图片失败'))
-    reader.readAsDataURL(file)
-  })
+  return readFileAsDataUrl(file)
 }
 
 function MasterDataPanel() {
@@ -475,12 +471,18 @@ function MasterDataPanel() {
         dataUrls.push(await fileToDataUrl(f))
       }
       if (!dataUrls.length) return
-      const r = await api.uploadMasterImages(dataUrls)
+      const urls: string[] = []
+      const failed: string[] = []
+      for (const part of chunkImages(dataUrls, 3)) {
+        const r = await api.uploadMasterImages(part)
+        urls.push(...r.urls)
+        if (r.failed?.length) failed.push(...r.failed)
+      }
       setForm((cur) =>
-        cur ? { ...cur, images: Array.from(new Set([...cur.images, ...r.urls])) } : cur
+        cur ? { ...cur, images: Array.from(new Set([...cur.images, ...urls])) } : cur
       )
-      if (r.failed?.length) toast.warning(`${r.urls.length} 张已添加，${r.failed.length} 张失败`)
-      else toast.success(`已添加 ${r.urls.length} 张图片`)
+      if (failed.length) toast.warning(`${urls.length} 张已添加，${failed.length} 张失败`)
+      else toast.success(`已添加 ${urls.length} 张图片`)
     } catch (err) {
       toast.error(getErrorMessage(err))
     } finally {

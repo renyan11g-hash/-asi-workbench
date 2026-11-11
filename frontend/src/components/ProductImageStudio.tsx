@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ChevronDown,
@@ -17,6 +17,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
+  Upload,
   Wand2,
   X,
 } from 'lucide-react'
@@ -25,6 +26,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { api, getErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { chunkImages, fileToDataUrl, pickImageFiles, UPLOAD_BATCH_LIMIT, UPLOAD_MAX_BYTES } from '@/lib/files'
 import type { ImageCapabilities, ProductImage, ShotPlan, StyleMatch, VisualRef } from '@/types'
 
 const KIND_LABEL: Record<string, string> = {
@@ -132,6 +134,10 @@ export function ProductImageStudio({
   // 手动粘贴产品图
   const [sourcePaste, setSourcePaste] = useState('')
   const [showSourcePaste, setShowSourcePaste] = useState(false)
+  /** 本地图片上传中 / 拖拽悬停（产品图区域支持拖拽与 Ctrl+V 粘贴） */
+  const [srcUploading, setSrcUploading] = useState(false)
+  const [srcDragOver, setSrcDragOver] = useState(false)
+  const srcFileRef = useRef<HTMLInputElement | null>(null)
 
   // 生成前对话
   const [chatKind, setChatKind] = useState<KindKey | null>(null)
@@ -259,6 +265,42 @@ export function ProductImageStudio({
       toast.success(`已添加产品图，共 ${(r.images ?? []).length} 张`)
     } catch (err) {
       toast.error(getErrorMessage(err))
+    }
+  }
+
+  /** 本地文件 / 拖拽 / 剪贴板 → dataURL → 后端压缩入库（与「资料库」同一套上传通道） */
+  const addSourceFiles = async (files: FileList | File[] | null) => {
+    const list = pickImageFiles(files)
+    if (!list.length) {
+      toast.error('没有可用的图片文件（支持 jpg / png / webp / gif）')
+      return
+    }
+    if (list.length > UPLOAD_BATCH_LIMIT) {
+      toast.error(`一次最多 ${UPLOAD_BATCH_LIMIT} 张，请分批上传`)
+      return
+    }
+    setSrcUploading(true)
+    try {
+      const dataUrls: string[] = []
+      for (const f of list) {
+        if (f.size > UPLOAD_MAX_BYTES) {
+          toast.error(`${f.name} 超过 8MB，请压缩后再传`)
+          continue
+        }
+        dataUrls.push(await fileToDataUrl(f))
+      }
+      if (!dataUrls.length) return
+      let merged: string[] = sources
+      for (const part of chunkImages(dataUrls, 3)) {
+        const r = await api.addSourceImages(productId, part)
+        merged = r.images ?? merged
+      }
+      setSources(merged)
+      toast.success(`已上传 ${dataUrls.length} 张产品图，共 ${merged.length} 张`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setSrcUploading(false)
     }
   }
 
@@ -660,11 +702,43 @@ export function ProductImageStudio({
               从 1688 抓取
             </Button>
           </div>
-          <div className="mt-2 flex min-h-[80px] flex-wrap gap-2">
+          <div
+            className={cn(
+              'mt-2 flex min-h-[80px] flex-wrap gap-2 rounded-lg border-2 border-dashed p-2 transition',
+              srcDragOver ? 'border-blue-400 bg-blue-50/40' : 'border-transparent'
+            )}
+            onDragOver={(e) => {
+              e.preventDefault()
+              setSrcDragOver(true)
+            }}
+            onDragLeave={() => setSrcDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault()
+              setSrcDragOver(false)
+              void addSourceFiles(e.dataTransfer.files)
+            }}
+            onPaste={(e) => {
+              const items = e.clipboardData?.items
+              if (!items) return
+              const files: File[] = []
+              for (const it of Array.from(items)) {
+                if (it.kind === 'file' && it.type.startsWith('image/')) {
+                  const f = it.getAsFile()
+                  if (f) files.push(f)
+                }
+              }
+              if (files.length) {
+                e.preventDefault()
+                void addSourceFiles(files)
+              }
+            }}
+            tabIndex={0}
+            title="支持把图片拖进来，或点这里后 Ctrl+V 粘贴截图"
+          >
             {sources.length === 0 ? (
-              <div className="flex w-full flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 py-6 text-[11px] text-slate-400">
+              <div className="flex w-full flex-col items-center justify-center py-6 text-[11px] text-slate-400">
                 <ImagePlus className="mb-1 h-5 w-5" />
-                还没有产品图：点「从 1688 抓取」，或手动粘贴图片地址
+                还没有产品图：上传本地图片 / 拖进来 / Ctrl+V 粘贴截图，或点「从 1688 抓取」
               </div>
             ) : (
               sources.map((u, i) => (
@@ -689,6 +763,38 @@ export function ProductImageStudio({
                 </div>
               ))
             )}
+          </div>
+
+          {/* 多方式添加：本地文件 / 拖拽 / 粘贴 / 链接 */}
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <input
+              ref={srcFileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                void addSourceFiles(e.target.files)
+                if (srcFileRef.current) srcFileRef.current.value = ''
+              }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-[11px]"
+              disabled={srcUploading}
+              onClick={() => srcFileRef.current?.click()}
+            >
+              {srcUploading ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Upload className="mr-1 h-3.5 w-3.5" />
+              )}
+              {srcUploading ? '上传中…' : '上传本地图片'}
+            </Button>
+            <span className="text-[10px] text-slate-400">
+              也可以把图片拖进上面的框，或点框内 Ctrl+V 粘贴截图
+            </span>
           </div>
           <div className="mt-2">
             {showSourcePaste ? (

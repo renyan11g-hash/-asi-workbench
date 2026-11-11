@@ -1976,7 +1976,7 @@ productsRouter.post('/:id/find-similar', async (req: Request, res: Response) => 
  * 是这条审核草稿的 listing。改箱规 / 重算价格时如果只更新 products.listing，
  * 用户就会觉得「改了尺寸价格没变」——其实数据写到了另一个空档案上。
  */
-function syncStagedReviewListing(productId: string, patch: Partial<Listing>): Partial<Listing> | null {
+export function syncStagedReviewListing(productId: string, patch: Partial<Listing>): Partial<Listing> | null {
   try {
     const rev = db
       .prepare(
