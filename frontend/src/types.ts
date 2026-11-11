@@ -811,7 +811,24 @@ export interface MasterProduct {
   productId?: string | null
   productCode?: string | null
   productStatus?: string | null
+  /** 产品在哪个库：pipeline / pre（预产品库）/ rpa（RPA 档案库） */
+  libraryState?: string | null
+  hasEvaluation?: boolean
+  hasListing?: boolean
+  /** 缺哪些资料（与产品流水线同一口径） */
+  missingFields?: string[]
+  /** 这条资料现在走到哪一关（列表上方分类） */
+  stage?: MasterStage
 }
+
+/** 产品资料库列表上方的分类 */
+export type MasterStage =
+  | 'need-specs' // 待补全资料
+  | 'need-eval' // 待评估
+  | 'need-listing' // 待生成英文链接
+  | 'need-pre' // 待录入预产品库
+  | 'pre' // 已在预产品库
+  | 'rpa' // 已入库 RPA
 
 // ---------------- 英文链接待审核库（批量生成的 listing 先在这里审核，通过才进产品库） ----------------
 

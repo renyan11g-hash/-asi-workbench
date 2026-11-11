@@ -801,14 +801,78 @@ export function ensureProductFromMaster(m: MasterProduct): { productId: string; 
   return { productId: id, created: true }
 }
 
+/** 资料库条目在流水线上的位置（资料库列表上方的分类用） */
+export type MasterStage = 'need-specs' | 'need-eval' | 'need-listing' | 'need-pre' | 'pre' | 'rpa'
+
+/**
+ * 资料齐全度：与产品流水线的 specsMissing 同一口径（缺哪几项就列出来）。
+ * 口径必须一致，否则资料库说「齐了」、流水线又说「待补资料」，用户会不知道该信哪个。
+ */
+function masterMissing(m: MasterProduct): string[] {
+  const missing: string[] = []
+  if (!(Number(m.priceCny) > 0)) missing.push('采购价')
+  if (!(m.sizeCn ?? '').trim()) missing.push('产品尺寸')
+  if (!(m.materialCn ?? '').trim()) missing.push('材质')
+  if (!(m.cartonLCm && m.cartonWCm && m.cartonHCm)) missing.push('箱规')
+  if (!m.pcsPerCarton) missing.push('每箱数量')
+  if (!m.cartonGwKg) missing.push('箱毛重')
+  if (!m.weightG) missing.push('单件净重')
+  if (!m.images.length) missing.push('产品图片')
+  return missing
+}
+
+/**
+ * 一条资料现在走到哪一关（列表上方分类的判定依据）：
+ *   rpa / pre 是终态，先判；
+ *   其余按 资料是否齐全 → 评估做了没 → 英文链接生成了没 → 是否已录入预产品库 依次判。
+ */
+function stageOf(m: MasterProduct, link: LinkedMeta | undefined): MasterStage {
+  if (link?.libraryState === 'rpa') return 'rpa'
+  if (link?.status === 'listed') return 'pre'
+  if (masterMissing(m).length) return 'need-specs'
+  if (!link || !link.hasEval) return 'need-eval'
+  if (!link.hasListing) return 'need-listing'
+  return 'need-pre'
+}
+
 /** 资料库里每条资料对应的产品档案（没有就是 null），列表里显示「已进入系统」 */
-function linkedProducts(): Map<string, { id: string; code: string; status: string }> {
-  const out = new Map<string, { id: string; code: string; status: string }>()
+interface LinkedMeta {
+  id: string
+  code: string
+  status: string
+  libraryState: string
+  hasEval: boolean
+  hasListing: boolean
+}
+
+function linkedProducts(): Map<string, LinkedMeta> {
+  const out = new Map<string, LinkedMeta>()
   try {
     const rows = db
-      .prepare('SELECT master_id, id, code, status FROM products WHERE master_id IS NOT NULL')
-      .all() as unknown as Array<{ master_id: string; id: string; code: string; status: string }>
-    for (const r of rows) out.set(r.master_id, { id: r.id, code: r.code, status: r.status })
+      .prepare(
+        `SELECT master_id, id, code, status, library_state,
+                CASE WHEN evaluation IS NULL THEN 0 ELSE 1 END AS has_eval,
+                CASE WHEN listing IS NULL THEN 0 ELSE 1 END AS has_listing
+           FROM products WHERE master_id IS NOT NULL`
+      )
+      .all() as unknown as Array<{
+      master_id: string
+      id: string
+      code: string
+      status: string
+      library_state: string | null
+      has_eval: number
+      has_listing: number
+    }>
+    for (const r of rows)
+      out.set(r.master_id, {
+        id: r.id,
+        code: r.code,
+        status: r.status,
+        libraryState: r.library_state ?? 'pipeline',
+        hasEval: Number(r.has_eval) === 1,
+        hasListing: Number(r.has_listing) === 1,
+      })
   } catch {
     /* ignore */
   }
@@ -831,7 +895,19 @@ masterProductsRouter.get('/', async (req: Request, res: Response) => {
   res.json({
     products: rows.map((r) => {
       const m = rowToMaster(r)
-      return { ...m, productId: linked.get(m.id)?.id ?? null, productCode: linked.get(m.id)?.code ?? null, productStatus: linked.get(m.id)?.status ?? null }
+      const link = linked.get(m.id)
+      const missingFields = masterMissing(m)
+      return {
+        ...m,
+        productId: link?.id ?? null,
+        productCode: link?.code ?? null,
+        productStatus: link?.status ?? null,
+        libraryState: link?.libraryState ?? null,
+        hasEvaluation: Boolean(link?.hasEval),
+        hasListing: Boolean(link?.hasListing),
+        missingFields,
+        stage: stageOf(m, link),
+      }
     }),
   })
 })

@@ -20,8 +20,45 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { SectionCard } from '@/components/ui/primitives'
 import { useNavigate } from 'react-router-dom'
 import { api, getErrorMessage } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import { ProductSpecCards } from './ProductSpecs'
-import { MasterProduct } from '@/types'
+import { MasterProduct, MasterStage } from '@/types'
+
+/** 资料库列表上方的分类：一条资料现在走到哪一关（判定在后台 stageOf 里，口径与流水线一致） */
+const STAGE_META: Record<MasterStage, { label: string; hint: string; badge: string }> = {
+  'need-specs': {
+    label: '待补全资料',
+    hint: '缺箱规 / 克重 / 图片等，补齐才能评估',
+    badge: 'border-amber-200 bg-amber-50 text-amber-700',
+  },
+  'need-eval': {
+    label: '待评估',
+    hint: '资料齐全，还没跑 AI 选品评估',
+    badge: 'border-sky-200 bg-sky-50 text-sky-700',
+  },
+  'need-listing': {
+    label: '待生成英文链接',
+    hint: '评估已经出结果，还没生成英文 listing',
+    badge: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+  },
+  'need-pre': {
+    label: '待录入预产品库',
+    hint: '英文链接已生成，等审核通过进预产品库',
+    badge: 'border-violet-200 bg-violet-50 text-violet-700',
+  },
+  pre: {
+    label: '已在预产品库',
+    hint: '已发 GLS 号，在预产品库里（还没进 RPA 档案库）',
+    badge: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  },
+  rpa: {
+    label: '已入库RPA',
+    hint: '已进 RPA 档案库',
+    badge: 'border-slate-300 bg-slate-900 text-white',
+  },
+}
+
+const STAGE_ORDER: MasterStage[] = ['need-specs', 'need-eval', 'need-listing', 'need-pre', 'pre', 'rpa']
 
 type FormState = {
   id?: string
@@ -102,6 +139,8 @@ function MasterDataPanel() {
   const [list, setList] = useState<MasterProduct[]>([])
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
+  /** 上方的分类筛选：all = 全部 */
+  const [stage, setStage] = useState<'all' | MasterStage>('all')
   const [form, setForm] = useState<FormState | null>(null)
   const [saving, setSaving] = useState(false)
   const [fetching, setFetching] = useState(false)
@@ -201,6 +240,25 @@ function MasterDataPanel() {
     const timer = window.setInterval(() => void load(), 30_000)
     return () => window.clearInterval(timer)
   }, [load])
+
+  /** 每个分类各有多少条（stage 由后台按流水线口径算好） */
+  const stageCounts = useMemo(() => {
+    const base: Record<MasterStage, number> = {
+      'need-specs': 0,
+      'need-eval': 0,
+      'need-listing': 0,
+      'need-pre': 0,
+      pre: 0,
+      rpa: 0,
+    }
+    for (const p of list) if (p.stage) base[p.stage] += 1
+    return base
+  }, [list])
+
+  const filtered = useMemo(
+    () => (stage === 'all' ? list : list.filter((p) => p.stage === stage)),
+    [list, stage]
+  )
 
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
     setForm((f) => (f ? { ...f, [k]: v } : f))
@@ -750,6 +808,45 @@ function MasterDataPanel() {
           </div>
         }
       >
+        {list.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-slate-100 pb-3">
+            {[
+              { key: 'all' as const, label: '全部', count: list.length, hint: '不筛选，看全部资料' },
+              ...STAGE_ORDER.map((k) => ({
+                key: k,
+                label: STAGE_META[k].label,
+                count: stageCounts[k],
+                hint: STAGE_META[k].hint,
+              })),
+            ].map((c) => {
+              const active = stage === c.key
+              return (
+                <button
+                  key={c.key}
+                  type="button"
+                  title={c.hint}
+                  onClick={() => setStage(c.key)}
+                  className={cn(
+                    'rounded-full border px-2.5 py-1 text-[11.5px] transition',
+                    active
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300',
+                    !active && c.count === 0 && 'text-slate-300'
+                  )}
+                >
+                  {c.label}
+                  <span className={cn('ml-1 tabular-nums', active ? 'text-white/70' : 'text-slate-400')}>
+                    {c.count}
+                  </span>
+                </button>
+              )
+            })}
+            <span className="ml-auto text-[11px] text-slate-400">
+              {stage === 'all' ? `共 ${list.length} 条` : `${STAGE_META[stage].label}：${filtered.length} 条`}
+            </span>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex items-center justify-center py-10 text-sm text-slate-500">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载中…
@@ -767,9 +864,15 @@ function MasterDataPanel() {
                 <tr className="border-b border-slate-100">
                   <th className="w-8 py-2 pr-2 font-medium">
                     <Checkbox
-                      checked={list.length > 0 && list.every((p) => selected.includes(p.id))}
-                      onCheckedChange={(v) => setSelected(v ? list.map((p) => p.id) : [])}
-                      title="全选"
+                      checked={filtered.length > 0 && filtered.every((p) => selected.includes(p.id))}
+                      onCheckedChange={(v) =>
+                        setSelected((cur) =>
+                          v
+                            ? Array.from(new Set([...cur, ...filtered.map((p) => p.id)]))
+                            : cur.filter((id) => !filtered.some((p) => p.id === id))
+                        )
+                      }
+                      title="全选当前分类"
                     />
                   </th>
                   <th className="py-2 pr-2 font-medium">商品</th>
@@ -779,13 +882,13 @@ function MasterDataPanel() {
                   <th className="py-2 pr-2 font-medium">每箱</th>
                   <th className="py-2 pr-2 font-medium">毛重</th>
                   <th className="py-2 pr-2 font-medium">图片</th>
+                  <th className="py-2 pr-2 font-medium">阶段</th>
                   <th className="py-2 pr-2 font-medium">系统</th>
                   <th className="py-2 font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
-                {list.map((p) => {
-                  const full = Boolean(p.cartonLCm && p.pcsPerCarton && p.cartonGwKg && p.priceCny)
+                {filtered.map((p) => {
                   return (
                     <tr key={p.id} className="border-b border-slate-50 align-top">
                       <td className="py-2 pr-2">
@@ -829,6 +932,25 @@ function MasterDataPanel() {
                         </div>
                       </td>
                       <td className="py-2 pr-2">
+                        {p.stage ? (
+                          <span
+                            className={cn(
+                              'inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-[10.5px]',
+                              STAGE_META[p.stage].badge
+                            )}
+                            title={
+                              p.stage === 'need-specs' && p.missingFields?.length
+                                ? `还缺：${p.missingFields.join('、')}`
+                                : STAGE_META[p.stage].hint
+                            }
+                          >
+                            {STAGE_META[p.stage].label}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-slate-300">—</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-2">
                         {/* 已经进系统的显示编号，没进的显示按钮：导入即建档，这里只做兜底 */}
                         {p.productCode ? (
                           <button
@@ -851,15 +973,6 @@ function MasterDataPanel() {
                       </td>
                       <td className="py-2">
                         <div className="flex items-center gap-1">
-                          {full ? (
-                            <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
-                              齐全
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
-                              待补
-                            </Badge>
-                          )}
                           <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => setForm(toForm(p))}>
                             <Pencil className="h-3 w-3" />
                           </Button>
