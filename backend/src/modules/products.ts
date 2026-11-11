@@ -1551,17 +1551,20 @@ productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
   // ① listing 派生字段联动重算（不改动 AI 生成的文案内容，只同步与源信息强相关的数据）
   let listing = current.listing
   const syncedFields: string[] = []
+  const units = convertUnits(source)
+  const rows = buildPriceGrid(source, settings).rows
+  const derived = {
+    productSizeInch: units.productSizeInch,
+    productSizeCm: units.productSizeCm,
+    unitWeightLb: units.unitWeightLb,
+    cartonSizeInch: units.cartonSizeInch,
+    cartonGwLb: units.cartonGwLb,
+    priceGrid: rows,
+  }
   if (listing) {
-    const units = convertUnits(source)
-    const rows = buildPriceGrid(source, settings).rows
     listing = {
       ...listing,
-      productSizeInch: units.productSizeInch,
-      productSizeCm: units.productSizeCm,
-      unitWeightLb: units.unitWeightLb,
-      cartonSizeInch: units.cartonSizeInch,
-      cartonGwLb: units.cartonGwLb,
-      priceGrid: rows,
+      ...derived,
       packaging: units.cartonSizeInch
         ? `Carton: ${units.cartonSizeInch}, ${source.pcsPerCarton ?? '?'} pcs/ctn, ${units.cartonGwLb ?? '?'} lb`
         : listing.packaging,
@@ -1629,7 +1632,17 @@ productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
     }
   }
 
-  // ② 更新产品库（source + 联动后的 listing）
+  // ② 待审核版本（批量生成后停在「待审核」的产品）：派生数据要写进那条审核草稿，
+  //    否则编辑页改了箱规/重量，价格表是旧的（产品自己的 listing 还是空的）。
+  const reviewListing = syncStagedReviewListing(id, {
+    ...derived,
+    ...(units.cartonSizeInch
+      ? { packaging: `Carton: ${units.cartonSizeInch}, ${source.pcsPerCarton ?? '?'} pcs/ctn, ${units.cartonGwLb ?? '?'} lb` }
+      : {}),
+  })
+  if (reviewListing) syncedFields.push('待审核文案里的价格表')
+
+  // ③ 更新产品库（source + 联动后的 listing）
   updateProductRow(id, source, current.evaluation, listing, current.status, new Date().toISOString())
   // ④ 反向同步资料库：同链接的那条记录一起更新，下次同款直接复用新数据
   const masterSynced = applyProductSourceToMaster(source)
@@ -1661,7 +1674,7 @@ productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
     }
   }
 
-  res.json({ product: findProduct(id), syncedDraftId, masterSynced, syncedFields })
+  res.json({ product: findProduct(id), syncedDraftId, masterSynced, syncedFields, reviewListing })
 })
 
 // ---------- 软删：移到回收站（DELETE /:id） ----------
@@ -1956,6 +1969,41 @@ productsRouter.post('/:id/find-similar', async (req: Request, res: Response) => 
   res.json({ similar, product: findProduct(id) })
 })
 
+/**
+ * 把新的派生数据/价格表同步进「待审核」草稿。
+ *
+ * 为什么需要：批量生成的文案先停在审核库（products.listing 还是空的），编辑页显示的
+ * 是这条审核草稿的 listing。改箱规 / 重算价格时如果只更新 products.listing，
+ * 用户就会觉得「改了尺寸价格没变」——其实数据写到了另一个空档案上。
+ */
+function syncStagedReviewListing(productId: string, patch: Partial<Listing>): Partial<Listing> | null {
+  try {
+    const rev = db
+      .prepare(
+        "SELECT id, listing FROM listing_reviews WHERE product_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1"
+      )
+      .get(productId) as { id: string; listing: string } | undefined
+    if (!rev) return null
+    const cur = (() => {
+      try {
+        return JSON.parse(rev.listing || '{}') as Partial<Listing>
+      } catch {
+        return {} as Partial<Listing>
+      }
+    })()
+    const merged = { ...cur, ...patch }
+    db.prepare('UPDATE listing_reviews SET listing=?, price_grid=?, updated_at=? WHERE id=?').run(
+      JSON.stringify(merged),
+      JSON.stringify(merged.priceGrid ?? []),
+      new Date().toISOString(),
+      rev.id
+    )
+    return merged
+  } catch {
+    return null
+  }
+}
+
 // ---------- 价格表重算 ----------
 productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
   const id = String(req.params.id)
@@ -2003,7 +2051,8 @@ productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
         id
       )
     }
-    res.json({ priceGrid: rows, product: findProduct(id) })
+    const reviewListing = syncStagedReviewListing(id, { priceGrid: rows })
+    res.json({ priceGrid: rows, product: findProduct(id), reviewListing })
     return
   }
 
@@ -2034,7 +2083,8 @@ productsRouter.post('/:id/reprice', async (req: Request, res: Response) => {
       id
     )
   }
-  res.json({ priceGrid: rows, product: findProduct(id) })
+  const reviewListing = syncStagedReviewListing(id, { priceGrid: rows })
+  res.json({ priceGrid: rows, product: findProduct(id), reviewListing })
 })
 // ---------- 单产品定价参数（汇率 / 空运海运价 / 印刷费 / 样品费 / 杂费 / 会员折扣） ----------
 // 不同产品印刷处数、谈下来的运费都不一样，所以这些参数要能逐产品改，而不是改全局影响所有产品。

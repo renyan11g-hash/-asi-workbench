@@ -20,6 +20,8 @@ import { detectColors, detectMaterial, detectMaterials, translateColors } from '
 import { runListingQc } from '../services/listing-qc'
 import { SPEC_KEYS, cleanValue, isKnown, specsSourceHash } from '../services/spec-fields'
 import { createTask, runTask, updateTask } from '../services/task-manager'
+import { dataUrlToBuffer, isHttpUrl, normalizeImage } from '../services/image-source'
+import { saveImageBuffer } from '../services/image-store'
 import type { Listing, PriceRow, SourceInfo } from '../types'
 import { insertProduct } from './products'
 import { loadSettings } from './settings'
@@ -878,6 +880,42 @@ function linkedProducts(): Map<string, LinkedMeta> {
   }
   return out
 }
+
+/**
+ * 资料库图片上传：本地文件 / 剪贴板截图 / 手机拍照 都走这里。
+ *
+ * 前端把文件读成 data URL 传上来，服务端压到 1600px JPEG 存进 image_blobs（真身落库，
+ * 部署清空 /tmp 也不会丢），返回站内地址；http(s) 链接原样保留，不改用户已录的数据。
+ */
+masterProductsRouter.post('/images', async (req: Request, res: Response) => {
+  const body = z
+    .object({ images: z.array(z.string().max(8_000_000)).min(1).max(12) })
+    .parse(req.body ?? {})
+  const urls: string[] = []
+  const failed: string[] = []
+  for (const raw of body.images) {
+    const u = String(raw ?? '').trim()
+    if (!u) continue
+    if (isHttpUrl(u)) {
+      urls.push(u)
+      continue
+    }
+    const parsed = dataUrlToBuffer(u)
+    if (!parsed) {
+      failed.push('不是有效的图片数据')
+      continue
+    }
+    try {
+      const norm = await normalizeImage(parsed.buffer, { max: 1600, quality: 88 })
+      const file = saveImageBuffer('master', norm.buffer, norm.ext)
+      urls.push(`/api/product-images/public/master/${file}`)
+    } catch (err) {
+      failed.push(err instanceof Error ? err.message : '图片处理失败')
+    }
+  }
+  if (!urls.length) throw new AppError(400, failed[0] ?? '没有可用的图片')
+  res.json({ urls, failed })
+})
 
 /** 列表 / 搜索 */
 masterProductsRouter.get('/', async (req: Request, res: Response) => {

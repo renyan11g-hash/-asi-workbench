@@ -134,6 +134,16 @@ const numOrNull = (v: string): number | null => {
  * 关键作用：批量处理 / 单品预填去抓 1688 时，先查这里——命中就直接用，
  * 不用再重复补箱规、每箱数、箱毛重，图片也能一次录多张供出图参考。
  */
+/** 本地文件 → data URL（上传由后端压缩入库，前端不做图形处理） */
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
 function MasterDataPanel() {
   const navigate = useNavigate()
   const [list, setList] = useState<MasterProduct[]>([])
@@ -145,6 +155,9 @@ function MasterDataPanel() {
   const [saving, setSaving] = useState(false)
   const [fetching, setFetching] = useState(false)
   const [imgUrl, setImgUrl] = useState('')
+  const [imgUploading, setImgUploading] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const imgFileRef = useRef<HTMLInputElement | null>(null)
   const [importing, setImporting] = useState(false)
   /** 勾选的资料 id（批量删除用） */
   const [selected, setSelected] = useState<string[]>([])
@@ -431,12 +444,48 @@ function MasterDataPanel() {
   const addImageUrl = () => {
     const u = imgUrl.trim()
     if (!u) return
-    if (!/^https?:\/\//i.test(u)) {
-      toast.error('图片地址要以 http 开头')
+    if (!/^https?:\/\//i.test(u) && !u.startsWith('/api/')) {
+      toast.error('图片地址要以 http 开头（本地图片请用「上传本地图片」或直接拖进来）')
       return
     }
     setForm((cur) => (cur ? { ...cur, images: Array.from(new Set([...cur.images, u])) } : cur))
     setImgUrl('')
+  }
+
+  /** 本地文件 / 拖拽 / 剪贴板 → 读成 dataURL → 后端压缩入库 → 拿回站内地址 */
+  const addFiles = async (files: FileList | File[] | null) => {
+    if (!files) return
+    const list = Array.from(files).filter((f) => f.type.startsWith('image/'))
+    if (!list.length) {
+      toast.error('没有可用的图片文件（支持 jpg / png / webp / gif）')
+      return
+    }
+    if (list.length > 12) {
+      toast.error('一次最多 12 张，请分批上传')
+      return
+    }
+    setImgUploading(true)
+    try {
+      const dataUrls: string[] = []
+      for (const f of list) {
+        if (f.size > 8 * 1024 * 1024) {
+          toast.error(`${f.name} 超过 8MB，请压缩后再传`)
+          continue
+        }
+        dataUrls.push(await fileToDataUrl(f))
+      }
+      if (!dataUrls.length) return
+      const r = await api.uploadMasterImages(dataUrls)
+      setForm((cur) =>
+        cur ? { ...cur, images: Array.from(new Set([...cur.images, ...r.urls])) } : cur
+      )
+      if (r.failed?.length) toast.warning(`${r.urls.length} 张已添加，${r.failed.length} 张失败`)
+      else toast.success(`已添加 ${r.urls.length} 张图片`)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setImgUploading(false)
+    }
   }
 
   const coverage = useMemo(() => list.filter((p) => p.cartonLCm && p.pcsPerCarton && p.cartonGwKg).length, [list])
@@ -729,17 +778,74 @@ function MasterDataPanel() {
             </Field>
           </div>
 
-          {/* 图片 */}
-          <div className="mt-3 rounded-lg border border-slate-200 p-2">
+          {/* 图片：本地文件 / 拖拽 / 粘贴截图 / 链接，四种方式都能加 */}
+          <div
+            className={cn(
+              'mt-3 rounded-lg border-2 border-dashed p-2 transition',
+              dragOver ? 'border-blue-400 bg-blue-50/50' : 'border-slate-200'
+            )}
+            onDragOver={(e) => {
+              e.preventDefault()
+              setDragOver(true)
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDragOver(false)
+              void addFiles(e.dataTransfer.files)
+            }}
+            onPaste={(e) => {
+              const items = e.clipboardData?.items
+              if (!items) return
+              const files: File[] = []
+              for (const it of Array.from(items)) {
+                if (it.kind === 'file' && it.type.startsWith('image/')) {
+                  const f = it.getAsFile()
+                  if (f) files.push(f)
+                }
+              }
+              if (files.length) {
+                e.preventDefault()
+                void addFiles(files)
+              }
+            }}
+            tabIndex={0}
+          >
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[12px] font-medium text-slate-700">商品图片（{form.images.length} 张 · 不限数量）</span>
+              <span className="text-[12px] font-medium text-slate-700">
+                商品图片（{form.images.length} 张 · 不限数量）
+              </span>
+              <input
+                ref={imgFileRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  void addFiles(e.target.files)
+                  if (imgFileRef.current) imgFileRef.current.value = ''
+                }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => imgFileRef.current?.click()}
+                disabled={imgUploading}
+              >
+                {imgUploading ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Upload className="mr-1 h-3.5 w-3.5" />
+                )}
+                {imgUploading ? '上传中…' : '上传本地图片'}
+              </Button>
               <Button size="sm" variant="outline" onClick={() => void grabImages()} disabled={fetching}>
                 {fetching ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="mr-1 h-3.5 w-3.5" />}
                 从 1688 抓图
               </Button>
               <input
-                className="h-7 w-72 rounded border border-slate-200 px-2 text-[11px]"
-                placeholder="粘贴图片地址后回车添加"
+                className="h-7 w-64 rounded border border-slate-200 px-2 text-[11px]"
+                placeholder="或粘贴图片链接后回车"
                 value={imgUrl}
                 onChange={(e) => setImgUrl(e.target.value)}
                 onKeyDown={(e) => {
@@ -747,8 +853,12 @@ function MasterDataPanel() {
                 }}
               />
               <Button size="sm" variant="ghost" onClick={addImageUrl}>
-                添加
+                添加链接
               </Button>
+            </div>
+            <div className="mt-1 text-[10px] text-slate-400">
+              支持：本地文件（可多选）、把图片拖进这个框、直接 Ctrl+V 粘贴截图、粘贴 http 图片链接；
+              上传后自动压缩到 1600px 并存在站内（换电脑/清缓存都不会丢）
             </div>
             {form.images.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">

@@ -219,11 +219,19 @@ export const api = {
     id: string,
     source: Partial<SourceInfo>,
     opts?: { force?: boolean }
-  ): Promise<{ product: Product; syncedDraftId: string | null }> {
-    const { data } = await apiClient.patch<{ product: Product; syncedDraftId: string | null }>(
-      `/products/${id}/source`,
-      { source, ...(opts?.force ? { force: true } : {}) }
-    )
+  ): Promise<{
+    product: Product
+    syncedDraftId: string | null
+    syncedFields?: string[]
+    /** 产品还停在「待审核」时，后端把重算后的价格表写进了这条审核草稿，前端要采用它 */
+    reviewListing?: Listing | null
+  }> {
+    const { data } = await apiClient.patch<{
+      product: Product
+      syncedDraftId: string | null
+      syncedFields?: string[]
+      reviewListing?: Listing | null
+    }>(`/products/${id}/source`, { source, ...(opts?.force ? { force: true } : {}) })
     return data
   },
 
@@ -629,13 +637,13 @@ export const api = {
       /** RPA 库产品：确认修改后带 force 重试 */
       force?: boolean
     }
-  ): Promise<Product> {
-    const { data } = await apiClient.post<{ product: Product }>(
+  ): Promise<Product & { reviewListing?: Listing | null }> {
+    const { data } = await apiClient.post<{ product: Product; reviewListing?: Listing | null }>(
       `/products/${id}/reprice`,
       overrides ?? {},
       LONG_TIMEOUT
     )
-    return data.product
+    return { ...data.product, reviewListing: data.reviewListing ?? null }
   },
 
   /** 识图比价（单独跑，约 30-60 秒）：只把视觉确认的同款并入评估 */
@@ -1424,6 +1432,15 @@ export const api = {
   },
 
   // ---------- 产品资料库 → 系统（导入即建档 / 批量推进） ----------
+  /** 资料库图片上传：本地文件/剪贴板截图读成 dataURL 传上来，服务端压缩入库并返回站内地址 */
+  async uploadMasterImages(images: string[]): Promise<{ urls: string[]; failed: string[] }> {
+    const { data } = await apiClient.post<{ urls: string[]; failed: string[] }>(
+      '/master-products/images',
+      { images },
+      LONG_TIMEOUT
+    )
+    return data
+  },
   /** 把资料库里的资料推进系统：建/复用产品档案（之后就能在流水线看到） */
   async pushMasterProducts(payload: { ids?: string[]; all?: boolean }): Promise<{
     total: number

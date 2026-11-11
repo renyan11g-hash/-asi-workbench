@@ -807,9 +807,19 @@ export default function ListingEditor() {
         markupAir: num(ovMarkupAir),
         markupSea: num(ovMarkupSea),
       })
-      setListing(p.listing ?? listing)
+      // 待审核版本：价格写在 reviewListing 里，产品 listing 还是空的
+      const next = p.reviewListing ?? p.listing ?? listing
+      const before = listing?.priceGrid?.[0]
+      setListing(next)
       qc.invalidateQueries({ queryKey: ['product', id] })
-      toast.success('已按当前设置重算（每档原有倍率保留）')
+      qc.invalidateQueries({ queryKey: ['review-queue'] })
+      const after = next?.priceGrid?.[0]
+      toast.success(
+        `已按当前设置重算（每档原有倍率保留）` +
+          (before && after && before.unitPrice !== after.unitPrice
+            ? `；首档 $${before.unitPrice}→$${after.unitPrice}`
+            : '')
+      )
     } catch (err) {
       toast.error(getErrorMessage(err))
     }
@@ -828,7 +838,7 @@ export default function ListingEditor() {
     try {
       await runEditable('切换某一档运输方式', async (force) => {
         const p = await api.reprice(product.id, { toggle: { idx, mode }, ...(force ? { force: true } : {}) })
-        setListing(p.listing ?? listing)
+        setListing(p.reviewListing ?? p.listing ?? listing)
         qc.invalidateQueries({ queryKey: ['product', id] })
         toast.success(`第 ${idx + 1} 档已切到${mode === 'air' ? '空运' : '海运'}（其它档不变）`)
       })
@@ -945,9 +955,16 @@ export default function ListingEditor() {
     if (!product || !sourceForm) return
     setSavingSource(true)
     try {
+      const beforeBill = listing?.priceGrid?.[0]?.billableKg ?? null
+      const beforePrice = listing?.priceGrid?.[0]?.unitPrice ?? null
       const r = await api.updateProductSource(product.id, sourceForm, { force: forceSource })
-      // 联动后的 listing（价格表/英制换算/包装已重算）直接采用后端返回值
-      setListing(r.product.listing ?? listing)
+      // 待审核版本的最新价在 reviewListing 里（产品自己的 listing 可能还是空的）
+      const next = r.reviewListing ?? r.product.listing ?? listing
+      if (next) setListing(next)
+      // 人工填过的计费重/倍率会盖掉按新箱规算出来的价，保存源信息后一律回到自动
+      setOvBillable(null)
+      setOvMarkupAir(null)
+      setOvMarkupSea(null)
       setDirty(false)
       setHasDraft(false)
       setDraftMeta(null)
@@ -957,12 +974,18 @@ export default function ListingEditor() {
       qc.invalidateQueries({ queryKey: ['products'] })
       qc.invalidateQueries({ queryKey: ['product', id] })
       qc.invalidateQueries({ queryKey: ['drafts'] })
+      qc.invalidateQueries({ queryKey: ['review-queue'] })
       setEditingSource(false)
       setSourceForm(null)
+      const afterBill = next?.priceGrid?.[0]?.billableKg ?? null
+      const afterPrice = next?.priceGrid?.[0]?.unitPrice ?? null
+      const change =
+        beforeBill != null && afterBill != null && beforeBill !== afterBill
+          ? `；计费重 ${beforeBill}→${afterBill}kg、首档 $${beforePrice}→$${afterPrice}`
+          : ''
       toast.success(
-        r.syncedDraftId
-          ? '已保存：产品库、评估库草稿、链接派生数据（价格表/尺寸/重量）已同步更新'
-          : '已保存：产品库与链接派生数据已同步更新'
+        `已保存并同步：产品库、评估库草稿、价格表/尺寸/重量${change}` +
+          (r.reviewListing ? '（已写进「待审核」版本）' : '')
       )
     } catch (err) {
       const msg = getErrorMessage(err)
