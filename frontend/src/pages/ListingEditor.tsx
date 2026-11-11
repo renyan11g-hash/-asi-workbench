@@ -1660,7 +1660,7 @@ export default function ListingEditor() {
                 </Field>
                 <Field
                   label="Categories（最多 2 个，从金山文档类目表选择）"
-                  hint="数据来自金山文档「Categories」表（1620 项）；第 1 个自动作为主类目"
+                  hint="AI 会照 ASI 同款商品（看图找类似）的归类来选，且必须是类目表里的字符串；不在表里的会自动换成最接近的一项。第 1 个自动作为主类目"
                   required
                 >
                   <CategoryPicker

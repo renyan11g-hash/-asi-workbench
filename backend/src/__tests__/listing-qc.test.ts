@@ -40,6 +40,8 @@ function listing(over: Partial<Listing> = {}): Listing {
       'A durable stainless steel tumbler built for everyday commutes, office desks and outdoor trips.',
     keywords: Array.from({ length: 30 }, (_, i) => `Keyword ${i}`),
     category: 'Bottles-Insulated',
+    categories: ['Bottles-Insulated'],
+    typeOfProduct: 'Drinkware',
     themes: ['Anniversary', 'Sustainable', 'Corporate', 'Camping', 'Outdoor'],
     material: 'Stainless Steel',
     materials: ['Stainless Steel'],

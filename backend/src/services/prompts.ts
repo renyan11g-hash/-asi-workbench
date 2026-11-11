@@ -7,15 +7,53 @@ import { specsToPromptBlock } from './product-specs'
 import type { MarketSnapshot } from './market-probe'
 
 /**
- * 类目智能筛选：从 GLS 类目表中按产品文本相关性挑出最匹配的 N 个。
- * 关键改进（修复「中文 1688 源打不中英文类目表 → 注入字母序杂项 → AI 编造类目」的问题）：
- * 1. 中文品类词经「中文 → 英文类目信号词」映射后参与打分（保温杯 → insulated/bottle/mug...）；
- * 2. 类目主词（连字符前缀，如 "Bottles-Insulated" 的 "Bottles"）命中权重更高（+3）；
- * 3. 命中某类目后，同主词族的全部变体一并注入（AI 看到 "Bottles-*" 全家族才能选准）；
- * 4. 全部零命中时均匀采样覆盖 A-Z，不再注入字母序头部杂项误导 AI。
+ * 市场证据文本：ASI/Amazon 上「同款商品」的标题、品牌、视觉品类判断、ESP 类目分布。
+ *
+ * 为什么单独抽出来：类目/主题选错的根因是 AI 只看到 1688 中文标题，只能"凭感觉"归类。
+ * ASI 分销商给同类商品归到哪个类目，才是这个行业公认的答案——把他们的标题喂给打分器和
+ * 提示词，AI 就是"照着他们的分类抄"，而不是自己猜。
  */
-export function pickRelevantCategories(source: SourceInfo, max = 80): string[] {
-  // 产品侧文本：标题 + 描述 + 关键词 + 类目提示 + 中文材质（小写化做匹配）
+export function marketCategoryTexts(
+  similar?: SimilarResearch | null,
+  evaluation?: Evaluation | null
+): string[] {
+  const out: string[] = []
+  if (similar) {
+    for (const it of similar.asiItems ?? []) out.push(it.title, it.brand ?? '', it.note ?? '')
+    for (const it of similar.amazonItems ?? []) out.push(it.title)
+    for (const t of similar.referenceTitles ?? []) out.push(t)
+    for (const t of similar.amazonSearchTerms ?? []) out.push(t)
+    for (const t of similar.asiSearchTerms ?? []) out.push(t)
+    if (similar.productType) out.push(similar.productType)
+    if (similar.categoryGuess) out.push(similar.categoryGuess)
+  }
+  // ESP 全站类目分布（如 Drinkware / Bags）——ASI 自己的归类口径
+  const esp = evaluation?.marketSnapshot?.esp
+  for (const c of esp?.categories ?? []) out.push(c.name)
+  for (const s of esp?.samples ?? []) if (s?.title) out.push(s.title)
+  return out.map((t) => String(t ?? '').trim()).filter(Boolean)
+}
+
+/**
+ * 类目打分（不注入、只排序）：产品文本 + 市场证据文本一起当信号。
+ * 给「生成后校验」用：AI 选的类目如果在这份榜单里排名很靠后（跟产品/市场证据不沾边），
+ * 就用榜首替换它——这就是「要求和产品高度匹配」的兜底。
+ */
+export function rankRelevantCategories(
+  source: SourceInfo,
+  extraTexts: string[] = [],
+  limit = 10
+): Array<{ cat: string; score: number }> {
+  const scored = scoreCategories(source, extraTexts)
+  return scored.filter((s) => s.score > 0).slice(0, Math.max(1, limit))
+}
+
+/** 内部：给全部 GLS 类目打分（降序） */
+function scoreCategories(
+  source: SourceInfo,
+  extraTexts: string[] = []
+): Array<{ cat: string; score: number }> {
+  // 产品侧文本：标题 + 描述 + 关键词 + 类目提示 + 中文材质 + 市场证据（ASI/Amazon 同款标题等）
   const haystack = [
     source.sourceTitle,
     source.description,
@@ -23,6 +61,7 @@ export function pickRelevantCategories(source: SourceInfo, max = 80): string[] {
     source.category,
     source.materialCn,
     (source.sourceKeywords ?? []).join(' '),
+    ...extraTexts,
   ]
     .filter(Boolean)
     .join(' ')
@@ -35,9 +74,12 @@ export function pickRelevantCategories(source: SourceInfo, max = 80): string[] {
   // 中文品类词 → 英文类目信号词（1688 中文标题/描述的关键 bridge，否则英文类目表完全打不中）
   const CN_CATEGORY_SIGNALS: Array<[RegExp, string[]]> = [
     [/保温|真空|保冷|thermos|tumbler/i, ['insulated', 'vacuum', 'tumbler']],
+    // 「保温杯/水杯/随行杯」在 1688 上极常见，但只命中「杯」会落到 Cups-*/马克杯，
+    // 实际行业里这类产品是 Bottles-*（水杯/保温瓶），所以单独补 bottle/flask 信号
+    [/保温杯|保温壶|真空杯|真空壶|水杯|随行杯|吸管杯|运动水壶/i, ['bottle', 'flask', 'tumbler', 'cup']],
     [/水瓶|水壶|运动壶|瓶子|壶/i, ['bottle', 'flask']],
     [/马克杯|咖啡杯|mug/i, ['mug', 'stein']],
-    [/随行杯|吸管杯|纸杯|杯/i, ['cup', 'tumbler']],
+    [/杯/i, ['cup']],
     [/酒|红酒|葡萄酒|香槟|威士忌/i, ['wine', 'glass', 'bar', 'shot']],
     [/杯垫/i, ['coaster']],
     [/袋|包|箱包|背包|拎包|收纳包/i, ['bag', 'tote', 'backpack', 'pack']],
@@ -76,17 +118,42 @@ export function pickRelevantCategories(source: SourceInfo, max = 80): string[] {
     return signals.has(`${w}s`)
   }
 
-  // 打分：主词（连字符前缀）命中 +3，其余词命中 +1（主词决定大类，含金量最高）
-  const scored = GLS_CATEGORIES.map((cat) => {
+  // 打分：主词（连字符前缀）命中权重最高，但不能按「每个词都加分」——
+  // 否则 "Tote Bags-*" 这种两个词都泛的家族会靠 6 分压过 "BACKPACKS" 这种真正精准的单字类目
+  // （中文「包」同时桥接 bag/tote，一个词就能让多词主词拿满）。所以主词按整体给分：
+  // 全中 4 分 / 只中一个 2 分；其余词各 +1（最多 +3）。
+  return GLS_CATEGORIES.map((cat) => {
     const mainWords: string[] = cat.split('-')[0].toLowerCase().match(/[a-z]{2,}/g) ?? []
     const restWords: string[] = (cat.toLowerCase().match(/[a-z]{2,}/g) ?? []).filter((w) => !mainWords.includes(w))
-    let score = 0
-    for (const w of mainWords) if (hitSignal(w)) score += 3
-    for (const w of restWords) if (hitSignal(w)) score += 1
+    const mainHits = mainWords.filter(hitSignal).length
+    const restHits = restWords.filter(hitSignal).length
+    const mainScore = mainHits === 0 ? 0 : mainHits === mainWords.length ? 4 : 2
+    const score = mainScore + Math.min(3, restHits)
     return { cat, score }
-  })
+  }).sort((a, b) => b.score - a.score)
+}
 
-  const hits = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score)
+/**
+ * 类目智能筛选：从 GLS（1620 项）类目表里挑出最匹配的 N 个注入提示词。
+ *
+ * 打分信号 = 产品自身文本（1688 标题/描述/关键词/材质）+ 市场证据文本
+ * （ASI/Amazon 同款商品标题、视觉品类判断、ESP 类目分布）。
+ * 后者是关键：ASI 分销商把同类商品归到哪个类目，才是这个行业公认的答案。
+ *
+ * 规则：
+ * 1. 中文品类词经「中文 → 英文类目信号词」映射后参与打分（保温杯 → insulated/bottle/mug…）；
+ * 2. 类目主词（连字符前缀，如 "Bottles-Insulated" 的 "Bottles"）命中权重更高（+3）；
+ * 3. 命中某类目后，同主词族的全部变体一并注入（AI 看到 "Bottles-*" 全家族才能选准）；
+ * 4. 全部零命中时均匀采样覆盖 A-Z，不再注入字母序头部杂项误导 AI。
+ */
+export function pickRelevantCategories(
+  source: SourceInfo,
+  max = 80,
+  /** 市场证据文本（ASI/Amazon 同款标题、ESP 类目名…），留空则只用产品自身文本 */
+  extraTexts: string[] = []
+): string[] {
+  const scored = scoreCategories(source, extraTexts)
+  const hits = scored.filter((s) => s.score > 0)
   if (!hits.length) {
     // 零命中兜底：均匀采样覆盖 A-Z（不注入字母序头部杂项）
     const step = Math.max(1, Math.floor(GLS_CATEGORIES.length / max))
@@ -101,7 +168,12 @@ export function pickRelevantCategories(source: SourceInfo, max = 80): string[] {
   for (const cat of GLS_CATEGORIES) {
     if (families.has(cat.split('-')[0])) pickedSet.add(cat)
   }
-  return GLS_CATEGORIES.filter((c) => pickedSet.has(c))
+  // 输出必须按相关性从高到低（不能按类目表字母序）：AI 更可能挑前面几个，
+  // 排在字母序前面的 Awards-Sports / Baseball Caps 会把真正的 Bottles-* 挤到后面。
+  const ordered = hits.map((h) => h.cat).filter((c) => pickedSet.has(c))
+  const seen = new Set(ordered)
+  const rest = GLS_CATEGORIES.filter((c) => pickedSet.has(c) && !seen.has(c))
+  return [...ordered, ...rest]
 }
 
 const ASI_CONTEXT = `You are a senior copywriter for US promotional products (ASI / PPAI / SAGE / Distributor e-commerce) catalogs.
@@ -465,8 +537,32 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 - If an answer says "no" or is empty, omit that claim from the listing.`
 
   const themesPick = ASI_THEMES.join(', ')
-  // 类目来自金山文档「Categories」表；按产品相关性智能筛选（命中词族全部变体一并注入，AI 才能选准）
-  const categoriesPick = pickRelevantCategories(source, 80).join(', ')
+  // 类目来自金山文档「Categories」表。候选排序 = 产品自身文本 + 市场证据（ASI/Amazon 同款标题、ESP 类目）。
+  // 只给 AI 最相关的 40 个候选（不是 1620 全表），并附上「同行怎么归类的」证据，选错率明显更低。
+  const marketTexts = marketCategoryTexts(similar, evaluation)
+  const categoriesPick = pickRelevantCategories(source, 40, marketTexts).join(', ')
+  // 类目/主题证据：把 ASI/Amazon 同款商品的真实标题摆出来，让 AI 照着同行的分类口径选
+  const categoryEvidence = ((): string => {
+    const parts: string[] = []
+    const asiTitles = (similar?.asiItems ?? []).map((i) => i.title).filter(Boolean)
+    const amazonTitles = (similar?.amazonItems ?? []).map((i) => i.title).filter(Boolean)
+    const espCats = (evaluation?.marketSnapshot?.esp?.categories ?? []).filter((c) => c?.name)
+    if (similar?.productType) parts.push(`- Visual product type (from the product photos): ${similar.productType}`)
+    if (similar?.categoryGuess) parts.push(`- ASI category guess from the photos: ${similar.categoryGuess}`)
+    if (asiTitles.length)
+      parts.push(`- ASI distributor products that are the same thing:\n${asiTitles.slice(0, 6).map((t) => `    · ${t}`).join('\n')}`)
+    if (amazonTitles.length)
+      parts.push(`- Amazon same-product titles:\n${amazonTitles.slice(0, 5).map((t) => `    · ${t}`).join('\n')}`)
+    if (espCats.length)
+      parts.push(
+        `- ASI ESP category breakdown of these matches: ${espCats
+          .slice(0, 8)
+          .map((c) => `${c.name} (${c.count})`)
+          .join(' · ')}`
+      )
+    if (!parts.length) return ''
+    return `\n\nCATEGORY EVIDENCE — how ASI distributors classify THIS product (mirror their choice; do NOT guess from the Chinese title):\n${parts.join('\n')}`
+  })()
   const materialsPick = ASI_MATERIALS.join(', ')
   const imprintsPick = ASI_IMPRINT_METHODS.join(', ')
   // 印刷方式材质驱动：先用本地规则引擎按 1688 材质算出「能用/必含/绝不能用」，AI 只在该集合里挑
@@ -510,7 +606,7 @@ IMPORTANT — Answers from the salesperson below MUST be respected verbatim:
 - Unit weight: ${source.weightG ?? '?'} g (≈${units.unitWeightLb ?? '?'} lb)
 - Category hint: ${source.category || '(unknown)'}
 - Buyer notes: ${source.notes || '(none)'}${specsToPromptBlock(specs)}
-${answersBlock}${similarBlock}${evaluationAdvice}
+${answersBlock}${similarBlock}${evaluationAdvice}${categoryEvidence}
 
 HOW TO USE THE 1688 SOURCE (critical — read before writing a single word)
 - Use it ONLY to extract facts: what the product physically is, material, structure/parts, capacity, function, application.
@@ -519,10 +615,16 @@ HOW TO USE THE 1688 SOURCE (critical — read before writing a single word)
 - The Full Description must talk about the PRODUCT ONLY (what it does for the user, how it is built, where it is used) — never about shipping convenience, sampling speed, lead time or ordering process.
 - Every claim must still be true to the source facts OR the salesperson's answers; do not invent features, materials or certifications.
 
-REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)- Categories (up to 2, MUST be exact strings from the GLS category list below — pre-filtered to the most relevant for this product): ${categoriesPick}
-  Pick the 1-2 entries that state WHAT THE PRODUCT PHYSICALLY IS (e.g. an insulated steel bottle → "Bottles-Insulated"; a ceramic coffee mug → "Mugs & Steins-Ceramic"). Never pick an entry describing a different product.
+REFERENCE ENUMERATIONS (pick from these EXACT strings, do NOT invent new ones)- Categories (1-2, MUST be exact strings from the candidate list below; the list is already ranked by how well each one matches this product AND the ASI/Amazon evidence above): ${categoriesPick}
+  HOW TO CHOOSE (this field drives product exposure — a wrong category means the buyer never finds it):
+  1. Read the CATEGORY EVIDENCE block above (ASI distributor same-type products, Amazon same-product titles, ESP category breakdown). If ASI distributors file this product under a certain kind of category, choose THAT kind — mirror the industry's classification, do not invent your own idea of what the product is.
+  2. The category must state WHAT THE PRODUCT PHYSICALLY IS (an insulated steel bottle → "Bottles-Insulated"; a ceramic coffee mug → "Mugs & Steins-Ceramic"). Never pick a category describing a different product, a use case, an audience, or a component.
+  3. The chosen string MUST appear verbatim in the candidate list above. If the best ASI-style category is not in the list, pick the CLOSEST one from the list instead — never output a string that is not in the list, and never output a Chinese category.
+  4. Output "category" = the single primary category; "categories" = 1-2 entries whose FIRST item is exactly the same string as "category". Prefer 2 only when the second is a genuine second home for the product (e.g. a drinkware item that is also a travel accessory); otherwise 1 is enough.
+- ASI Type of Product (one ASI top-level category, drives section placement): ${ASI_CATEGORIES.join(' | ')}
+  This is the coarse bucket (e.g. Drinkware / Bags & Luggage / Writing Instruments). It must agree with the GLS category you chose above.
 - ASI Themes (exactly 5, MUST include 'Anniversary' and 'Sustainable'): ${themesPick}
-  The other 3 themes must GENUINELY match this product's audience/use case (e.g. camping gear → 'Camping', 'Outdoor'; office giveaway → 'Corporate', 'Trade Show'). Do NOT pad with unrelated themes.
+  The other 3 themes must GENUINELY match this product's audience/use case (e.g. camping gear → 'Camping', 'Outdoor'; office giveaway → 'Corporate', 'Trade Show'). Use the CATEGORY EVIDENCE to see which themes the same products are sold under. Do NOT pad with unrelated themes, and never repeat a theme.
 - ASI Materials (one or more, max 4): ${materialsPick}
 - ASI Imprint Methods (exact strings ONLY, never invent one): ${imprintsPick}
   ${imprintConstraint}

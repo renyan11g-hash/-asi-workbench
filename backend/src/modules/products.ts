@@ -1617,7 +1617,8 @@ productsRouter.patch('/:id/source', async (req: Request, res: Response) => {
             ['colors', 'colorChips'],
             undefined,
             settings,
-            current.evaluation
+            current.evaluation,
+            current.similar
           )
         )
         listing = { ...(listing as Listing), ...(vals as Partial<Listing>) }
@@ -1932,7 +1933,8 @@ productsRouter.post('/:id/regenerate-fields', async (req: Request, res: Response
       body.fields,
       body.instruction,
       settings,
-      current.evaluation ?? null
+      current.evaluation ?? null,
+      current.similar
     )
   )
   // 与现有 listing 合并并重跑 QC（强制必填印刷方式/主题等），但不落库

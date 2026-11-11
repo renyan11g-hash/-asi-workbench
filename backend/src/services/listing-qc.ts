@@ -13,7 +13,8 @@
  *  - 只有 error 全过才算 ok=true。
  */
 
-import { ASI_MATERIALS, LIMITS, MATERIAL_DICT } from '../constants/asi'
+import { ASI_CATEGORIES, ASI_MATERIALS, ASI_THEMES, LIMITS, MATERIAL_DICT } from '../constants/asi'
+import { GLS_CATEGORIES } from '../constants/gls-categories'
 import type { Listing, ProductSpecs, SourceInfo } from '../types'
 import { SPEC_FIELDS, UNKNOWN } from './spec-fields'
 import { forbiddenHits } from './listing-copy'
@@ -282,6 +283,47 @@ export function runListingQc(input: QcInput): ListingQcReport {
     ok: badGroups.length === 0,
     level: 'warn',
     detail: badGroups.length ? `不合规：${badGroups.slice(0, 4).map((g) => `「${g}」`).join('、')}` : '全部合规',
+  })
+
+  // ---- 类目 / 类别 / 主题：选错直接影响曝光（买家搜不到），所以单独一项强制校验 ----
+  const catList = Array.isArray(listing.categories) ? listing.categories.map(str).filter(Boolean) : []
+  const primary = str(listing.category)
+  const badCats = catList.filter((c) => !(GLS_CATEGORIES as readonly string[]).includes(c))
+  const catMismatch = Boolean(primary) && catList.length > 0 && primary !== catList[0]
+  const badType = listing.typeOfProduct ? !(ASI_CATEGORIES as readonly string[]).includes(str(listing.typeOfProduct)) : false
+  checks.push({
+    key: 'categories',
+    label: '类目在 GLS 类目表内、主类目 = Categories[0]、ASI 类别合法',
+    ok: catList.length > 0 && badCats.length === 0 && !catMismatch && !badType,
+    level: 'error',
+    detail:
+      catList.length === 0
+        ? '没有选类目（平台必填）'
+        : badCats.length
+          ? `不在类目表里：${badCats.slice(0, 3).join('、')}`
+          : catMismatch
+            ? `主类目「${primary}」与 Categories[0]「${catList[0]}」不一致`
+            : badType
+              ? `ASI 类别「${str(listing.typeOfProduct)}」不在 28 个大类里`
+              : `已选：${catList.join(' / ')}`,
+  })
+
+  const themeList = Array.isArray(listing.themes) ? listing.themes.map(str).filter(Boolean) : []
+  const badThemes = themeList.filter((t) => !(ASI_THEMES as readonly string[]).includes(t))
+  const missingDefaultThemes = ['Anniversary', 'Sustainable'].filter((t) => !themeList.includes(t))
+  checks.push({
+    key: 'themes',
+    label: `${LIMITS.themes} 个主题、必含 Anniversary + Sustainable、且在主题库内`,
+    ok: themeList.length === LIMITS.themes && badThemes.length === 0 && missingDefaultThemes.length === 0,
+    level: 'warn',
+    detail:
+      badThemes.length
+        ? `不在主题库：${badThemes.slice(0, 3).join('、')}`
+        : missingDefaultThemes.length
+          ? `缺少必含主题：${missingDefaultThemes.join('、')}`
+          : themeList.length !== LIMITS.themes
+            ? `只有 ${themeList.length} 个主题（要 ${LIMITS.themes} 个）`
+            : `已选：${themeList.join(' / ')}`,
   })
 
   // ---- 无资料支持的参数 / 材质 / 认证 ----

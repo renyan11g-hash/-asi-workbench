@@ -15,7 +15,7 @@ import {
   toTitleCase,
   translateColors,
 } from '../constants/asi'
-import { buildAssistantPrompt, buildCatalogKeywordsPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, pickRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
+import { buildAssistantPrompt, buildCatalogKeywordsPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, marketCategoryTexts, pickRelevantCategories, rankRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
 import { recommendImprintMethods } from './imprint-recommend'
 import { composeScore, parseBreakdown, scoreBand } from './eval-score'
 import { applyMemberDiscount, probeWithDiag, type MarketSnapshot } from './market-probe'
@@ -750,7 +750,7 @@ function enforceLength(s: string, max: number): string {
   return (lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trim()
 }
 
-export function applyQc(listing: Listing): Listing {
+export function applyQc(listing: Listing, contextTexts: string[] = []): Listing {
   const issues: string[] = []
   let title = listing.title
   let summary = listing.summary
@@ -796,7 +796,9 @@ export function applyQc(listing: Listing): Listing {
     return [...requiredThemes, ...rest]
   })()
   if (themes.length < LIMITS.themes) {
-    const text = [listing.title, listing.summary, listing.description, ...(listing.keywords ?? [])]
+    // 补主题时把市场证据（ASI/Amazon 同款标题、ESP 类目）也算进相关性：
+    // 同行的产品挂在哪些主题下，比我们自己从文案里猜更靠得住
+    const text = [listing.title, listing.summary, listing.description, ...(listing.keywords ?? []), ...contextTexts]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -866,6 +868,8 @@ export function applyQc(listing: Listing): Listing {
     keywords,
     themes: themesFinal,
     categories: categoriesFinal,
+    // 主类目永远等于 categories[0]（导出与筛选都读 category，两处不能打架）
+    category: categoriesFinal[0] ?? listing.category,
     imprintMethods: imprintsFinal,
     materials: materialsFinal.length ? materialsFinal : listing.materials,
     qc: {
@@ -1023,11 +1027,60 @@ function templateListing(source: SourceInfo, settings: Settings): Listing {
   return applyQc({ ...skeleton, qc: undefined })
 }
 
+/**
+ * 类目最终判定（生成/重生成都用它）——「和产品高度匹配」这条要求的落地处。
+ *
+ * 规则：
+ *  1. 只接受 GLS 类目表里的字符串（不是表里的直接丢弃，绝不让中文/自造串进库）；
+ *  2. AI 选的类目必须出现在「产品 + 市场证据」的相关性榜前 10，说明它真的对得上产品；
+ *  3. 一个都对不上 → 用榜首替换（榜首至少命中产品主词，score>=3 才敢用）；
+ *  4. 证据太弱（没图/没市场参考）时保守处理：保留 AI 的合法取值，没有就取类目表最相关项。
+ *  5. 主类目恒等于 categories[0]（导出/筛选都读 category，两处不能打架）。
+ */
+export function resolveListingCategories(input: {
+  /** AI 返回的 categories（数组或逗号字符串） */
+  rawCategories: unknown
+  /** AI 返回的 category（主类目） */
+  rawCategory: unknown
+  source: SourceInfo
+  /** 市场证据文本（ASI/Amazon 同款标题、ESP 类目名） */
+  marketTexts: string[]
+}): { categories: string[]; primary: string } {
+  const { rawCategories, rawCategory, source, marketTexts } = input
+  const list = Array.isArray(rawCategories)
+    ? rawCategories.map((x) => String(x))
+    : typeof rawCategories === 'string'
+      ? rawCategories.split(/[,/]/).map((s) => s.trim())
+      : []
+  const validRaw = Array.from(
+    new Set(list.map((c) => fuzzyEnumMatch(GLS_CATEGORIES, c)).filter((c): c is string => !!c))
+  ).slice(0, 2)
+
+  const rank = rankRelevantCategories(source, marketTexts, 10)
+  const wellMatched = new Set(rank.map((r) => r.cat))
+  const strongTop = rank[0] && rank[0].score >= 3 ? rank[0].cat : undefined
+  const primaryRaw = rawCategory ? fuzzyEnumMatch(GLS_CATEGORIES, String(rawCategory)) : undefined
+
+  const ordered = Array.from(new Set([...(primaryRaw ? [primaryRaw] : []), ...validRaw]))
+  const hit = ordered.filter((c) => wellMatched.has(c))
+  const categories = hit.length
+    ? hit.slice(0, 2)
+    : strongTop
+      ? [strongTop]
+      : ordered.length
+        ? ordered.slice(0, 2)
+        : [pickRelevantCategories(source, 1, marketTexts)[0] ?? GLS_CATEGORIES[0]]
+
+  return { categories, primary: categories[0] }
+}
+
 function normalizeListing(
   raw: Record<string, unknown>,
   rows: PriceRow[],
   source: SourceInfo,
-  settings: Settings
+  settings: Settings,
+  /** 市场证据文本（ASI/Amazon 同款标题、ESP 类目名）——用来校验 AI 选的类目是否真的高度匹配 */
+  marketTexts: string[] = []
 ): Listing {
   const units = convertUnits(source)
   const detectedColors = detectColors(source.colorsCn)
@@ -1056,24 +1109,12 @@ function normalizeListing(
   // Imprint Area：默认留空，由用户在链接生成界面自行填写（之前自动估算与实物偏差大）
   const imprintAreaStr = ''
 
-  const rawCategories = ((): string[] => {
-    const list = Array.isArray(raw.categories)
-      ? (raw.categories as unknown[]).map((x) => String(x))
-      : typeof raw.categories === 'string'
-        ? String(raw.categories).split(/[,/]/).map((s) => s.trim())
-        : []
-    const filtered = list
-      .map((c) => fuzzyEnumMatch(GLS_CATEGORIES, c))
-      .filter((c): c is string => !!c)
-    return Array.from(new Set(filtered)).slice(0, 2)
-  })()
-  // 主类目：AI 返回值模糊匹配 GLS 表；匹配不上时用相关性最高的 GLS 类目兜底
-  // （旧逻辑回退到 1688 中文类目提示 → 中文串混入 GLS 类目字段）
-  const primaryCategory =
-    (raw.category ? fuzzyEnumMatch(GLS_CATEGORIES, String(raw.category)) : undefined) ??
-    pickRelevantCategories(source, 1)[0] ??
-    GLS_CATEGORIES[0]
-  const categories = rawCategories.length ? rawCategories : [primaryCategory]
+  const { categories, primary: primaryCategory } = resolveListingCategories({
+    rawCategories: raw.categories,
+    rawCategory: raw.category,
+    source,
+    marketTexts,
+  })
 
   const listing: Listing = {
     title: String(raw.title ?? '').trim(),
@@ -1160,8 +1201,9 @@ export async function generateListing(
     task: 'listing',
     productId: productId ?? null,
   })
-  const listing = normalizeListing(raw, rows, source, settings)
-  return applyQc(listing)
+  const marketTexts = marketCategoryTexts(similar, evaluation)
+  const listing = normalizeListing(raw, rows, source, settings, marketTexts)
+  return applyQc(listing, marketTexts)
 }
 
 export async function generateListingQuestions(
@@ -1356,7 +1398,9 @@ export async function regenerateListingFields(
   fields: string[],
   instruction: string | undefined,
   settings: Settings,
-  evaluation?: Evaluation | null
+  evaluation?: Evaluation | null,
+  /** 市场参考（看图找类似）：类目重生成时用来校验是否与 ASI 同行归类一致 */
+  similar?: SimilarResearch | null
 ): Promise<Record<string, unknown>> {
   const { system, user } = buildFieldsRegeneratePrompt(source, listing, fields, instruction, evaluation)
   const raw = await callChatJson<Record<string, unknown>>(settings, system, user, 0.6)
@@ -1394,6 +1438,27 @@ export async function regenerateListingFields(
   }
   if ('category' in out && typeof out.category === 'string') {
     out.category = fuzzyEnumMatch(GLS_CATEGORIES, out.category) ?? out.category
+  }
+  // 类目单独重生成时同样做「高度匹配」校验：跟产品 + 市场证据都不沾边的，替换成证据榜榜首
+  if ('category' in out || 'categories' in out) {
+    const rank = rankRelevantCategories(source, marketCategoryTexts(similar, evaluation), 10)
+    const wellMatched = new Set(rank.map((r) => r.cat))
+    const strongTop = rank[0] && rank[0].score >= 3 ? rank[0].cat : undefined
+    const ordered = Array.from(
+      new Set([
+        ...(typeof out.category === 'string' ? [out.category] : []),
+        ...(Array.isArray(out.categories) ? (out.categories as string[]) : []),
+      ])
+    ).filter((c) => (GLS_CATEGORIES as readonly string[]).includes(c))
+    const hit = ordered.filter((c) => wellMatched.has(c))
+    const resolved = hit.length ? hit.slice(0, 2) : strongTop ? [strongTop] : ordered.slice(0, 2)
+    if (resolved.length) {
+      out.categories = resolved
+      out.category = resolved[0]
+    } else {
+      delete out.categories
+      delete out.category
+    }
   }
   if ('typeOfProduct' in out && typeof out.typeOfProduct === 'string') {
     out.typeOfProduct = fuzzyEnumMatch(ASI_CATEGORIES, out.typeOfProduct) ?? out.typeOfProduct
