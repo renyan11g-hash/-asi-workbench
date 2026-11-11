@@ -93,7 +93,7 @@ const GLS_PREFIX_TO_TYPE: Array<[RegExp, string]> = [
   [/pen|pencil|marker|highlighter|crayon/i, 'Writing Instruments'],
   [/keychain|key chain|key tag|keyring|lanyard|badge/i, 'Key Chains'],
   [/notebook|journal|planner|calendar|folder|portfolio|stationery|desk|office/i, 'School, Office, & Craft Supplies'],
-  [/shirt|apparel|jacket|hoodie|polo|apron|pajama/i, 'Apparel & Outerwear'],
+  [/shirt|apparel|jacket|hoodie|polo|apron|pajama|shoe|slipper|sandal|footwear|sock/i, 'Apparel & Outerwear'],
   [/tool|knife|flashlight|multitool|hardware|tape measure/i, 'Tools & Hardware'],
   [/kitchen|cutlery|utensil|cutting board|grater|peeler/i, 'Kitchen & Dining'],
   [/toy|game|puzzle|novelty|yo-yo|frisbee/i, 'Toys, Games, & Novelties'],
@@ -1089,7 +1089,26 @@ export function resolveListingCategories(input: {
         ? ordered.slice(0, 2).map(betterSibling)
         : [pickRelevantCategories(source, 1, marketTexts)[0] ?? GLS_CATEGORIES[0]]
 
-  return { categories: Array.from(new Set(categories)), primary: Array.from(new Set(categories))[0] }
+  /**
+   * 家族分差兜底：AI 选的类目家族如果**明显不如**榜首家族（分数更低），
+   * 说明它选的是"看起来像"而不是"最匹配"——换成榜首家族里最贴合的那个。
+   * 例：不锈钢啤酒杯被选成 Cups-Plastic(4)，而 Mugs & Steins-Metal(5) 才是对的。
+   * 同分不换（例如拖鞋的 SHOES / SLIPPERS 同为 4，都属于合理答案，尊重 AI）。
+   */
+  const scoreOf = (cat: string) => rank.find((r) => r.cat === cat)?.score ?? 0
+  let resolved = categories
+  if (rank.length && resolved.length) {
+    const top = rank[0]
+    const topFamily = top.cat.split('-')[0]
+    const chosenBest = Math.max(...resolved.map(scoreOf))
+    const inTopFamily = resolved.some((c) => c.split('-')[0] === topFamily)
+    if (!inTopFamily && chosenBest < top.score) resolved = [top.cat, ...resolved]
+    // 只保留跟榜首同等贴合的项：分数更低的"第二类目"就是凑数，宁缺勿滥
+    const equal = resolved.filter((c) => scoreOf(c) >= top.score)
+    if (equal.length) resolved = equal
+  }
+  const unique = Array.from(new Set(resolved)).slice(0, 2)
+  return { categories: unique, primary: unique[0] }
 }
 
 function normalizeListing(

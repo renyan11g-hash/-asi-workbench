@@ -190,6 +190,46 @@ describe('类目选择：市场证据 + 类目表约束', () => {
       })
       expect(r.primary).toBe('Mugs & Steins-Metal')
     })
+
+    it('AI 选了完全不同家族且明显不匹配（Cups-Plastic）→ 换成榜首家族，且不留凑数的第二类目', () => {
+      const mug = baseSource({
+        sourceTitle: '印制LOGO户外304不锈钢啤酒杯野营便携台阶杯',
+        description: '304 不锈钢',
+        materialCn: '304不锈钢',
+      })
+      const r = resolveListingCategories({
+        rawCategories: ['Cups-Plastic'],
+        rawCategory: 'Cups-Plastic',
+        source: mug,
+        marketTexts: marketCategoryTexts(similarWith2({
+          productType: 'Stainless Steel Beer Mug',
+          asi: ['Stainless Steel Beer Cup 14 oz - Laser Engraved'],
+          amazon: ['Stainless Steel Beer Mug Double Wall'],
+        })),
+      })
+      expect(r.primary).toBe('Mugs & Steins-Metal')
+      expect(r.categories).toEqual(['Mugs & Steins-Metal'])
+    })
+
+    it('两个类目同等贴合（拖鞋的 SLIPPERS / SHOES 同分）→ 两个都保留，尊重 AI 顺序', () => {
+      const slipper = baseSource({
+        sourceTitle: '户外露营速干防滑折叠便携沙滩凉鞋 轻量化溯溪鞋',
+        description: 'EVA 鞋底，速干',
+        materialCn: 'EVA',
+      })
+      const r = resolveListingCategories({
+        rawCategories: ['SLIPPERS', 'SHOES'],
+        rawCategory: 'SLIPPERS',
+        source: slipper,
+        marketTexts: marketCategoryTexts(similarWith2({
+          productType: 'Foldable Travel Slide Slippers',
+          asi: ['Hotel Amenity Slipper - Bulk Case Packed'],
+          amazon: ['Quick Dry Water Shoes Barefoot Beach Sandals for Camping'],
+        })),
+      })
+      expect(r.primary).toBe('SLIPPERS')
+      expect(r.categories.length).toBe(2)
+    })
   })
 
   describe('resolveListingCategories：最终类目判定', () => {
