@@ -577,6 +577,7 @@ export default function Production() {
 const TASK_LABEL: Record<string, string> = {
   'spec-extract': '资料结构化',
   listing: 'Listing 生成',
+  keywordTopUp: '关键词补词（凑满 30 组）',
   'listing-qc': 'AI 复检',
   'settings-test': '连通测试',
   // 下面这些是「调用方没写任务名」时由调用栈自动补上的功能名

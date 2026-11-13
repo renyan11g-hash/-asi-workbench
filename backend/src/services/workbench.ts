@@ -14,7 +14,7 @@ import {
   toTitleCase,
   translateColors,
 } from '../constants/asi'
-import { buildAssistantPrompt, buildCatalogKeywordsPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, marketCategoryTexts, pickRelevantCategories, rankRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
+import { buildAssistantPrompt, buildCatalogKeywordsPrompt, buildChatEvaluationPrompt, buildEvaluatePrompt, buildFieldsRegeneratePrompt, buildFindSimilarPrompt, buildKeywordTopUpPrompt, buildListingPrompt, buildListingQuestionsPrompt, buildSourcingPrompt, buildSourcingResearchPrompt, marketCategoryTexts, pickRelevantCategories, rankRelevantCategories, ChatMessage, ListingAnswer } from './prompts'
 import { recommendImprintMethods } from './imprint-recommend'
 import { composeScore, parseBreakdown, scoreBand } from './eval-score'
 import { applyMemberDiscount, probeWithDiag, type MarketSnapshot } from './market-probe'
@@ -823,7 +823,7 @@ const KEYWORD_GENERIC_FILLERS: readonly string[] = [
   'Promo Merchandise', 'Seasonal Parcel', 'Executive Thank You Gifts',
 ]
 
-function cleanKeywordList(input: unknown, ctx: KeywordFillContext = {}): string[] {
+function cleanKeywordList(input: unknown, ctx: KeywordFillContext = {}, pad = true): string[] {
   const list: string[] = []
   const seenGroups = new Set<string>()
   const seenWords = new Set<string>()
@@ -844,7 +844,7 @@ function cleanKeywordList(input: unknown, ctx: KeywordFillContext = {}): string[
     tryPush(s)
   }
   // 不足 30 组：先用「属性 + 产品名词」补真实搜索词（每个名词只能进一组：单词级唯一）
-  if (list.length < LIMITS.keywordMax) {
+  if (pad && list.length < LIMITS.keywordMax) {
     const attrs = keywordFillAttrs(ctx)
     for (const noun of keywordFillNouns(ctx)) {
       for (const attr of attrs) {
@@ -855,13 +855,60 @@ function cleanKeywordList(input: unknown, ctx: KeywordFillContext = {}): string[
     }
   }
   // 仍然不够才用通用词兜底
-  if (list.length < LIMITS.keywordMax) {
+  if (pad && list.length < LIMITS.keywordMax) {
     for (const f of KEYWORD_GENERIC_FILLERS) {
       if (list.length >= LIMITS.keywordMax) break
       tryPush(f)
     }
   }
   return list
+}
+
+/** 从 AI 原始 JSON 抽关键词补齐上下文（标题 / 描述 / 类目 / ASI 类型） */
+function fillCtxFromRaw(raw: Record<string, unknown>): KeywordFillContext {
+  return {
+    title: String(raw.title ?? ''),
+    description: String(raw.description ?? ''),
+    category: typeof raw.category === 'string' ? raw.category : '',
+    categories: Array.isArray(raw.categories) ? (raw.categories as unknown[]).map(String) : [],
+    typeOfProduct: typeof raw.typeOfProduct === 'string' ? raw.typeOfProduct : '',
+  }
+}
+
+/**
+ * 关键词补词（第二轮 AI）：首轮不足 30 组时，按同一套 KEYWORD BUILD PROCESS 让 AI 再补，
+ * 避免程序化填充词（通用词）抢先占位。失败不抛错，交给后面的程序兜底。
+ */
+async function topUpKeywordGroups(
+  source: SourceInfo,
+  listing: Partial<Listing>,
+  similar: SimilarResearch | null | undefined,
+  settings: Settings,
+  productId: string | null
+): Promise<string[]> {
+  const existing = Array.isArray(listing.keywords) ? listing.keywords : []
+  const need = LIMITS.keywordMax - existing.length
+  if (need <= 0 || !settings.aiApiKey?.trim()) return existing
+  try {
+    const { system, user } = buildKeywordTopUpPrompt({ source, listing, similar, used: existing, need })
+    const raw = await callChatJson<{ keywords?: unknown }>(settings, system, user, 0.6, [], {
+      task: 'keywordTopUp',
+      productId,
+    })
+    const extra = Array.isArray(raw.keywords)
+      ? raw.keywords.map((x) => String(x))
+      : String(raw.keywords ?? '').split(/[,，\n]/)
+    return cleanKeywordList([...existing, ...extra], {
+      title: listing.title,
+      description: listing.description,
+      category: listing.category,
+      categories: listing.categories,
+      typeOfProduct: listing.typeOfProduct,
+    })
+  } catch {
+    // 补词失败不影响主流程：沿用首轮结果，程序兜底会接管
+    return existing
+  }
 }
 
 function ensureRushSuffix(s: string): string {
@@ -1383,6 +1430,26 @@ export async function generateListing(
     task: 'listing',
     productId: productId ?? null,
   })
+  // 首轮不满 30 组 → 按同一套 KEYWORD BUILD PROCESS 让 AI 再补一轮（程序兜底排在它之后）
+  const firstPass = cleanKeywordList(raw.keywords ?? '', fillCtxFromRaw(raw), false)
+  if (firstPass.length < LIMITS.keywordMax) {
+    raw.keywords = await topUpKeywordGroups(
+      source,
+      {
+        title: String(raw.title ?? ''),
+        description: String(raw.description ?? ''),
+        keywords: firstPass,
+        category: typeof raw.category === 'string' ? raw.category : '',
+        categories: Array.isArray(raw.categories) ? (raw.categories as unknown[]).map(String) : [],
+        typeOfProduct: typeof raw.typeOfProduct === 'string' ? raw.typeOfProduct : '',
+        material: typeof raw.material === 'string' ? raw.material : '',
+        materials: Array.isArray(raw.materials) ? (raw.materials as unknown[]).map(String) : [],
+      },
+      similar,
+      settings,
+      productId ?? null
+    )
+  }
   const marketTexts = marketCategoryTexts(similar)
   const listing = normalizeListing(raw, rows, source, settings, marketTexts)
   return applyQc(listing, marketTexts)
@@ -1605,6 +1672,33 @@ export async function regenerateListingFields(
     } else {
       out[f] = String(v ?? '').trim()
     }
+  }
+  if ('keywords' in out) {
+    const kws = Array.isArray(out.keywords) ? (out.keywords as string[]) : []
+    const ctx = {
+      title: listing?.title ?? '',
+      description: listing?.description ?? '',
+      category: listing?.category ?? '',
+      categories: listing?.categories ?? [],
+      typeOfProduct: listing?.typeOfProduct ?? '',
+    }
+    // 重生成同样可能不足 30 组：先按同一套流程让 AI 补词，程序兜底排在它之后
+    const topped =
+      kws.length < LIMITS.keywordMax
+        ? await topUpKeywordGroups(
+            source,
+            {
+              ...ctx,
+              keywords: kws,
+              material: listing?.material ?? '',
+              materials: listing?.materials ?? [],
+            },
+            similar,
+            settings,
+            null
+          )
+        : kws
+    out.keywords = cleanKeywordList(topped, ctx)
   }
   // 枚举校验：重生成的枚举字段必须落在合法值域（模糊归一化匹配），避免 AI 近似值被静默丢弃或非法值混入导出
   if ('themes' in out) {

@@ -743,6 +743,76 @@ Quality bar: every claim must come from 1688 source OR the salesperson's answers
   return { system, user }
 }
 
+/**
+ * 关键词补词（第二轮）：首轮返回不足 30 组时，按同一套 KEYWORD BUILD PROCESS 让 AI 再补一次。
+ * 程序化填充只在这轮补词之后才兜底，不允许泛词/服务承诺词抢先占位。
+ */
+export function buildKeywordTopUpPrompt(input: {
+  source: SourceInfo
+  listing: Partial<Listing>
+  similar?: SimilarResearch | null
+  /** 已经确定的组（首轮结果）：补词必须避开它们用过的每一个单词 */
+  used: string[]
+  /** 还需要补几组 */
+  need: number
+}): { system: string; user: string } {
+  const { source, listing, similar, used, need } = input
+  const usedWords = Array.from(
+    new Set(
+      used
+        .join(' ')
+        .toLowerCase()
+        .split(/[^a-z0-9']+/)
+        .filter(Boolean)
+    )
+  )
+  const marketTerms = Array.from(
+    new Set([
+      ...((similar?.asiSearchTerms ?? []) as string[]),
+      ...((similar?.amazonSearchTerms ?? []) as string[]),
+      ...((similar?.referenceTitles ?? []) as string[]),
+      ...((similar?.amazonItems ?? []).map((it) => String(it?.title ?? ''))),
+    ]
+      .map((s) => String(s ?? '').trim())
+      .filter(Boolean))
+  ).slice(0, 20)
+
+  const system = `You extend an ASI/PPAI listing's keyword field. The first pass returned fewer than 30 groups, so you add the missing groups ONLY — you never rewrite the ones already there.
+
+KEYWORD BUILD PROCESS (follow this order — the same rules the first pass used):
+1. PRIMARY GOAL — WRITE LIKE THE SEARCHER: every group must be phrased exactly the way a US distributor would type it when sourcing this product on ASI (or into Google/Amazon search): concrete product noun + the qualifiers a real buyer adds (material, feature, use case, audience). Test each group: "Would a real distributor type this into the ASI search bar?" If not, rewrite or replace it.
+2. Same-product line: identify the Amazon US same-product / clone product line and the queries distributors already type. If market research terms are given below, treat them as the authoritative traffic-word source and do not invent different ones.
+3. Blend those high-frequency terms with the ASI seed vocabulary, deduplicated.
+4. A well-known parallel/clone product line's brand name is allowed; a licensed brand (Disney, Nike, etc.) is NOT.
+5. WORD-LEVEL GLOBAL UNIQUENESS: no English word may appear in more than one group across the WHOLE field — the groups listed below already own every word inside them, so your new groups must use entirely fresh vocabulary (synonyms for the core noun, other features, other use cases, other audiences, other occasions).
+6. COVERAGE MATRIX: fill whichever dimension is thin, in rough balance across ① product-name variants ② functions & performance ③ material & construction ④ real use scenarios. Do not add more of a dimension that is already crowded.
+
+HARD RULES
+- Return EXACTLY ${need} new groups (no fewer, no more), each ≤30 characters and ≤4 words, Title Case, no duplicates.
+- Never reuse a word from the USED WORDS list, not even inside a longer phrase.
+- Real search phrasing only — no marketing fluff, no internal jargon, no abstract filler.
+- Never mention shipping, freight, sampling, lead time, MOQ, factory-direct or OEM/ODM service.
+- English only. Respond with STRICT JSON only: {"keywords":["...", "..."]} and nothing else.`
+
+  const user = `PRODUCT
+- 1688 title: ${source.sourceTitle || '(empty)'}
+- English listing title: ${listing.title || '(empty)'}
+- Description: ${listing.description || source.description || '(empty)'}
+- Material: ${[...(listing.materials ?? []), listing.material ?? ''].filter(Boolean).join(', ') || source.materialCn || '(unknown)'}
+- GLS category: ${listing.category || '(unknown)'}
+
+ALREADY USED GROUPS (${used.length} — do NOT modify, your output is appended after them):
+${used.join(' | ') || '(none)'}
+
+USED WORDS (each already occupies its one slot in the field):
+${usedWords.join(', ') || '(none)'}
+
+${marketTerms.length ? `MARKET RESEARCH TERMS (same-product traffic words from the "find similar" image analysis):\n${marketTerms.join(' | ')}` : '(no market research available — derive the same-product line yourself)'}
+
+Now add exactly ${need} new groups that follow the process above and fill the thin dimensions.`
+  return { system, user }
+}
+
 /** 生成前询问用户的关键问题（AI 主动收集差异化信息，避免捏造） */
 export interface ListingAnswer {
   id: string
