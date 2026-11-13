@@ -18,6 +18,16 @@ interface ChatMessageContentPart {
   image_url?: { url: string; detail?: 'low' | 'high' | 'auto' }
 }
 
+/**
+ * 服务商只接受 http(s) 与 data URL。站内相对地址（/api/product-images/...）一旦内联失败，
+ * 原样发出去必然 400（方舟：Only http/https URLs, data:image… are supported），
+ * 所以读不出来就丢掉，宁可少一张参考图，也不要整次调用失败。
+ */
+function isSendableImageUrl(u: string): boolean {
+  const s = (u ?? '').trim()
+  return /^https?:\/\//i.test(s) || /^data:image\//i.test(s)
+}
+
 interface ChatResponse {
   choices?: { message?: { content?: string } }[]
   error?: { message?: string }
@@ -182,7 +192,7 @@ export async function callChatResult(
             }
           })
         )
-      ).filter((u): u is string => Boolean(u))
+      ).filter((u): u is string => isSendableImageUrl(u))
     : images
   const userMessage: { role: string; content: string | ChatMessageContentPart[] } = modelImages?.length
     ? {

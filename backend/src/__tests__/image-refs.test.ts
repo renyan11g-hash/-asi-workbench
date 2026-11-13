@@ -28,6 +28,29 @@ describe('站内图片地址识别', () => {
     expect(managedImagePath(rel)).toBe(rel)
     expect(managedImagePath('https://other.example/a.jpg')).toBeNull()
   })
+
+  // 2026-11-13 线上事故回归：资料库自建产品的图片是 /api/product-images/public/{owner}/{file}，
+  // 旧正则把 public 当成 owner、把 owner 当成文件名，DB 取不到 → 原样发给方舟 → 400
+  it('public 公开路径能正确归一到 image_blobs 的 key', () => {
+    expect(managedImagePath('/api/product-images/public/master/1794559867021-a941e654.jpg')).toBe(
+      '/api/product-images/master/1794559867021-a941e654.jpg'
+    )
+    expect(managedImagePath('https://asi-workbench.onrender.com/api/product-images/public/master/abc.jpg')).toBe(
+      '/api/product-images/master/abc.jpg'
+    )
+  })
+
+  it('站内 public 图片能读出来变成 data URL（不会再被原样发给服务商）', async () => {
+    const Jimp = (await import('jimp')).default
+    const { db } = await import('../db')
+    const { inlineImage } = await import('../services/image-inline')
+    const buf = await new Jimp(4, 4, 0xffffffff).getBufferAsync(Jimp.MIME_JPEG)
+    const key = 'master/public-test.jpg'
+    db.prepare('INSERT INTO image_blobs (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data').run(key, buf)
+    const out = await inlineImage(`/api/product-images/public/${key}`)
+    expect(out).toBeTruthy()
+    expect(out?.startsWith('data:image/')).toBe(true)
+  })
 })
 
 describe('发给图像服务商前的参考图清洗', () => {

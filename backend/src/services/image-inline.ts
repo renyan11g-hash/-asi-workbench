@@ -39,7 +39,7 @@ export function managedImagePath(url: string): string | null {
       return null
     }
   }
-  const m = /^\/api\/product-images\/([^/]+)\/([^/?#]+)/.exec(pathname)
+  const m = /^\/api\/product-images\/(?:public\/)?([^/]+)\/([^/?#]+)/.exec(pathname)
   if (!m) return null
   return `/api/product-images/${m[1]}/${m[2]}`
 }
