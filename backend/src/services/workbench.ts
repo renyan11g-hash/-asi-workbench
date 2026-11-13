@@ -8,7 +8,6 @@ import {
   DEFAULT_THEMES,
   ILOVECARGO_RULES,
   LIMITS,
-  SEED_KEYWORDS,
   detectColors,
   detectMaterial,
   detectMaterials,
@@ -684,17 +683,155 @@ function cleanKeyword(k: string): string {
  * 关键词清洗 + 单词级全局去重 + 限 30 组。
  * 与下游去重工具（把所有词拆开全局去重后再重新打包）对齐：
  * 任一英文单词在全部 30 组中只允许出现一次，否则该组会被工具拆散，等效于无效关键词。
- * 不足 30 组时用互不共享单词的填充词补齐。
+ * 不足 30 组时先用「属性 + 产品名词」补真实 ASI 搜索词（Vacuum Tumbler / Travel Charging Station）：
+ * 名词取自产品自身标题与 GLS 类目，属性只取文案里确实出现过的词 + 场景定位词；
+ * 全都凑不满才退到通用合规词，不再塞 Custom / Best / Factory Direct 这类泛词或服务承诺词。
  */
-function cleanKeywordList(input: unknown): string[] {
+export interface KeywordFillContext {
+  title?: string
+  description?: string
+  category?: string
+  categories?: string[]
+  typeOfProduct?: string
+}
+
+/** 名词黑名单：泛词、单位、卖点形容词都不能当产品名词用 */
+const FILL_NOUN_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'your', 'our', 'its', 'all',
+  'new', 'set', 'sets', 'pack', 'packs', 'piece', 'pieces', 'pc', 'pcs', 'inch', 'cm',
+  'ml', 'oz', 'lb', 'kg', 'bpa', 'style', 'type', 'size', 'color', 'colors', 'design',
+  'custom', 'customized', 'personalized', 'printed', 'logo', 'branded', 'promotional',
+  'wholesale', 'bulk', 'gift', 'gifts', 'item', 'items', 'product', 'products', 'goods',
+  'quality', 'high', 'best', 'top', 'premium', 'luxury', 'cheap', 'unique', 'nice',
+  'creative', 'practical', 'useful', 'modern', 'simple', 'multi', 'multipurpose',
+  'universal', 'advertising', 'giveaway', 'promotion', 'promotions', 'campaign', 'kit',
+  'kits', 'blank', 'brilliant', 'budget', 'personal', 'personalization', 'durable',
+  'accessories', 'accessory', 'supplies', 'supply', 'equipment', 'services', 'service',
+  'other', 'others', 'general', 'misc', 'easy', 'plus', 'amp',
+])
+
+/** 材质词不当产品名词（Steel / Plastic 只能当定语，不能单独成词） */
+const FILL_MATERIAL_WORDS = new Set([
+  'stainless', 'steel', 'plastic', 'metal', 'canvas', 'leather', 'cotton', 'polyester',
+  'nylon', 'glass', 'ceramic', 'silicone', 'bamboo', 'wood', 'aluminum', 'abs', 'pu',
+  'pp', 'tpu', 'acrylic', 'rubber', 'brass', 'copper', 'cork', 'wool', 'felt', 'paper',
+])
+
+/** 物理属性词：只有产品自身文案里出现过才会被采用（避免把「可折叠」安到玻璃瓶上） */
+const FILL_PHYSICAL_ATTRS: readonly string[] = [
+  'Insulated', 'Vacuum', 'Sealed', 'Leakproof', 'Waterproof', 'Reusable', 'Washable',
+  'Foldable', 'Collapsible', 'Stackable', 'Lightweight', 'Compact', 'Slim', 'Mini',
+  'Portable', 'Pocket', 'Magnetic', 'Wireless', 'Rechargeable', 'Adjustable', 'Ergonomic',
+  'Reflective', 'Rustproof', 'Shatterproof', 'Double', 'Wall', 'Heavy', 'Duty', 'Rigid',
+  'Flexible', 'Thick', 'Lined', 'Padded', 'Vented', 'Locking', 'Rotating',
+]
+
+/** 场景/用途词：属于定位而非物理承诺，任何产品都能用（真实买家会这么搜） */
+const FILL_SCENE_ATTRS: readonly string[] = [
+  'Travel', 'Office', 'Desk', 'Home', 'Kitchen', 'Outdoor', 'Camping', 'Beach', 'Pool',
+  'Gym', 'Yoga', 'Hotel', 'Bar', 'Party', 'Wedding', 'School', 'Campus', 'Hospital',
+  'Warehouse', 'Workshop', 'Garage', 'Garden', 'Patio', 'Fishing', 'Hiking', 'Golf',
+  'Running', 'Commuting', 'Picnic', 'Tailgate', 'Festival', 'Concert', 'Conference',
+  'Seminar', 'Training', 'Recognition', 'Incentive', 'Retirement', 'Anniversary',
+  'Birthday', 'Holiday', 'Fundraiser', 'Donation',
+]
+
+const FILL_ATTR_SET = new Set([...FILL_PHYSICAL_ATTRS, ...FILL_SCENE_ATTRS].map((a) => a.toLowerCase()))
+
+/** 单复数归一：Bottle / Bottles 视为同一个词，避免两组只差一个 s 白占位置 */
+function singularWord(w: string): string {
+  const s = w.toLowerCase()
+  if (s.length > 4 && s.endsWith('ies')) return `${s.slice(0, -3)}y`
+  if (s.length > 4 && /(sh|ch|x|ss|z)es$/.test(s)) return s.slice(0, -2)
+  if (s.length > 3 && s.endsWith('s') && !s.endsWith('ss') && !s.endsWith('us')) return s.slice(0, -1)
+  return s
+}
+
+/** 拿不准是不是名词的词（-ed / -ing / -less 之类）不当名词用 */
+const FILL_ADJ_TAIL = /(ed|ing|ive|ous|less|proof|able|ible)$/
+
+/** 从产品自身文案里抽「产品名词」候选（英文核心名词在词尾） */
+function keywordFillNouns(ctx: KeywordFillContext): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const push = (words: string[]): void => {
+    const clean = words
+      .map((w) => String(w).replace(/[^A-Za-z0-9]/g, ''))
+      .filter(Boolean)
+      .filter((w) => {
+        const low = w.toLowerCase()
+        if (w.length < 3 || /^\d/.test(w)) return false
+        if (FILL_NOUN_STOPWORDS.has(low) || FILL_ATTR_SET.has(low) || FILL_MATERIAL_WORDS.has(low)) return false
+        return true
+      })
+    if (!clean.length) return
+    const head = clean[clean.length - 1].toLowerCase()
+    // 词尾是形容词/材质词 → 抽出来的不是产品名词，丢弃
+    if (FILL_MATERIAL_WORDS.has(head) || FILL_ADJ_TAIL.test(head)) return
+    const key = clean.map((w) => singularWord(w)).join(' ')
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(clean.map(toTitleCase).join(' '))
+  }
+  // 1) 标题：先截到第一个介词为止（with / for / in …），再取词尾 2~4 词组成复合名词
+  const title = String(ctx.title ?? '')
+  const headPhrase = title.split(/\s+(?:with|for|in|on|at|by|from|to|of)\s+/i)[0] ?? title
+  const headWords = headPhrase.split(/[^A-Za-z0-9]+/).filter(Boolean)
+  const tail = (n: number): string[] => headWords.slice(Math.max(0, headWords.length - n))
+  for (const n of [2, 3, 4]) if (headWords.length >= n) push(tail(n))
+  if (!out.length) push(tail(1))
+  // 2) GLS 类目：破折号前是主名词（Bottles-Insulated → Bottles；Mugs & Steins-Metal → Mugs Stein）
+  for (const c of [ctx.category, ...(ctx.categories ?? [])]) {
+    if (!c) continue
+    const headPart = String(c).split('-')[0] ?? ''
+    push(headPart.split(/[^A-Za-z0-9]+/).filter(Boolean))
+  }
+  // 3) 以上都没抽到产品名词时，才退回 ASI Type 词（Drinkware / Electronics 太泛）
+  if (!out.length) {
+    for (const w of String(ctx.typeOfProduct ?? '').split(/[^A-Za-z0-9]+/).filter(Boolean)) push([w])
+  }
+  return out
+}
+
+/** 属性候选：先「产品文案里确实出现过的物理属性」，再「场景/用途定位词」 */
+function keywordFillAttrs(ctx: KeywordFillContext): string[] {
+  const text = [ctx.title, ctx.description, ctx.category, ...(ctx.categories ?? [])]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  const fromText = FILL_PHYSICAL_ATTRS.filter((a) => new RegExp(`\\b${a.toLowerCase()}\\b`).test(text))
+  return [...fromText, ...FILL_SCENE_ATTRS]
+}
+
+/** 最后兜底：全部合规、不含运输/服务承诺的通用词（只在产品名词组合用完时用） */
+const KEYWORD_GENERIC_FILLERS: readonly string[] = [
+  'Promotional Gift', 'Custom Swag', 'Wholesale Merchandise',
+  'Bulk Order', 'Brand Awareness', 'Employee Recognition',
+  'Corporate Appreciation', 'Event Handout', 'Marketing Campaign',
+  'Party Favor', 'Grand Opening', 'Safety Award',
+  'Sales Incentive', 'Wellness Program', 'Eco Friendly',
+  'Made Sustainably', 'Welcome Kit', 'Trade Show',
+  'Fundraiser Premium', 'School Spirit', 'Holiday Present',
+  'Staff Reward', 'Client Thank You', 'Volunteer Salute',
+  'Donor Token', 'Sponsor Spotlight', 'Onboarding Bundle',
+  'Anniversary Keepsake', 'Retirement Celebration', 'Conference Giveaway',
+  'Expo Souvenir', 'Convention Prize', 'Office Stationery',
+  'Desk Accessory', 'Travel Companion', 'Outdoor Essential',
+  'Everyday Carry', 'Stocking Stuffer', 'New Hire',
+  'Customer Retention', 'Team Building', 'Direct Mailer',
+  'Print Advertising', 'Point Of Sale', 'Custom Branding',
+  'Promo Merchandise', 'Seasonal Parcel', 'Executive Thank You Gifts',
+]
+
+function cleanKeywordList(input: unknown, ctx: KeywordFillContext = {}): string[] {
   const list: string[] = []
   const seenGroups = new Set<string>()
   const seenWords = new Set<string>()
   const tryPush = (s: string): boolean => {
     const cleaned = cleanKeyword(s)
     if (!cleaned) return false
-    const words = cleaned.toLowerCase().split(/\s+/)
-    // 组内单词重复（如 "Cable Cable"）直接丢弃
+    // 单复数归一后再判重，避免 Bottle / Bottles 各占一组被下游工具合并
+    const words = cleaned.toLowerCase().split(/\s+/).map((w) => singularWord(w))
     if (new Set(words).size !== words.length) return false
     if (words.some((w) => seenWords.has(w))) return false
     seenGroups.add(cleaned.toLowerCase())
@@ -706,30 +843,26 @@ function cleanKeywordList(input: unknown): string[] {
     if (list.length >= LIMITS.keywordMax) break
     tryPush(s)
   }
-  // 不足 30 组：用互不共享单词的填充词补齐（填充词库本身已保证单词唯一，按顺序消费）
+  // 不足 30 组：先用「属性 + 产品名词」补真实搜索词（每个名词只能进一组：单词级唯一）
   if (list.length < LIMITS.keywordMax) {
-    for (const f of KEYWORD_FILLERS) {
+    const attrs = keywordFillAttrs(ctx)
+    for (const noun of keywordFillNouns(ctx)) {
+      for (const attr of attrs) {
+        if (list.length >= LIMITS.keywordMax) break
+        tryPush(`${attr} ${noun}`)
+      }
+      if (list.length >= LIMITS.keywordMax) break
+    }
+  }
+  // 仍然不够才用通用词兜底
+  if (list.length < LIMITS.keywordMax) {
+    for (const f of KEYWORD_GENERIC_FILLERS) {
       if (list.length >= LIMITS.keywordMax) break
       tryPush(f)
     }
   }
   return list
 }
-
-/** 补齐用填充词：全部经过单词级唯一性设计，按顺序消费即可填满 30 组 */
-const KEYWORD_FILLERS: readonly string[] = [
-  ...SEED_KEYWORDS,
-  'Promotional Gift', 'Bulk Order', 'Wholesale Merchandise', 'Trade Show Giveaway',
-  'Corporate Appreciation', 'Client Thank You', 'Event Handout', 'Business Swag',
-  'Brand Awareness', 'Marketing Campaign', 'Company swag', 'Employee Recognition',
-  'Trade Fair', 'Expo Souvenir', 'Convention Loot', 'Festival Freebie',
-  'Office Stationery', 'Desk Accessory', 'Travel Companion', 'Outdoor Essential',
-  'Everyday Carry', 'Gift Set', 'Party Favor', 'Stocking Stuffer',
-  'Grand Opening', 'New Hire', 'Safety Award', 'Sales Incentive',
-  'Fundraising Premium', 'Voter Outreach', 'Nonprofit Donor', 'School Spirit',
-  'Fitness Challenge', 'Wellness Program', 'Eco Friendly', 'Reusable Alternative',
-  'Made Sustainably', 'Factory Direct', 'OEM Service', 'Fast Lead Time',
-]
 
 function ensureRushSuffix(s: string): string {
   const trimmed = (s ?? '').trim()
@@ -756,7 +889,13 @@ export function applyQc(listing: Listing, contextTexts: string[] = []): Listing 
   let summary = listing.summary
   let description = listing.description
   // 关键词：上限 30 组；不足 30 组时自动补齐（与 AI 生成规则一致）
-  let keywords = cleanKeywordList(listing.keywords)
+  let keywords = cleanKeywordList(listing.keywords, {
+    title: listing.title,
+    description: listing.description,
+    category: listing.category,
+    categories: listing.categories,
+    typeOfProduct: listing.typeOfProduct,
+  })
 
   if (title.length > LIMITS.title) {
     issues.push(`标题 ${title.length} 字符，超出 ${LIMITS.title} 限制`)
@@ -1157,7 +1296,13 @@ function normalizeListing(
     title: String(raw.title ?? '').trim(),
     summary: String(raw.summary ?? '').trim(),
     description: String(raw.description ?? '').trim(),
-    keywords: cleanKeywordList(raw.keywords ?? (typeof raw.keywords === 'string' ? raw.keywords : '')),
+    keywords: cleanKeywordList(raw.keywords ?? (typeof raw.keywords === 'string' ? raw.keywords : ''), {
+      title: String(raw.title ?? ''),
+      description: String(raw.description ?? ''),
+      category: primaryCategory,
+      categories,
+      typeOfProduct: String(raw.typeOfProduct ?? ''),
+    }),
     category: primaryCategory,
     typeOfProduct: (() => {
       const hit = pickEnum(ASI_CATEGORIES, raw.typeOfProduct, '')
