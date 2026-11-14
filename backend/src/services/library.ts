@@ -115,6 +115,33 @@ export function enterPreLibrary(productId: string): { code: string; assigned: bo
 }
 
 /**
+ * 自愈：已经在预产品库（status=listed）却没发 GLS 号的产品，补发一个并纠正 library_state。
+ *
+ * 为什么需要：旧版「保存英文链接即审核通过」把状态直接写成 listed，绕过了发号，
+ * 线上就出现了 PIP0040/0046/0047 这种「在预产品库里、编号却还是流水线临时号」的产品。
+ * 启动时跑一次，历史数据自动纠正；以后就算某条路径漏了发号，重启也会补上。
+ */
+export function healPreLibrary(): { numbered: string[]; repaired: number } {
+  const numbered: string[] = []
+  let repaired = 0
+  const now = new Date().toISOString()
+  const rows = db
+    .prepare("SELECT id, code, gls_code, library_state FROM products WHERE status='listed'")
+    .all() as unknown as Array<{ id: string; code: string; gls_code: string | null; library_state: string | null }>
+  for (const r of rows) {
+    if (!r.gls_code) {
+      const res = enterPreLibrary(r.id)
+      if (res?.assigned) numbered.push(`${r.code || r.id.slice(0, 8)} -> ${res.code}`)
+      continue
+    }
+    if (r.library_state !== 'pre' && r.library_state !== 'rpa') {
+      db.prepare("UPDATE products SET library_state='pre', updated_at=? WHERE id=?").run(now, r.id)
+      repaired += 1
+    }
+  }
+  return { numbered, repaired }
+}
+/**
  * 从预产品库移进 RPA 档案库：人工给新编号，覆盖当前编号；旧编号（GLS）留在 prev_code。
  * 新编号必须唯一，且不能撞现有任何编号。
  */

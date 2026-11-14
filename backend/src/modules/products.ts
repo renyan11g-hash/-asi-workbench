@@ -3,7 +3,7 @@ import iconv from 'iconv-lite'
 import { saveSourcingHistory } from './sourcing-history'
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { db } from '../db'
+import { db, getSetting, setSetting } from '../db'
 import { AppError } from '../middleware/errorHandler'
 import { AiError, callChatJson } from '../services/ai'
 import { probeWithDiag } from '../services/market-probe'
@@ -390,9 +390,14 @@ productsRouter.get('/', async (req: Request, res: Response) => {
     where.push("status != 'trashed' AND status != 'pending_review'")
   }
   if (q) {
-    where.push('(source_title LIKE ? OR listing LIKE ? OR category LIKE ? OR amazon_title LIKE ?)')
+    // 编号也要能搜：产品进预产品库会换 GLS 号，旧 PIP 号留在 prev_code，
+    // 之前只搜标题/文案，业务员拿着编号反而找不到产品
+    where.push(
+      '(source_title LIKE ? OR listing LIKE ? OR category LIKE ? OR amazon_title LIKE ?' +
+        ' OR code LIKE ? OR gls_code LIKE ? OR prev_code LIKE ? OR id LIKE ?)'
+    )
     const like = `%${q}%`
-    params.push(like, like, like, like)
+    params.push(like, like, like, like, like, like, like, like)
   }
   let sql = 'SELECT * FROM products'
   if (where.length) sql += ` WHERE ${where.join(' AND ')}`
@@ -1359,18 +1364,35 @@ productsRouter.post('/', async (req: Request, res: Response) => {
   res.status(201).json({ product: findProduct(id) })
 })
 
-/** 现有最大产品编号数字（RPA0007 → 7）；没有则 0 */
+const PIP_SEQ_KEY = 'pip-seq'
+
+/**
+ * 已发放的最大 PIP 号。
+ *
+ * 以前是「code 里最大的 PIP + 1」，有两个坑：
+ *   ① 产品进预产品库后 code 会换成 GLS，PIP 号搬到 prev_code —— 只扫 code 就会把旧号再发一遍；
+ *   ② 删掉最大号那条之后，下一件又会拿到同一个号。
+ * 现在改成「计数器（settings: pip-seq）只增不减」+ 全表（code 与 prev_code）扫描兜底，
+ * 保证同一个 PIP 号永远只属于一件产品。
+ */
 function maxCodeNumber(): number {
+  let max = 0
   try {
-    const row = db
-      .prepare("SELECT code FROM products WHERE code LIKE 'PIP%' ORDER BY code DESC LIMIT 1")
-      .get() as { code: string } | undefined
-    if (!row?.code) return 0
-    const n = Number.parseInt(row.code.replace(/^PIP/i, ''), 10)
-    return Number.isFinite(n) ? n : 0
+    const rows = db.prepare('SELECT code, prev_code FROM products').all() as unknown as Array<{
+      code: string | null
+      prev_code: string | null
+    }>
+    for (const r of rows) {
+      for (const v of [r.code, r.prev_code]) {
+        const m = /^PIP(\d+)$/i.exec(String(v ?? ''))
+        if (m) max = Math.max(max, Number.parseInt(m[1], 10))
+      }
+    }
   } catch {
-    return 0
+    /* 读取失败就用计数器 */
   }
+  const stored = Number.parseInt(getSetting(PIP_SEQ_KEY) ?? '', 10)
+  return Math.max(max, Number.isFinite(stored) ? stored : 0)
 }
 
 /**
@@ -1379,7 +1401,9 @@ function maxCodeNumber(): number {
  * 所以这里的 PIP 号只是流水线期间用来认产品的临时号，不对外。
  */
 function nextProductCode(): string {
-  return `PIP${String(maxCodeNumber() + 1).padStart(4, '0')}`
+  const next = maxCodeNumber() + 1
+  setSetting(PIP_SEQ_KEY, String(next))
+  return `PIP${String(next).padStart(4, '0')}`
 }
 
 /**
@@ -1513,23 +1537,18 @@ productsRouter.patch('/:id', async (req: Request, res: Response) => {
         : null
   const status = patch.status ?? current.status
 
-  // 待审核的档案在链接生成页核对后保存 = 人工确认通过 → 原地转正式产品。
-  // 这一步就是「所有信息确认好后保存到产品库」，不需要再回待审核点一次通过。
+  // 单品流程与批量流程一致：在链接生成页保存 = 改这份「待审核」版本，不等于审核通过。
+  // 审核通过只能在审核中心做，那里才会发 GLS 号并真正进预产品库。
+  // 以前这里直接把状态改成 listed，结果产品进了预产品库却还挂着 PIP 临时号（线上 PIP0040/0046/0047）。
   let nextStatus = status
-  if (!patch.status && current.status === 'pending_review' && patch.listing) {
-    nextStatus = 'listed'
+  if (!patch.status && current.status === 'pending_review') {
+    nextStatus = 'pending_review'
   }
   const nowIso = new Date().toISOString()
 
   updateProductRow(id, source, evaluation, listing, nextStatus, nowIso)
-  if (nextStatus === 'listed' && current.status === 'pending_review') {
-    db.prepare(
-      "UPDATE products SET review_state='approved', reviewed_at=? WHERE id=?"
-    ).run(nowIso, id)
-    // 批量任务靠 listing_reviews 记录判断这条审核结果，这里同步一下，避免批次里一直显示"待审核"
-    db.prepare(
-      "UPDATE listing_reviews SET status='approved', updated_at=? WHERE product_id=? AND status='pending'"
-    ).run(nowIso, id)
+  if (nextStatus === 'pending_review') {
+    db.prepare("UPDATE products SET review_state='pending', updated_at=? WHERE id=?").run(nowIso, id)
   }
   res.json({ product: findProduct(id) })
 })

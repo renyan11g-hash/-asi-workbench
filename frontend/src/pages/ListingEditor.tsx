@@ -771,7 +771,11 @@ export default function ListingEditor() {
         await runEditable('保存文案', async (force) => {
           await api.updateProduct(product.id, { listing, ...(force ? { force: true } : {}) })
         })
-        toast.success('已保存')
+        toast.success(
+          product.status === 'pending_review'
+            ? '已保存：仍是「待审核」，到审核中心通过后才进预产品库并拿 GLS 编号'
+            : '已保存'
+        )
       }
       setDirty(false)
       setHasDraft(false)
