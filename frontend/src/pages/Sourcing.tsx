@@ -500,11 +500,14 @@ export default function Sourcing() {
       qc.invalidateQueries({ queryKey: ['flow-overview'] })
       qc.invalidateQueries({ queryKey: ['flow-products'] })
       toast.success(
-        product.draftId
+        (product.draftId
           ? `已更新产品档案 ${product.code || ''}（同一条档案，不会重复建品）`
-          : `已保存到产品档案 ${product.code || ''}`
+          : `已保存到产品档案 ${product.code || ''}`) +
+          (then === 'listing' ? '，正在生成英文链接…' : '')
       )
-      if (then === 'listing') navigate(`/listing/${product.id}`)
+      // 带上 gen=1：编辑页打开后自动起生成任务。
+      // 以前这里只是跳转，用户以为已经生成了，结果产品停在「已评估、没有文案」的状态里找不到。
+      if (then === 'listing') navigate(`/listing/${product.id}?gen=1`)
       else navigate('/pipeline')
     } catch (err) {
       toast.error(getErrorMessage(err))

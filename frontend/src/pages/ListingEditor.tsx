@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
@@ -706,6 +706,22 @@ export default function ListingEditor() {
     }
   }
 
+  // 从「保存并生成英文链接」进来（?gen=1）：进来就真的开生成，
+  // 否则按钮名不副实——产品停在「已评估、没有文案」，在待审核/预产品库里都找不到。
+  const [searchParams, setSearchParams] = useSearchParams()
+  const autoGenRef = useRef(false)
+  useEffect(() => {
+    if (autoGenRef.current) return
+    if (searchParams.get('gen') !== '1') return
+    if (!product) return
+    if (product.listing) return
+    autoGenRef.current = true
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.delete('gen')
+    setSearchParams(nextParams, { replace: true })
+    void doGenerate()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product?.id, product?.listing])
   /** 旧 generate 保留兼容：直接调（如果以后想"跳过问题"按钮） */
   const generate = () => doGenerate()
 
