@@ -293,6 +293,91 @@ export function extractMaterialTags(text: string): string[] {
   return tags
 }
 
+/**
+ * ASI 材质名 → 规则引擎的材质档案（profile）。
+ *
+ * ASI 的 Material 清单有 70 项，引擎只建了 28 个常用档案；剩下 42 项（Polycarbonate、Brass、Suede…）
+ * 不做映射就会被判成「材质未识别」，印刷方式解读随即退化成通用兜底——
+ * 业务员看到的「材质识别不准」正是这里：他在界面上明明选了材质，解读里却是「未识别」。
+ * 值为空字符串表示确实认不出（如 Other），保持未识别，由上层给兜底提示。
+ */
+const ASI_MATERIAL_ALIAS: Record<string, string> = {
+  // 织物 / 皮革
+  Blend: 'Polyester',
+  Cashmere: 'Fleece',
+  Felt: 'Fleece',
+  Hemp: 'Canvas',
+  'Microfiber Cloth': 'Microfiber',
+  'Non-Woven Fabric': 'Nonwoven',
+  'Other Fabric': 'Cotton',
+  Silk: 'Polyester',
+  Spandex: 'Nylon',
+  Wool: 'Fleece',
+  Foam: 'EVA',
+  'Other Leather/Suede': 'Leather',
+  Suede: 'Leather',
+  // 玻璃 / 陶瓷 / 石材
+  Crystal: 'Glass',
+  'Optical Glass': 'Glass',
+  'Other Glass': 'Glass',
+  Gemstone: 'Ceramic',
+  'Other Stone/Ceramic': 'Ceramic',
+  Stone: 'Ceramic',
+  // 金属
+  Alloy: 'Metal',
+  Brass: 'Metal',
+  Copper: 'Metal',
+  Gold: 'Metal',
+  Iron: 'Metal',
+  Nickel: 'Metal',
+  'Other Metal': 'Metal',
+  Pewter: 'Metal',
+  Silver: 'Metal',
+  Steel: 'Metal',
+  // 天然材料
+  Bone: 'Wood',
+  Cork: 'Wood',
+  'Jute/Burlap': 'Canvas',
+  'Other Organic Material': 'Wood',
+  'Bamboo Wood': 'Bamboo',
+  'Composite Board': 'Wood',
+  'Other Wood/Paper': 'Wood',
+  // 塑料 / 橡胶
+  'Acrylic Plastic': 'Acrylic',
+  Neoprene: 'Nylon',
+  'Other Plastic': 'ABS',
+  'PET/PETE': 'ABS',
+  Plastic: 'ABS',
+  Polycarbonate: 'ABS',
+  'Polyethylene (PE)': 'PE',
+  Polypropylene: 'PP',
+  'Polyurethane (PUR or PU)': 'PVC',
+  Resin: 'Acrylic',
+  TPE: 'Silicone',
+  Latex: 'Silicone',
+  Rubber: 'Silicone',
+  Vinyl: 'PVC',
+  Other: '',
+}
+
+const ASI_MATERIAL_ALIAS_LOWER = new Map(
+  Object.entries(ASI_MATERIAL_ALIAS).map(([k, v]) => [k.toLowerCase(), v] as const)
+)
+
+/**
+ * 把任意材质标签归一到引擎的档案名（大小写不敏感）。
+ * 认不出返回 null —— 宁可不猜，也不要把聚碳酸酯当成「通用兜底」。
+ */
+export function normalizeAsiMaterial(tag: string): string | null {
+  const t = (tag ?? '').trim()
+  if (!t) return null
+  const prof = MATERIAL_PROFILES.find((m) => m.name.toLowerCase() === t.toLowerCase())
+  if (prof) return prof.name
+  const mapped = ASI_MATERIAL_ALIAS_LOWER.get(t.toLowerCase())
+  if (mapped === undefined) return null
+  return mapped || null
+}
+
 // ———————————————————— 工艺知识（优缺点 / 适用形态） ————————————————————
 
 interface MethodMeta {
@@ -469,6 +554,10 @@ export interface ImprintRecommendationResult {
   excluded: ImprintExclusion[]
   materialProfiles: MaterialProfile[]
   materialTags: string[]
+  /** 业务员实际选中的材质（ASI 原始名，未做归一） */
+  inputMaterials: string[]
+  /** 规则表里没有对应档案、只能走通用兜底的材质 */
+  unmappedMaterials: string[]
   /** 识别到的材质族（中文标签） */
   families: string[]
   /** 一句话汇总 */
@@ -518,9 +607,16 @@ export function recommendImprintMethods(
   source: ImprintRecoInput,
   materialEn?: string[]
 ): ImprintRecommendationResult {
-  // 材质来源：显式传入的英文标签 > 材质字段 > 标题（描述太杂，不参与）
+  // 材质来源：显式传入的英文标签（listing 里业务员选的） > 材质字段 > 标题（描述太杂，不参与）
   const scanText = [source.materialCn, source.sourceTitle].filter(Boolean).join(' ')
-  const materialTags = (materialEn?.length ? materialEn : extractMaterialTags(scanText)).filter(Boolean)
+  const inputMaterials = (materialEn?.length ? materialEn : extractMaterialTags(scanText))
+    .map((t) => String(t).trim())
+    .filter(Boolean)
+  // ASI 材质名先归一成引擎档案名，否则 Polycarbonate / Brass 这类会掉进「未识别」
+  const materialTags = Array.from(
+    new Set(inputMaterials.map((t) => normalizeAsiMaterial(t)).filter((t): t is string => Boolean(t)))
+  )
+  const unmappedMaterials = inputMaterials.filter((t) => !normalizeAsiMaterial(t))
   const families = familiesOf(materialTags)
   const materialDetected = families.length > 0
 
@@ -690,6 +786,8 @@ export function recommendImprintMethods(
     excluded,
     materialProfiles,
     materialTags,
+    inputMaterials,
+    unmappedMaterials,
     families: families.map((f) => FAMILY_LABEL[f]),
     summary,
     materialDetected,

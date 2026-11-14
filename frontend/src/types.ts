@@ -194,6 +194,10 @@ export interface ImprintRecommendResult {
   /** 明确不适用 + 原因 */
   excluded: Array<{ method: string; nameZh: string; reason: string }>
   materialProfiles: Array<{ name: string; nameZh: string; pros: string[]; cons: string[] }>
+  /** 业务员实际选中的材质（ASI 原始名，未做归一） */
+  inputMaterials?: string[]
+  /** 规则表里没有对应档案、只能走通用兜底的材质 */
+  unmappedMaterials?: string[]
   materialTags: string[]
   families: string[]
   summary: string

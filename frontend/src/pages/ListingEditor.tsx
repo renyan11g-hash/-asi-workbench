@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -873,20 +873,37 @@ export default function ListingEditor() {
   // ---------- 本产品定价参数（汇率 / 运费 / 印刷费 / 样品费 / 杂费 / 会员折扣） ----------
   const [visualBusy, setVisualBusy] = useState(false)
   const [evalBusy, setEvalBusy] = useState(false)
-  // 印刷方式推导（材质 → 工艺），用于「为什么选这些印刷方式」折叠窗
+  // 印刷方式解读（材质 → 工艺）：材质是 listing 上业务员选的，改一次就重算一次
   const [imprintReco, setImprintReco] = useState<Awaited<ReturnType<typeof api.imprintRecommend>> | null>(null)
-  const loadImprintReason = async () => {
+  const [imprintBusy, setImprintBusy] = useState(false)
+  /** 当前 listing 上的材质（materials 优先，退回单个 material） */
+  const currentMaterials = useMemo(
+    () => ((listing?.materials?.length ? listing.materials : listing?.material ? [listing.material] : []) as string[]),
+    [listing?.materials, listing?.material]
+  )
+  const loadImprintReason = async (silent = false) => {
     if (!product) return
+    setImprintBusy(true)
     try {
-      const r = await api.imprintRecommend({
-        ...product.source,
-        materialCn: listing?.material || product.source.materialCn,
-      })
+      const r = await api.imprintRecommend(
+        { ...product.source, materialCn: product.source.materialCn },
+        currentMaterials
+      )
       setImprintReco(r)
     } catch (err) {
-      toast.error(getErrorMessage(err))
+      if (!silent) toast.error(getErrorMessage(err))
+    } finally {
+      setImprintBusy(false)
     }
   }
+  // 材质一改就重算（防抖 300ms），否则解读里还挂着上一次的材质与工艺理由
+  const materialSignature = currentMaterials.join('|')
+  useEffect(() => {
+    if (!product || !listing) return
+    const timer = setTimeout(() => void loadImprintReason(true), 300)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [materialSignature, product?.id])
 
   /** 整块文案按一句话指令改：四个字段一起改，避免标题/摘要/描述互相打架 */
   const [copyInstruction, setCopyInstruction] = useState('')
@@ -1863,15 +1880,16 @@ export default function ListingEditor() {
                 ))}
               </div>
 
-              {/* 为什么是这几种印刷方式：把材质 → 工艺的推导摊开给业务员看 */}
+              {/* 印刷方式解读：把当前材质的 → 工艺推导摊开给业务员看（材质改了这里会跟着变） */}
               <details className="mt-4 rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2">
                 <summary className="cursor-pointer text-xs font-semibold text-slate-700">
-                  为什么选这些印刷方式？（材质 → 工艺推导，含排除原因）
+                  印刷方式解读（按当前材质推导，含排除原因）
                 </summary>
                 <div className="mt-2">
                   <ImprintReasoning
                     reco={imprintReco}
                     title={listing.title}
+                    busy={imprintBusy}
                     onLoad={() => void loadImprintReason()}
                   />
                 </div>

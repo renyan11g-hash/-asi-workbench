@@ -13,16 +13,18 @@ import type { ImprintRecommendResult } from '@/types'
 export function ImprintReasoning({
   reco,
   title,
+  busy = false,
   onLoad,
 }: {
   reco: ImprintRecommendResult | null
   title: string
+  busy?: boolean
   onLoad: () => void
 }) {
   if (!reco) {
     return (
-      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onLoad}>
-        计算本产品的材质与工艺适配
+      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onLoad} disabled={busy}>
+        {busy ? '解读中…' : '按当前材质解读印刷方式'}
       </Button>
     )
   }
@@ -57,10 +59,20 @@ export function ImprintReasoning({
       <div className="rounded bg-white p-2 text-slate-700">
         <div>产品：{title || '（未命名）'}</div>
         <div>
-          材质：
-          {groups.map((g) => g.label).join('、') || '未填写'}
-          {!reco.materialDetected ? '（材质未识别，以下为通用兜底）' : ''}
+          当前材质：{(reco.inputMaterials?.length ? reco.inputMaterials : groups.map((g) => g.label)).join('、') || '未填写'}
         </div>
+        {reco.materialDetected ? (
+          <div className="text-slate-500">
+            规则识别为：{groups.map((g) => g.label).join('、')}（{reco.families.join('/')}）
+          </div>
+        ) : (
+          <div className="text-amber-700">
+            规则表里还没有这个材质，下面按常见促销礼品兜底，务必向工厂确认工艺（换一个 ASI 材质可重新推导）
+          </div>
+        )}
+        {reco.unmappedMaterials?.length ? (
+          <div className="text-amber-700">未纳入规则表：{reco.unmappedMaterials.join('、')}</div>
+        ) : null}
       </div>
 
       {groups.map((g) => (

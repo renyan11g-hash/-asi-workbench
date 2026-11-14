@@ -398,8 +398,12 @@ export const api = {
   },
 
   // ---------- 印刷方式推荐（本地规则引擎，无需 AI） ----------
-  async imprintRecommend(source: SourceInfo): Promise<ImprintRecommendResult> {
-    const { data } = await apiClient.post('/products/imprint-recommend', { source })
+  async imprintRecommend(source: SourceInfo, materialEn?: string[]): Promise<ImprintRecommendResult> {
+    const { data } = await apiClient.post('/products/imprint-recommend', {
+      source,
+      // 业务员在 listing 里选的 ASI 材质名：比从中文标题里猜准得多，必须一起传
+      ...(materialEn?.length ? { materialEn } : {}),
+    })
     return data
   },
 
