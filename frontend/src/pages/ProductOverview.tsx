@@ -39,7 +39,7 @@ export default function ProductOverview() {
     const q = keyword.trim().toLowerCase()
     if (!q) return products
     return products.filter((p) => [
-      p.code, p.platformName, p.platformProductId, p.platformUrl,
+      p.glsCode, p.code, p.platformName, p.platformProductId, p.platformUrl,
       p.source.sourceTitle, p.listing?.title, p.source.supplier,
       p.source.sourceUrl, p.source.category, ...(p.source.sourceKeywords ?? []),
     ].some((v) => String(v ?? '').toLowerCase().includes(q)))
@@ -131,7 +131,7 @@ export default function ProductOverview() {
                   <ProductThumb images={p.source.images} size={54} clickable={false} />
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs text-blue-700">{p.code || '未分配编号'}</span>
+                      <span className="font-mono text-xs text-blue-700">{p.glsCode || p.code || '未分配 GLS'}</span>
                       <span className="truncate text-sm font-medium text-slate-900">{p.listing?.title || p.source.sourceTitle || '未命名产品'}</span>
                     </span>
                     <span className="mt-1 block truncate text-xs text-slate-500">{p.source.supplier || '供应商待补充'} · {p.source.category || '未分类'}</span>
@@ -150,13 +150,13 @@ export default function ProductOverview() {
                 <div className="flex items-start gap-3">
                   <ProductThumb images={selected.source.images} size={88} clickable />
                   <div className="min-w-0 flex-1">
-                    <div className="font-mono text-xs text-blue-700">{selected.code || '未分配 GLS'}</div>
+                    <div className="font-mono text-xs text-blue-700">{selected.glsCode || selected.code || '未分配 GLS'}</div>
                     <h2 className="mt-1 text-base font-semibold">{selected.listing?.title || selected.source.sourceTitle || '未命名产品'}</h2>
                     <p className="mt-1 text-xs text-slate-500">{selected.source.sourceTitle}</p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {selected.source.sourceUrl && <Button size="sm" variant="outline" onClick={() => window.open(selected.source.sourceUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-1 h-3.5 w-3.5" />1688 来源</Button>}
                       {selected.platformUrl && <Button size="sm" variant="outline" onClick={() => window.open(selected.platformUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-1 h-3.5 w-3.5" />平台商品</Button>}
-                      <Button size="sm" variant="outline" onClick={() => copyText(selected.code || '')}><Copy className="mr-1 h-3.5 w-3.5" />复制 GLS</Button>
+                      <Button size="sm" variant="outline" onClick={() => copyText(selected.glsCode || selected.code || '')}><Copy className="mr-1 h-3.5 w-3.5" />复制编号</Button>
                       <Button size="sm" onClick={() => window.location.href = `/listing/${selected.id}`}>打开产品档案</Button>
                     </div>
                   </div>

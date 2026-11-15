@@ -104,6 +104,7 @@ export function toSourceInfo(s: SourceInput): SourceInfo {
 interface Row {
   id: string
   code: string
+  gls_code?: string | null
   platform_name?: string | null
   platform_product_id?: string | null
   platform_url?: string | null
@@ -171,6 +172,7 @@ function rowToProduct(r: Row): Product {
   return {
     id: r.id,
     code: r.code ?? '',
+    glsCode: r.gls_code ?? '',
     platformName: r.platform_name ?? '',
     platformProductId: r.platform_product_id ?? '',
     platformUrl: r.platform_url ?? '',

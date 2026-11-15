@@ -344,6 +344,8 @@ export interface Product {
   id: string
   /** Workbench 内部稳定产品编号；历史字段 code 保留兼容 */
   code: string
+  /** Workbench 内部稳定 GLS 编号；未分配时为空 */
+  glsCode?: string
   /** 当前平台名称，例如 Ripple */
   platformName?: string
   /** 当前平台自己的商品编号 */
