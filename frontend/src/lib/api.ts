@@ -2230,6 +2230,18 @@ export const businessOpsApi = {
     const { data } = await apiClient.put(`/business-ops/customers/${id}/profile`,payload)
     return data.profile
   },
+  async listInquiryQuotes(id:string) {
+    const { data } = await apiClient.get(`/business-ops/inquiries/${id}/quotes`)
+    return data.quotes
+  },
+  async createInquiryQuote(id:string,payload:{quoteNumber:string;amount:number;currency:'USD'|'CNY';quantity:number;shippingMethod?:string;productionTime?:string;transitTime?:string;validUntil?:string|null;notes?:string}) {
+    const { data } = await apiClient.post(`/business-ops/inquiries/${id}/quotes`,payload)
+    return data.quote
+  },
+  async updateQuoteStatus(id:string,status:'draft'|'sent'|'accepted'|'rejected'|'expired') {
+    const { data } = await apiClient.patch(`/business-ops/quotes/${id}/status`,{status})
+    return data.quote
+  },
   async getOrderFulfillment(id:string) {
     const { data } = await apiClient.get(`/business-ops/orders/${id}/fulfillment`)
     return data
