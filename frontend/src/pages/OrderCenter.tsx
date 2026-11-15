@@ -483,6 +483,11 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
   const [analysisOpen, setAnalysisOpen] = useState(false)
   const [aiAnalysis, setAiAnalysis] = useState<{ inquiryId: string; subject: string; analysis: InquiryAiAnalysis } | null>(null)
   const [savingAnalysis, setSavingAnalysis] = useState(false)
+  const [matchingInquiry, setMatchingInquiry] = useState<Inquiry | null>(null)
+  const [matchingResults, setMatchingResults] = useState<Array<{ productId: string; confidence: number; reason: string; matchedNeeds: string[]; missingInfo: string[] }>>([])
+  const [matchingNote, setMatchingNote] = useState('')
+  const [matchingLoading, setMatchingLoading] = useState(false)
+  const [linkingProductId, setLinkingProductId] = useState<string | null>(null)
   const [form, setForm] = useState({ customerId: '', subject: '', content: '', type: 'price_inquiry' as InquiryType, productId: '' })
 
   const { data: customers } = useQuery({ queryKey: ['oc-customers', ''], queryFn: () => orderApi.listCustomers() })
@@ -539,6 +544,41 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
       toast.error(getErrorMessage(err))
     } finally {
       setCategorizingId(null)
+    }
+  }
+
+  const matchInquiryProducts = async (inquiry: Inquiry) => {
+    setMatchingInquiry(inquiry)
+    setMatchingResults([])
+    setMatchingNote('')
+    setMatchingLoading(true)
+    try {
+      const result = await api.matchInquiryProducts({
+        inquiry: `${inquiry.subject}\n${inquiry.content}`.slice(0, 12000),
+        productIds: products.slice(0, 200).map((product) => product.id),
+      })
+      setMatchingResults(result.matches)
+      setMatchingNote(result.note)
+      if (!result.matches.length) toast.info('AI 暂未找到有足够依据的匹配产品')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setMatchingLoading(false)
+    }
+  }
+
+  const linkInquiryProduct = async (inquiry: Inquiry, product: Product) => {
+    setLinkingProductId(product.id)
+    try {
+      await orderApi.updateInquiryProduct(inquiry.id, product.id)
+      toast.success(`已将 ${product.glsCode || product.code} 关联到询盘`)
+      setMatchingInquiry(null)
+      void qc.invalidateQueries({ queryKey: ['oc-inquiries'] })
+      onChanged()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setLinkingProductId(null)
     }
   }
 
@@ -659,6 +699,7 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
                       </SelectContent>
                     </Select>
                     <InquiryQuoteButton inquiry={i} onChanged={() => { void qc.invalidateQueries({ queryKey: ['oc-inquiries'] }); onChanged() }} />
+                    <Button variant="ghost" size="sm" title="AI 匹配产品并人工确认关联" onClick={() => void matchInquiryProducts(i)} disabled={matchingLoading || products.length === 0}><Package className="h-3.5 w-3.5" /></Button>
                     <Button variant="ghost" size="sm" title={i.aiAnalysis ? '查看/编辑已保存分析' : '手动录入询盘分析'} onClick={() => openManualAnalysis(i)}><ClipboardList className="h-3.5 w-3.5" /></Button>
                     <Button variant="ghost" size="sm" title="AI 询盘分析" onClick={() => void categorize(i.id)} disabled={categorizingId === i.id}>
                       {categorizingId === i.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
@@ -802,6 +843,60 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
               {savingAnalysis && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />} 保存人工修改
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!matchingInquiry} onOpenChange={(open) => { if (!open && !linkingProductId) setMatchingInquiry(null) }}>
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>询盘产品匹配</DialogTitle>
+            <DialogDescription>
+              {matchingInquiry?.subject || ''} · 当前关联：{productTitle(matchingInquiry?.productId)}。AI 只提供候选，不会自动修改关联。
+            </DialogDescription>
+          </DialogHeader>
+          {matchingLoading ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" />正在分析产品库…</div>
+          ) : matchingResults.length === 0 ? (
+            <p className="py-8 text-center text-sm text-slate-500">暂无可靠匹配结果。你可以检查询盘描述，或到「产品一览」手动搜索 GLS 编号。</p>
+          ) : (
+            <div className="space-y-3">
+              {matchingResults.map((match) => {
+                const product = products.find((item) => item.id === match.productId)
+                if (!product) return null
+                return (
+                  <div key={product.id} className="rounded-lg border p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-medium">{product.listing?.title || product.source.sourceTitle || '未命名产品'}</div>
+                        <div className="mt-1 text-xs text-slate-500">{product.glsCode || product.code || '未分配 GLS'} · {product.platformName || '平台未注明'} {product.platformProductId || ''}</div>
+                      </div>
+                      <Badge variant="secondary">相关度 {match.confidence}%</Badge>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-700">{match.reason}</p>
+                    {match.matchedNeeds.length > 0 && <p className="mt-1 text-xs text-emerald-700">符合：{match.matchedNeeds.join('、')}</p>}
+                    {match.missingInfo.length > 0 && <p className="mt-1 text-xs text-amber-700">待核实：{match.missingInfo.join('、')}</p>}
+                    <div className="mt-2 grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
+                      <span>供应商：{product.source.supplier || '待补充'}</span>
+                      <span>采购价：{product.source.priceCny != null ? `¥${product.source.priceCny}` : '待补充'}</span>
+                      <span>MOQ：{product.source.moq || '待补充'}</span>
+                      <span>材质 / 尺寸：{[product.source.materialCn, product.source.sizeCn].filter(Boolean).join(' / ') || '待补充'}</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-3 text-xs">
+                      {product.platformUrl && <a className="text-blue-700 underline" href={product.platformUrl} target="_blank" rel="noreferrer">{product.platformName || '平台'}商品链接</a>}
+                      {product.source.sourceUrl && <a className="text-blue-700 underline" href={product.source.sourceUrl} target="_blank" rel="noreferrer">1688 采购链接</a>}
+                    </div>
+                    <div className="mt-3 flex justify-end">
+                      <Button size="sm" onClick={() => matchingInquiry && void linkInquiryProduct(matchingInquiry, product)} disabled={!!linkingProductId}>
+                        {linkingProductId === product.id && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
+                        {matchingInquiry?.productId === product.id ? '已关联此产品' : '确认关联此产品'}
+                      </Button>
+                    </div>
+                  </div>
+                )
+              })}
+              {matchingNote && <p className="text-xs text-slate-500">{matchingNote}</p>}
+            </div>
+          )}
+          <DialogFooter><Button variant="outline" onClick={() => setMatchingInquiry(null)} disabled={!!linkingProductId}>关闭</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </SectionCard>
