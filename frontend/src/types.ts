@@ -543,6 +543,16 @@ export interface Customer {
   updatedAt: string
 }
 
+export interface InquiryAiAnalysis {
+  category: 'pricing' | 'sample' | 'customization' | 'logistics' | 'product_match' | 'general'
+  intent: string
+  summary: string
+  requestedQuantity: string | null
+  customization: string
+  missingInfo: string[]
+  recommendedNextStep: string
+}
+
 export interface Inquiry {
   id: string
   customerId: string
