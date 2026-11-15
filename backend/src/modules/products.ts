@@ -2260,6 +2260,75 @@ productsRouter.post('/imprint-recommend', async (req: Request, res: Response) =>
 })
 
 // ---------- AI 助手对话窗口（免提问，自动补全信息；可返回 listing 补丁） ----------
+productsRouter.post('/inquiry-match', async (req: Request, res: Response) => {
+  const body = z.object({
+    inquiry: z.string().trim().min(10).max(12000),
+    productIds: z.array(z.string().min(1)).max(200),
+  }).parse(req.body ?? {})
+
+  const candidates = body.productIds.flatMap((id) => {
+    try {
+      const product = findProduct(id)
+      if (product.status === 'trashed' || product.status === 'pending_review') return []
+      return [{
+        id: product.id,
+        glsCode: product.glsCode || '',
+        legacyCode: product.code || '',
+        title: product.listing?.title || '',
+        sourceTitle: product.source.sourceTitle || '',
+        category: product.source.category || '',
+        material: product.source.materialCn || '',
+        description: (product.source.description || '').slice(0, 500),
+        keywords: (product.source.sourceKeywords || []).slice(0, 12),
+        supplier: product.source.supplier || '',
+        platformName: product.platformName || '',
+        platformProductId: product.platformProductId || '',
+        platformUrl: product.platformUrl || '',
+      }]
+    } catch {
+      return []
+    }
+  })
+
+  if (!candidates.length) {
+    res.json({ matches: [], note: '当前没有可用于匹配的产品资料。' })
+    return
+  }
+
+  const system = [
+    'You are an experienced US promotional-products distributor sales assistant.',
+    'Match the customer inquiry to the supplied product catalog.',
+    'Compare product function, form factor, material, use case, customization needs and quantity context.',
+    'Do not invent product specs, certifications, stock, prices, lead times or platform links.',
+    'Only return products that are genuinely relevant. If evidence is weak, return no match.',
+    'Return strict JSON only: {"matches":[{"productId":"existing id","confidence":0-100,"reason":"brief Chinese explanation","matchedNeeds":["..."],"missingInfo":["..."]}],"note":"brief Chinese note"}.',
+    'Maximum 5 matches, sorted by confidence. productId must exactly match a supplied candidate id.',
+    'Confidence is a relevance estimate, not a guarantee that the product meets every requirement.',
+  ].join(' ')
+
+  const user = JSON.stringify({ customerInquiry: body.inquiry, catalog: candidates })
+  const raw = await runAi(() => callChatJson<Record<string, unknown>>(loadSettings(), system, user, 0.1))
+  const allowed = new Set(candidates.map((item) => item.id))
+  const matches = Array.isArray(raw.matches)
+    ? raw.matches.flatMap((item) => {
+        if (!item || typeof item !== 'object') return []
+        const value = item as Record<string, unknown>
+        const productId = String(value.productId ?? '')
+        if (!allowed.has(productId)) return []
+        const confidence = Number(value.confidence)
+        if (!Number.isFinite(confidence) || confidence < 0 || confidence > 100) return []
+        return [{
+          productId,
+          confidence: Math.round(confidence),
+          reason: String(value.reason ?? '').slice(0, 500),
+          matchedNeeds: Array.isArray(value.matchedNeeds) ? value.matchedNeeds.map(String).slice(0, 8) : [],
+          missingInfo: Array.isArray(value.missingInfo) ? value.missingInfo.map(String).slice(0, 8) : [],
+        }]
+      }).sort((a, b) => b.confidence - a.confidence).slice(0, 5)
+    : []
+  res.json({ matches, note: String(raw.note ?? '').slice(0, 500) })
+})
+
 productsRouter.post('/assistant', async (req: Request, res: Response) => {
   const body = z
     .object({

@@ -17,6 +17,9 @@ function money(value?: number | null) {
 export default function ProductOverview() {
   const [keyword, setKeyword] = useState('')
   const [inquiryText, setInquiryText] = useState('')
+  const [aiMatches, setAiMatches] = useState<Array<{ productId: string; confidence: number; reason: string; matchedNeeds: string[]; missingInfo: string[] }>>([])
+  const [aiMatchNote, setAiMatchNote] = useState('')
+  const [aiMatching, setAiMatching] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [question, setQuestion] = useState('')
@@ -71,6 +74,33 @@ export default function ProductOverview() {
       .sort((x, y) => y.score - x.score || y.product.updatedAt.localeCompare(x.product.updatedAt))
       .slice(0, 8)
   }, [products, inquiryText])
+
+  const runInquiryAiMatch = async () => {
+    if (inquiryText.trim().length < 10) {
+      toast.error('请粘贴更完整的客户询盘内容')
+      return
+    }
+    if (!products.length) {
+      toast.error('产品库暂无可匹配的产品')
+      return
+    }
+    setAiMatching(true)
+    setAiMatches([])
+    setAiMatchNote('')
+    try {
+      const result = await api.matchInquiryProducts({
+        inquiry: inquiryText.trim(),
+        productIds: products.slice(0, 200).map((product) => product.id),
+      })
+      setAiMatches(result.matches)
+      setAiMatchNote(result.note)
+      if (!result.matches.length) toast.info('AI 暂未找到有足够依据的匹配产品')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'AI 匹配失败，请检查 AI 设置后重试')
+    } finally {
+      setAiMatching(false)
+    }
+  }
 
   const selected = filtered.find((p) => p.id === selectedId) ?? products.find((p) => p.id === selectedId) ?? filtered[0] ?? null
   const selectedComms = selected ? communications.filter((c) => c.productId === selected.id) : []
@@ -154,13 +184,44 @@ export default function ProductOverview() {
         </div>
         <textarea
           value={inquiryText}
-          onChange={(e) => setInquiryText(e.target.value)}
+          onChange={(e) => { setInquiryText(e.target.value); setAiMatches([]); setAiMatchNote('') }}
           rows={3}
           className="w-full resize-y rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
           placeholder="Paste the customer's inquiry here, e.g. We are looking for 500 custom stainless steel water bottles with logo..."
         />
         {inquiryText.trim() && (
           <div className="mt-3 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={runInquiryAiMatch} disabled={aiMatching}>
+                {aiMatching ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
+                {aiMatching ? 'AI 正在分析产品库…' : 'AI 深度匹配'}
+              </Button>
+              <span className="text-xs text-slate-500">基于产品资料进行语义匹配；相关度仅供参考，仍需人工核实</span>
+            </div>
+            {aiMatches.length > 0 && (
+              <div className="space-y-2 rounded-lg border border-violet-100 bg-violet-50/40 p-3">
+                <div className="text-xs font-semibold text-violet-900">AI 推荐候选（{aiMatches.length}）</div>
+                {aiMatches.map((match) => {
+                  const product = products.find((item) => item.id === match.productId)
+                  if (!product) return null
+                  return (
+                    <button key={match.productId} onClick={() => { setKeyword(''); setSelectedId(product.id); setMessages([]) }} className="flex w-full items-start gap-3 rounded-md border border-violet-100 bg-white p-3 text-left hover:border-violet-300">
+                      <ProductThumb images={product.source.images} size={44} clickable={false} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-slate-900">{product.listing?.title || product.source.sourceTitle || '未命名产品'}</span>
+                        <span className="mt-0.5 block text-xs text-slate-500">{product.glsCode || product.code || '未分配 GLS'} · {product.source.supplier || '供应商待补充'}</span>
+                        <span className="mt-1 block text-xs text-slate-700">{match.reason}</span>
+                        {match.matchedNeeds.length > 0 && <span className="mt-1 block text-xs text-emerald-700">符合：{match.matchedNeeds.join('、')}</span>}
+                        {match.missingInfo.length > 0 && <span className="mt-1 block text-xs text-amber-700">待核实：{match.missingInfo.join('、')}</span>}
+                      </span>
+                      <span className="shrink-0 text-xs font-semibold text-violet-700">相关度 {match.confidence}%</span>
+                    </button>
+                  )
+                })}
+                {aiMatchNote && <p className="text-xs text-slate-500">{aiMatchNote}</p>}
+              </div>
+            )}
+            <div className="text-xs font-medium text-slate-600">关键词匹配：{inquiryMatches.length} 个候选产品</div>
             <div className="text-xs font-medium text-slate-600">匹配结果：{inquiryMatches.length} 个候选产品</div>
             {inquiryMatches.length ? inquiryMatches.map(({ product, score, matched }) => (
               <button

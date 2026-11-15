@@ -411,6 +411,14 @@ export const api = {
   },
 
   // ---------- AI 助手对话窗口（免提问，自动补全信息） ----------
+  async matchInquiryProducts(payload: { inquiry: string; productIds: string[] }): Promise<{
+    matches: Array<{ productId: string; confidence: number; reason: string; matchedNeeds: string[]; missingInfo: string[] }>
+    note: string
+  }> {
+    const { data } = await apiClient.post('/products/inquiry-match', payload, LONG_TIMEOUT)
+    return data
+  },
+
   async assistantChat(payload: {
     source?: SourceInfo
     listing?: Partial<Listing> | null
