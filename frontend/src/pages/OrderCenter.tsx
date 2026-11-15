@@ -347,6 +347,18 @@ function CustomersTab({ onChanged }: { onChanged: () => void }) {
     setAnalysisOpen(true)
   }
 
+  const openManualAnalysis = (inquiry: Inquiry) => {
+    setAiAnalysis({
+      inquiryId: inquiry.id,
+      subject: inquiry.subject,
+      analysis: inquiry.aiAnalysis ?? {
+        category: 'general', intent: '', summary: '', requestedQuantity: null,
+        customization: '', missingInfo: [], recommendedNextStep: '',
+      },
+    })
+    setAnalysisOpen(true)
+  }
+
   const saveAnalysis = async () => {
     if (!aiAnalysis) return
     setSavingAnalysis(true)
@@ -653,7 +665,7 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
                       </SelectContent>
                     </Select>
                     <InquiryQuoteButton inquiry={i} onChanged={() => { void qc.invalidateQueries({ queryKey: ['oc-inquiries'] }); onChanged() }} />
-                    {i.aiAnalysis && <Button variant="ghost" size="sm" title="查看/编辑已保存分析" onClick={() => openSavedAnalysis(i)}><ClipboardList className="h-3.5 w-3.5" /></Button>}
+                    <Button variant="ghost" size="sm" title={i.aiAnalysis ? '查看/编辑已保存分析' : '手动录入询盘分析'} onClick={() => openManualAnalysis(i)}><ClipboardList className="h-3.5 w-3.5" /></Button>
                     <Button variant="ghost" size="sm" title="AI 询盘分析" onClick={() => void categorize(i.id)} disabled={categorizingId === i.id}>
                       {categorizingId === i.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                     </Button>
@@ -736,6 +748,20 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
           </DialogHeader>
           {aiAnalysis && (
             <div className="space-y-4 text-sm">
+              <div className="grid gap-1.5">
+                <Label>询盘分类（可手动选择）</Label>
+                <Select value={aiAnalysis.analysis.category} onValueChange={(v) => updateAnalysis({ category: v as InquiryAiAnalysis['category'] })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="pricing">价格 / 报价</SelectItem>
+                    <SelectItem value="sample">样品需求</SelectItem>
+                    <SelectItem value="customization">定制需求</SelectItem>
+                    <SelectItem value="logistics">物流 / 交付</SelectItem>
+                    <SelectItem value="product_match">产品匹配</SelectItem>
+                    <SelectItem value="general">一般咨询</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="secondary">{({
                   pricing: '价格 / 报价',
