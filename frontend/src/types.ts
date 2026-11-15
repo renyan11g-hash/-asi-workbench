@@ -564,6 +564,8 @@ export interface Inquiry {
   productId?: string
   /** AI分类结果 */
   aiCategory?: string
+  /** AI分析结果及人工修订版本 */
+  aiAnalysis?: InquiryAiAnalysis
   /** AI生成的回复草稿 */
   aiDraft?: string
   createdAt: string

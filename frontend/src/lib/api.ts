@@ -2077,6 +2077,11 @@ export const orderApi = {
     return data
   },
 
+  async updateInquiryAnalysis(id: string, aiAnalysis: InquiryAiAnalysis): Promise<Inquiry> {
+    const { data } = await apiClient.put<{ inquiry: Inquiry }>(`/inquiries/${id}`, { aiAnalysis })
+    return data.inquiry
+  },
+
   async deleteInquiry(id: string): Promise<void> {
     await apiClient.delete(`/inquiries/${id}`)
   },
