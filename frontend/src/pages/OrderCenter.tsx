@@ -1604,7 +1604,6 @@ function FulfillmentTab({ onChanged }: { onChanged:()=>void }) {
     onSuccess:refresh,onError:(e)=>toast.error(getErrorMessage(e))
   })
   const statusLabels:Record<string,string>={pending:'待发货',shipped:'已发货',in_transit:'运输中',delivered:'已送达',exception:'异常'}
-  const afterLabels:Record<string,string>={open:'待处理',processing:'处理中',resolved:'已解决',closed:'已关闭'}
   return <div className="space-y-4">
     <SectionCard title="选择订单" hint="物流、收款和售后记录都绑定到具体订单">
       <Select value={orderId} onValueChange={setOrderId}>
