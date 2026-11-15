@@ -121,6 +121,7 @@ export default function OrderCenter() {
   const qc = useQueryClient()
   const [searchParams] = useSearchParams()
   const [tab, setTab] = useState(searchParams.get('tab') ?? 'dashboard')
+  const [orderSourceInquiry, setOrderSourceInquiry] = useState<Inquiry | null>(null)
   useEffect(() => {
     const requestedTab = searchParams.get('tab')
     if (requestedTab) setTab(requestedTab)
@@ -157,10 +158,10 @@ export default function OrderCenter() {
           <CustomersTab onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
         </TabsContent>
         <TabsContent value="inquiries" className="mt-4">
-          <InquiriesTab products={productList} onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
+          <InquiriesTab products={productList} onCreateOrder={(inquiry) => { setOrderSourceInquiry(inquiry); setTab('orders') }} onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
         </TabsContent>
         <TabsContent value="orders" className="mt-4">
-          <OrdersTab products={productList} onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
+          <OrdersTab products={productList} initialInquiry={orderSourceInquiry} onInitialInquiryHandled={() => setOrderSourceInquiry(null)} onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
         </TabsContent>
         <TabsContent value="fulfillment" className="mt-4">
           <FulfillmentTab onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
@@ -475,7 +476,7 @@ function CustomersTab({ onChanged }: { onChanged: () => void }) {
 }
 
 // ---------- 询盘 Tab ----------
-function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged: () => void }) {
+function InquiriesTab({ products, onCreateOrder, onChanged }: { products: Product[]; onCreateOrder: (inquiry: Inquiry) => void; onChanged: () => void }) {
   const qc = useQueryClient()
   const [statusFilter, setStatusFilter] = useState('all')
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -720,6 +721,7 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
                       </SelectContent>
                     </Select>
                     <InquiryQuoteButton inquiry={i} onChanged={() => { void qc.invalidateQueries({ queryKey: ['oc-inquiries'] }); onChanged() }} />
+                    <Button variant="ghost" size="sm" title="从此询盘创建订单" onClick={() => onCreateOrder(i)}>转订单</Button>
                     <Button variant="ghost" size="sm" title="AI 匹配产品并人工确认关联" onClick={() => void matchInquiryProducts(i)} disabled={matchingLoading || products.length === 0}><Package className="h-3.5 w-3.5" /></Button>
                     <Button variant="ghost" size="sm" title={i.aiAnalysis ? '查看/编辑已保存分析' : '手动录入询盘分析'} onClick={() => openManualAnalysis(i)}><ClipboardList className="h-3.5 w-3.5" /></Button>
                     <Button variant="ghost" size="sm" title="AI 询盘分析" onClick={() => void categorize(i.id)} disabled={categorizingId === i.id}>
@@ -925,13 +927,14 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
 }
 
 // ---------- 订单 Tab ----------
-function OrdersTab({ products, onChanged }: { products: Product[]; onChanged: () => void }) {
+function OrdersTab({ products, initialInquiry, onInitialInquiryHandled, onChanged }: { products: Product[]; initialInquiry: Inquiry | null; onInitialInquiryHandled: () => void; onChanged: () => void }) {
   const qc = useQueryClient()
   const [statusFilter, setStatusFilter] = useState('all')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [form, setForm] = useState({
     customerId: '',
+    inquiryId: '',
     orderNumber: '',
     totalAmount: '',
     depositAmount: '',
@@ -942,6 +945,8 @@ function OrdersTab({ products, onChanged }: { products: Product[]; onChanged: ()
 
   const { data: customers } = useQuery({ queryKey: ['oc-customers', ''], queryFn: () => orderApi.listCustomers() })
   const customerList = customers ?? []
+  const { data: inquiryRows } = useQuery({ queryKey: ['oc-inquiries', 'all'], queryFn: () => orderApi.listInquiries() })
+  const inquiryList = inquiryRows ?? []
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['oc-orders', statusFilter],
@@ -949,9 +954,19 @@ function OrdersTab({ products, onChanged }: { products: Product[]; onChanged: ()
   })
   const orders = data ?? []
 
+  useEffect(() => {
+    if (!initialInquiry) return
+    setForm({ customerId: initialInquiry.customerId, inquiryId: initialInquiry.id,
+      orderNumber: `SO-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Math.floor(Math.random() * 900) + 100)}`,
+      totalAmount: '', depositAmount: '', balanceAmount: '', notes: `来源询盘：${initialInquiry.subject}`,
+      items: [{ productId: initialInquiry.productId ?? '', quantity: '', unitPrice: '' }] })
+    setDialogOpen(true); onInitialInquiryHandled()
+  }, [initialInquiry])
+
   const openCreate = () => {
     setForm({
       customerId: customerList[0]?.id ?? '',
+      inquiryId: '',
       orderNumber: `SO-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Math.floor(Math.random() * 900) + 100)}`,
       totalAmount: '',
       depositAmount: '',
@@ -974,6 +989,7 @@ function OrdersTab({ products, onChanged }: { products: Product[]; onChanged: ()
         depositAmount: form.depositAmount ? Number(form.depositAmount) : undefined,
         balanceAmount: form.balanceAmount ? Number(form.balanceAmount) : undefined,
         notes: form.notes || undefined,
+        inquiryId: form.inquiryId || undefined,
         items,
       })
     },
@@ -1067,6 +1083,7 @@ function OrdersTab({ products, onChanged }: { products: Product[]; onChanged: ()
             <TableRow>
               <TableHead>订单号</TableHead>
               <TableHead>客户</TableHead>
+              <TableHead>来源询盘</TableHead>
               <TableHead>总金额</TableHead>
               <TableHead>定金</TableHead>
               <TableHead>订单状态</TableHead>
@@ -1080,6 +1097,7 @@ function OrdersTab({ products, onChanged }: { products: Product[]; onChanged: ()
               <TableRow key={o.id}>
                 <TableCell className="font-medium">{o.orderNumber}</TableCell>
                 <TableCell>{customerName(o.customerId)}</TableCell>
+                <TableCell className="max-w-44 truncate text-xs text-slate-600" title={inquiryList.find((item) => item.id === o.inquiryId)?.subject || ''}>{inquiryList.find((item) => item.id === o.inquiryId)?.subject || '-'}</TableCell>
                 <TableCell className="font-semibold text-emerald-700">{fmtUsd(o.totalAmount)}</TableCell>
                 <TableCell>{o.depositAmount ? fmtUsd(o.depositAmount) : '-'}</TableCell>
                 <TableCell>
