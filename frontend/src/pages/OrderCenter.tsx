@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Building2,
@@ -115,7 +116,8 @@ const fmtDate = (s: string) => (s ? s.slice(0, 10) : '-')
 // ---------- 订单运营中心 ----------
 export default function OrderCenter() {
   const qc = useQueryClient()
-  const [tab, setTab] = useState('dashboard')
+  const [searchParams] = useSearchParams()
+  const [tab, setTab] = useState(searchParams.get('tab') ?? 'dashboard')
 
   const invalidate = (keys: string[]) => {
     for (const k of keys) void qc.invalidateQueries({ queryKey: [k] })
