@@ -618,6 +618,7 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
                         ))}
                       </SelectContent>
                     </Select>
+                    <InquiryQuoteButton inquiry={i} onChanged={() => { void qc.invalidateQueries({ queryKey: ['oc-inquiries'] }); onChanged() }} />
                     <Button variant="ghost" size="sm" title="AI 分类" onClick={() => void categorize(i.id)} disabled={categorizingId === i.id}>
                       {categorizingId === i.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                     </Button>
@@ -1694,4 +1695,70 @@ function AfterSaleEditor({item,onSave}:{item:any;onSave:(patch:any)=>Promise<unk
     </div>
     <div className="mt-2"><Label className="text-xs">处理结果 / 解决方案</Label><Textarea rows={2} className="mt-1" value={resolution} onChange={e=>setResolution(e.target.value)}/></div>
   </div>
+}
+
+
+
+function InquiryQuoteButton({inquiry,onChanged}:{inquiry:import('@/types').Inquiry;onChanged:()=>void}) {
+  const qc=useQueryClient()
+  const [open,setOpen]=useState(false)
+  const [quoteNumber,setQuoteNumber]=useState('')
+  const [amount,setAmount]=useState('')
+  const [currency,setCurrency]=useState<'USD'|'CNY'>('USD')
+  const [quantity,setQuantity]=useState('500')
+  const [shippingMethod,setShippingMethod]=useState('Sea Freight')
+  const [productionTime,setProductionTime]=useState('')
+  const [transitTime,setTransitTime]=useState('')
+  const [validUntil,setValidUntil]=useState('')
+  const [notes,setNotes]=useState('')
+  const quotes=useQuery({queryKey:['inquiry-quotes',inquiry.id],queryFn:()=>businessOpsApi.listInquiryQuotes(inquiry.id),enabled:open})
+  const create=useMutation({
+    mutationFn:()=>businessOpsApi.createInquiryQuote(inquiry.id,{quoteNumber,amount:Number(amount),currency,quantity:Number(quantity),shippingMethod,productionTime,transitTime,validUntil:validUntil?new Date(validUntil).toISOString():null,notes}),
+    onSuccess:()=>{toast.success('报价记录已保存');setQuoteNumber('');setAmount('');setNotes('');void qc.invalidateQueries({queryKey:['inquiry-quotes',inquiry.id]});onChanged()},
+    onError:(e)=>toast.error(getErrorMessage(e))
+  })
+  const update=useMutation({
+    mutationFn:({id,status}:{id:string;status:'draft'|'sent'|'accepted'|'rejected'|'expired'})=>businessOpsApi.updateQuoteStatus(id,status),
+    onSuccess:()=>{void qc.invalidateQueries({queryKey:['inquiry-quotes',inquiry.id]});onChanged()},
+    onError:(e)=>toast.error(getErrorMessage(e))
+  })
+  const openDialog=()=>{
+    setQuoteNumber(`Q-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${Math.floor(Math.random()*900+100)}`)
+    setOpen(true)
+  }
+  const labels:Record<string,string>={draft:'草稿',sent:'已发送',accepted:'已接受',rejected:'未接受',expired:'已过期'}
+  return <>
+    <Button variant="ghost" size="sm" title="报价历史" onClick={openDialog}>报价</Button>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+        <DialogHeader><DialogTitle>询盘报价记录</DialogTitle><DialogDescription>{inquiry.subject} · 报价版本单独保存，方便追踪改价和运输方案</DialogDescription></DialogHeader>
+        <div className="rounded-lg border p-3">
+          <div className="mb-3 text-sm font-semibold">新增报价版本</div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div><Label>报价编号</Label><Input value={quoteNumber} onChange={e=>setQuoteNumber(e.target.value)}/></div>
+            <div><Label>报价金额</Label><Input type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)}/></div>
+            <div><Label>币种</Label><Select value={currency} onValueChange={v=>setCurrency(v as 'USD'|'CNY')}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="USD">USD</SelectItem><SelectItem value="CNY">CNY</SelectItem></SelectContent></Select></div>
+            <div><Label>报价数量</Label><Input type="number" min="1" step="1" value={quantity} onChange={e=>setQuantity(e.target.value)}/></div>
+            <div><Label>运输方式</Label><Input value={shippingMethod} onChange={e=>setShippingMethod(e.target.value)} placeholder="Sea Freight / Air Freight"/></div>
+            <div><Label>报价有效期</Label><Input type="date" value={validUntil} onChange={e=>setValidUntil(e.target.value)}/></div>
+            <div><Label>生产周期</Label><Input value={productionTime} onChange={e=>setProductionTime(e.target.value)} placeholder="8-9 calendar days"/></div>
+            <div><Label>运输时效</Label><Input value={transitTime} onChange={e=>setTransitTime(e.target.value)} placeholder="25-30 days"/></div>
+            <div className="sm:col-span-2"><Label>备注 / 报价条件</Label><Textarea rows={2} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="含不含运费、Setup Fee、印刷条件、付款条件等"/></div>
+          </div>
+          <Button className="mt-3" size="sm" onClick={()=>create.mutate()} disabled={create.isPending||!quoteNumber.trim()||Number(amount)<=0||Number(quantity)<=0}>保存报价版本</Button>
+        </div>
+        <div>
+          <div className="mb-2 text-sm font-semibold">历史报价</div>
+          <div className="space-y-2">{(quotes.data??[]).map((q:any)=><div key={q.id} className="rounded-lg border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-medium">{q.quote_number} · {q.currency} {Number(q.amount).toFixed(2)} / {q.quantity} pcs</div><Select value={q.status} onValueChange={v=>update.mutate({id:q.id,status:v as 'draft'|'sent'|'accepted'|'rejected'|'expired'})}><SelectTrigger className="h-8 w-28"><SelectValue/></SelectTrigger><SelectContent>{Object.entries(labels).map(([k,v])=><SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div>
+            <p className="mt-1 text-xs text-slate-500">{q.shipping_method||'运输方式未注明'} · 生产：{q.production_time||'未注明'} · 运输：{q.transit_time||'未注明'} · 有效期：{q.valid_until?.slice(0,10)||'未注明'}</p>
+            {q.notes&&<p className="mt-1 whitespace-pre-wrap text-xs text-slate-500">{q.notes}</p>}
+          </div>)}</div>
+          {quotes.isLoading&&<p className="py-4 text-center text-xs text-slate-400">报价记录加载中…</p>}
+          {!quotes.isLoading&&(quotes.data?.length??0)===0&&<p className="py-4 text-center text-xs text-slate-400">暂无历史报价</p>}
+        </div>
+        <DialogFooter><Button variant="outline" onClick={()=>setOpen(false)}>关闭</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </>
 }
