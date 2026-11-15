@@ -45,7 +45,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { SectionCard } from '@/components/ui/primitives'
-import { api, orderApi, getErrorMessage } from '@/lib/api'
+import { api, orderApi, businessOpsApi, getErrorMessage } from '@/lib/api'
 import {
   Customer,
   CustomerType,
@@ -388,6 +388,7 @@ function CustomersTab({ onChanged }: { onChanged: () => void }) {
                 <TableCell><Badge variant="secondary">{CUSTOMER_TYPE[c.type]}</Badge></TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
+                    <CustomerProfileButton customer={c} onChanged={onChanged} />
                     <Button variant="ghost" size="sm" onClick={() => openEdit(c)}>编辑</Button>
                     <Button variant="ghost" size="sm" className="text-rose-600" onClick={() => void remove(c.id)} disabled={deletingId === c.id}>
                       {deletingId === c.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
@@ -1490,4 +1491,65 @@ function EmailsTab({ onChanged }: { onChanged: () => void }) {
       </Dialog>
     </SectionCard>
   )
+}
+
+
+
+function CustomerProfileButton({ customer, onChanged }: { customer: Customer; onChanged: () => void }) {
+  const qc = useQueryClient()
+  const [open,setOpen] = useState(false)
+  const [tier,setTier] = useState<'A'|'B'|'C'>('C')
+  const [source,setSource] = useState('')
+  const [preferences,setPreferences] = useState('')
+  const [nextFollowUpAt,setNextFollowUpAt] = useState('')
+  const profile = useQuery({
+    queryKey:['customer-profile',customer.id],
+    queryFn:()=>businessOpsApi.getCustomerProfile(customer.id),
+    enabled:open,
+  })
+  const save = useMutation({
+    mutationFn:async()=>{
+      const saved=await businessOpsApi.saveCustomerProfile(customer.id,{tier,source,preferences,nextFollowUpAt:nextFollowUpAt?new Date(nextFollowUpAt).toISOString():null})
+      if(nextFollowUpAt){
+        await businessOpsApi.createTask({
+          title:`跟进客户：${customer.name}`,
+          description:preferences || '按客户档案中的偏好继续跟进',
+          taskType:'follow_up',
+          entityType:'customer',
+          entityId:customer.id,
+          dueAt:new Date(nextFollowUpAt).toISOString(),
+          priority:tier==='A'?'high':'normal'
+        })
+      }
+      return saved
+    },
+    onSuccess:()=>{
+      toast.success('客户画像已保存')
+      void qc.invalidateQueries({queryKey:['customer-profile',customer.id]})
+      void qc.invalidateQueries({queryKey:['business-ops-tasks']})
+      onChanged()
+      setOpen(false)
+    },
+    onError:(err)=>toast.error(getErrorMessage(err))
+  })
+  const load=()=>{
+    setOpen(true)
+    const p=profile.data
+    if(p){setTier(p.tier??'C');setSource(p.source??'');setPreferences(p.preferences??'');setNextFollowUpAt(p.next_follow_up_at?new Date(p.next_follow_up_at).toISOString().slice(0,16):'')}
+  }
+  return <>
+    <Button variant="ghost" size="sm" onClick={load}>画像</Button>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle>客户画像 · {customer.name}</DialogTitle><DialogDescription>记录客户来源、采购偏好和下一次跟进时间</DialogDescription></DialogHeader>
+        {profile.isLoading?<div className="py-6 text-sm text-slate-400">加载中…</div>:<div className="grid gap-3">
+          <div className="grid gap-1.5"><Label>客户等级</Label><Select value={tier} onValueChange={(v)=>setTier(v as 'A'|'B'|'C')}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="A">A · 重点客户</SelectItem><SelectItem value="B">B · 潜力客户</SelectItem><SelectItem value="C">C · 普通客户</SelectItem></SelectContent></Select></div>
+          <div className="grid gap-1.5"><Label>客户来源</Label><Input value={source} onChange={e=>setSource(e.target.value)} placeholder="ASI / SAGE / 官网 / 转介绍…"/></div>
+          <div className="grid gap-1.5"><Label>采购偏好 / 需求</Label><Textarea rows={3} value={preferences} onChange={e=>setPreferences(e.target.value)} placeholder="常采购品类、目标价格、印刷要求、交期偏好…"/></div>
+          <div className="grid gap-1.5"><Label>下一次跟进时间</Label><Input type="datetime-local" value={nextFollowUpAt} onChange={e=>setNextFollowUpAt(e.target.value)}/></div>
+        </div>}
+        <DialogFooter><Button variant="outline" onClick={()=>setOpen(false)}>取消</Button><Button onClick={()=>save.mutate()} disabled={save.isPending||profile.isLoading}>{save.isPending?'保存中…':'保存画像并创建跟进任务'}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </>
 }
