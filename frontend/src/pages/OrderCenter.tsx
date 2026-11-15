@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Building2,
   ClipboardList,
+  ExternalLink,
   Truck,
   Loader2,
   Mail,
@@ -628,7 +629,11 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
   }
 
   const customerName = (id: string) => customerList.find((c) => c.id === id)?.name ?? id.slice(0, 8)
-  const productTitle = (id?: string) => (id ? products.find((p) => p.id === id)?.source.sourceTitle || '-' : '-')
+  const getInquiryProduct = (id?: string) => (id ? products.find((p) => p.id === id) ?? null : null)
+  const productTitle = (id?: string) => {
+    const product = getInquiryProduct(id)
+    return product ? (product.listing?.title || product.source.sourceTitle || product.glsCode || product.code || '-') : '-'
+  }
 
   return (
     <SectionCard
@@ -684,7 +689,23 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
                 <TableCell className="max-w-48 truncate font-medium" title={i.subject}>{i.subject}</TableCell>
                 <TableCell>{customerName(i.customerId)}</TableCell>
                 <TableCell><Badge variant="secondary">{INQUIRY_TYPE[i.type]}</Badge></TableCell>
-                <TableCell className="max-w-40 truncate text-slate-500" title={productTitle(i.productId)}>{productTitle(i.productId)}</TableCell>
+                <TableCell className="min-w-48">
+                  {(() => {
+                    const product = getInquiryProduct(i.productId)
+                    if (!product) return <span className="text-slate-400">未关联</span>
+                    return (
+                      <div className="space-y-1">
+                        <div className="text-xs font-mono text-blue-700">{product.glsCode || product.code || '未分配 GLS'}</div>
+                        <div className="max-w-52 truncate text-sm" title={productTitle(i.productId)}>{productTitle(i.productId)}</div>
+                        <div className="flex flex-wrap gap-2 text-xs">
+                          <a className="text-blue-700 hover:underline" href={`/listing/${product.id}`} target="_blank" rel="noreferrer">产品档案</a>
+                          {product.platformUrl && <a className="inline-flex items-center gap-0.5 text-blue-700 hover:underline" href={product.platformUrl} target="_blank" rel="noreferrer">{product.platformName || '平台'} <ExternalLink className="h-3 w-3" /></a>}
+                          {product.source.sourceUrl && <a className="inline-flex items-center gap-0.5 text-blue-700 hover:underline" href={product.source.sourceUrl} target="_blank" rel="noreferrer">1688 <ExternalLink className="h-3 w-3" /></a>}
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </TableCell>
                 <TableCell>{i.aiCategory ? <Badge variant="outline">{i.aiCategory}</Badge> : '-'}</TableCell>
                 <TableCell><BadgeOf map={INQUIRY_STATUS} value={i.status} /></TableCell>
                 <TableCell className="text-slate-400">{fmtDate(i.createdAt)}</TableCell>
