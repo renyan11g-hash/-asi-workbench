@@ -2106,6 +2106,7 @@ export const orderApi = {
     depositAmount?: number
     balanceAmount?: number
     notes?: string
+    inquiryId?: string
     items: Array<{ productId: string; quantity: number; unitPrice: number; imprintSpec?: string }>
   }): Promise<{ order: Order; items: OrderItem[] }> {
     const { data } = await apiClient.post<{ order: Order; items: OrderItem[] }>('/orders', payload)

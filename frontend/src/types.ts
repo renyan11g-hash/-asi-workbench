@@ -599,6 +599,8 @@ export interface Order {
   /** 尾款（USD） */
   balanceAmount?: number
   notes?: string
+  /** 来源询盘 ID */
+  inquiryId?: string
   createdAt: string
   updatedAt: string
 }
