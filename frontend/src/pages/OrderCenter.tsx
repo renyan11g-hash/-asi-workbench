@@ -341,37 +341,6 @@ function CustomersTab({ onChanged }: { onChanged: () => void }) {
     onError: (err) => toast.error(getErrorMessage(err)),
   })
 
-  const openManualAnalysis = (inquiry: Inquiry) => {
-    setAiAnalysis({
-      inquiryId: inquiry.id,
-      subject: inquiry.subject,
-      analysis: inquiry.aiAnalysis ?? {
-        category: 'general', intent: '', summary: '', requestedQuantity: null,
-        customization: '', missingInfo: [], recommendedNextStep: '',
-      },
-    })
-    setAnalysisOpen(true)
-  }
-
-  const saveAnalysis = async () => {
-    if (!aiAnalysis) return
-    setSavingAnalysis(true)
-    try {
-      await orderApi.updateInquiryAnalysis(aiAnalysis.inquiryId, aiAnalysis.analysis)
-      toast.success('询盘分析已保存')
-      void qc.invalidateQueries({ queryKey: ['oc-inquiries'] })
-      setAnalysisOpen(false)
-    } catch (err) {
-      toast.error(getErrorMessage(err))
-    } finally {
-      setSavingAnalysis(false)
-    }
-  }
-
-  const updateAnalysis = (patch: Partial<InquiryAiAnalysis>) => {
-    setAiAnalysis((current) => current ? { ...current, analysis: { ...current.analysis, ...patch } } : current)
-  }
-
   const remove = async (id: string) => {
     setDeletingId(id)
     try {
@@ -571,6 +540,37 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
     } finally {
       setCategorizingId(null)
     }
+  }
+
+  const openManualAnalysis = (inquiry: Inquiry) => {
+    setAiAnalysis({
+      inquiryId: inquiry.id,
+      subject: inquiry.subject,
+      analysis: inquiry.aiAnalysis ?? {
+        category: 'general', intent: '', summary: '', requestedQuantity: null,
+        customization: '', missingInfo: [], recommendedNextStep: '',
+      },
+    })
+    setAnalysisOpen(true)
+  }
+
+  const saveAnalysis = async () => {
+    if (!aiAnalysis) return
+    setSavingAnalysis(true)
+    try {
+      await orderApi.updateInquiryAnalysis(aiAnalysis.inquiryId, aiAnalysis.analysis)
+      toast.success('询盘分析已保存')
+      void qc.invalidateQueries({ queryKey: ['oc-inquiries'] })
+      setAnalysisOpen(false)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setSavingAnalysis(false)
+    }
+  }
+
+  const updateAnalysis = (patch: Partial<InquiryAiAnalysis>) => {
+    setAiAnalysis((current) => current ? { ...current, analysis: { ...current.analysis, ...patch } } : current)
   }
 
   const remove = async (id: string) => {
