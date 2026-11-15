@@ -1811,6 +1811,8 @@ function CustomerProfileButton({ customer, onChanged }: { customer: Customer; on
     queryFn:()=>businessOpsApi.getCustomerProfile(customer.id),
     enabled:open,
   })
+  const inquiries = useQuery({ queryKey:['customer-inquiries',customer.id], queryFn:()=>orderApi.listInquiries({customerId:customer.id}), enabled:open })
+  const orders = useQuery({ queryKey:['customer-orders',customer.id], queryFn:()=>orderApi.listOrders({customerId:customer.id}), enabled:open })
   const save = useMutation({
     mutationFn:()=>businessOpsApi.saveCustomerProfile(customer.id,{tier,source,preferences,nextFollowUpAt:nextFollowUpAt?new Date(nextFollowUpAt).toISOString():null}),
     onSuccess:()=>{
@@ -1842,6 +1844,14 @@ function CustomerProfileButton({ customer, onChanged }: { customer: Customer; on
           <div className="grid gap-1.5"><Label>采购偏好 / 需求</Label><Textarea rows={3} value={preferences} onChange={e=>setPreferences(e.target.value)} placeholder="常采购品类、目标价格、印刷要求、交期偏好…"/></div>
           <div className="grid gap-1.5"><Label>下一次跟进时间</Label><Input type="datetime-local" value={nextFollowUpAt} onChange={e=>setNextFollowUpAt(e.target.value)}/></div>
         </div>}
+        <div className="border-t pt-3">
+          <div className="mb-2 flex items-center justify-between"><div className="text-sm font-semibold">历史询盘与报价</div><span className="text-xs text-slate-400">{inquiries.data?.length ?? 0} 条询盘</span></div>
+          {inquiries.isLoading ? <p className="py-3 text-xs text-slate-400">询盘加载中…</p> : (inquiries.data ?? []).length === 0 ? <p className="py-3 text-xs text-slate-400">暂无历史询盘</p> : <div className="space-y-2">{(inquiries.data ?? []).map((item) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5"><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{item.subject}</div><div className="mt-1 text-xs text-slate-500">{INQUIRY_STATUS[item.status]?.label ?? item.status} · {fmtDate(item.createdAt)}</div></div><InquiryQuoteButton inquiry={item} onChanged={() => { void qc.invalidateQueries({ queryKey: ['customer-inquiries', customer.id] }); onChanged() }} /></div>)}</div>}
+        </div>
+        <div className="border-t pt-3">
+          <div className="mb-2 flex items-center justify-between"><div className="text-sm font-semibold">历史订单</div><span className="text-xs text-slate-400">{orders.data?.length ?? 0} 笔订单</span></div>
+          {orders.isLoading ? <p className="py-3 text-xs text-slate-400">订单加载中…</p> : (orders.data ?? []).length === 0 ? <p className="py-3 text-xs text-slate-400">暂无历史订单</p> : <div className="space-y-2">{(orders.data ?? []).map((item) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5"><div><div className="text-sm font-medium">{item.orderNumber}</div><div className="mt-1 text-xs text-slate-500">{ORDER_STATUS[item.status]?.label ?? item.status} · {PAYMENT_STATUS[item.paymentStatus]?.label ?? item.paymentStatus} · {fmtDate(item.createdAt)}</div></div><span className="text-sm font-semibold">{fmtUsd(item.totalAmount)}</span></div>)}</div>}
+        </div>
         <DialogFooter><Button variant="outline" onClick={()=>setOpen(false)}>取消</Button><Button onClick={()=>save.mutate()} disabled={save.isPending||profile.isLoading}>{save.isPending?'保存中…':'保存画像并同步跟进任务'}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
