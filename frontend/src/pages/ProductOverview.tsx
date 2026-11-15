@@ -184,7 +184,7 @@ export default function ProductOverview() {
         </div>
         <textarea
           value={inquiryText}
-          onChange={(e) => setInquiryText(e.target.value)}
+          onChange={(e) => { setInquiryText(e.target.value); setAiMatches([]); setAiMatchNote('') }}
           rows={3}
           className="w-full resize-y rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
           placeholder="Paste the customer's inquiry here, e.g. We are looking for 500 custom stainless steel water bottles with logo..."
@@ -196,7 +196,7 @@ export default function ProductOverview() {
                 {aiMatching ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
                 {aiMatching ? 'AI 正在分析产品库…' : 'AI 深度匹配'}
               </Button>
-              <span className="text-xs text-slate-500">基于产品资料进行语义匹配；结果仅供人工判断</span>
+              <span className="text-xs text-slate-500">基于产品资料进行语义匹配；相关度仅供参考，仍需人工核实</span>
             </div>
             {aiMatches.length > 0 && (
               <div className="space-y-2 rounded-lg border border-violet-100 bg-violet-50/40 p-3">
@@ -214,7 +214,7 @@ export default function ProductOverview() {
                         {match.matchedNeeds.length > 0 && <span className="mt-1 block text-xs text-emerald-700">符合：{match.matchedNeeds.join('、')}</span>}
                         {match.missingInfo.length > 0 && <span className="mt-1 block text-xs text-amber-700">待核实：{match.missingInfo.join('、')}</span>}
                       </span>
-                      <span className="shrink-0 text-xs font-semibold text-violet-700">{match.confidence}%</span>
+                      <span className="shrink-0 text-xs font-semibold text-violet-700">相关度 {match.confidence}%</span>
                     </button>
                   )
                 })}
