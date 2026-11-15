@@ -7,6 +7,7 @@ import { PageTransition } from "@/components/PageTransition";
 import { AppLayout } from "@/components/AppLayout";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
+const BusinessHub = lazy(() => import("./pages/BusinessHub"));
 const OrderCenter = lazy(() => import("./pages/OrderCenter"));
 const Sourcing = lazy(() => import("./pages/Sourcing"));
 const Batch = lazy(() => import("./pages/Batch"));
