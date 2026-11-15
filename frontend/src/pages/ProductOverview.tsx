@@ -50,7 +50,7 @@ export default function ProductOverview() {
     const raw = inquiryText.trim()
     if (!raw) return []
     const terms = Array.from(new Set(
-      (raw.match(/[\\p{Script=Han}]{2,}|[a-z0-9]{3,}/giu) ?? [])
+      (raw.match(/[\p{Script=Han}]{2,}|[a-z0-9]{3,}/giu) ?? [])
         .map((term) => term.toLowerCase())
         .filter((term) => !['the', 'and', 'for', 'with', 'you', 'your', 'are', 'our', 'this', 'that', 'can', 'please', 'from', 'have', 'has', 'was', 'will', 'would', 'need', 'looking'].includes(term))
     )).slice(0, 40)
