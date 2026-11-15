@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import ProductThumb from '@/components/ProductThumb'
 import { api } from '@/lib/api'
-import type { Product, SupplierCommunication } from '@/types'
+import type { SupplierCommunication } from '@/types'
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
@@ -33,7 +33,7 @@ export default function ProductOverview() {
   })
   const { data: communications = [] } = useQuery({
     queryKey: ['supplier-communications', 'overview'],
-    queryFn: () => api.listCommunications(),
+    queryFn: () => api.listCommunications({}),
   })
 
   const filtered = useMemo(() => {
