@@ -74,6 +74,8 @@ function App() {
             <Route element={<AppLayout />}>
               <Route index element={<Navigate to="/business-ops" replace />} />
               <Route path="product-dashboard" data-genie-key="Dashboard" data-genie-title="产品工作总览" element={<PageTransition transition="fade"><Dashboard /></PageTransition>} />
+              <Route path="business-ops" data-genie-key="BusinessHub" data-genie-title="业务运营中心" element={<PageTransition transition="fade"><BusinessHub /></PageTransition>} />
+              <Route path="order-costs" data-genie-key="OrderCosts" data-genie-title="订单成本核算" element={<PageTransition transition="fade"><OrderCosts /></PageTransition>} />
               <Route
                 path="sourcing-suggest"
                 data-genie-key="SourcingSuggest"
