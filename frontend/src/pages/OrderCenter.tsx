@@ -968,7 +968,7 @@ function OrdersTab({ products, initialInquiry, onInitialInquiryHandled, onChange
     })
     setDialogOpen(true)
     onInitialInquiryHandled()
-  }, [initialInquiry])
+  }, [initialInquiry, onInitialInquiryHandled])
 
   const openCreate = () => {
     setForm({

@@ -12,7 +12,7 @@ const orderSchema = z.object({
   orderNumber: z.string().min(1).max(50),
   status: z.enum(['pending', 'confirmed', 'production', 'shipped', 'delivered', 'cancelled']).default('pending'),
   paymentStatus: z.enum(['unpaid', 'partial', 'paid', 'overdue']).default('unpaid'),
-  totalAmount: z.number().positive(),
+  totalAmount: z.number().positive().optional(),
   depositAmount: z.number().optional(),
   balanceAmount: z.number().optional(),
   notes: z.string().max(1000).optional(),
@@ -188,11 +188,6 @@ ordersRouter.post('/', async (req: Request, res: Response) => {
     now
   )
 
-  // 从询盘创建订单后，将询盘标记为已转订单。
-  if (body.inquiryId) {
-    db.prepare("UPDATE inquiries SET status = 'converted', updated_at = ? WHERE id = ?").run(now, body.inquiryId)
-  }
-
   // 创建订单明细
   for (const item of items) {
     const itemId = randomUUID()
@@ -201,6 +196,11 @@ ordersRouter.post('/', async (req: Request, res: Response) => {
       `INSERT INTO order_items (id, order_id, product_id, quantity, unit_price, total_price, imprint_spec, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(itemId, id, item.productId, item.quantity, item.unitPrice, totalPrice, item.imprintSpec ?? null, now)
+  }
+
+  // 订单及明细写入成功后，再将来源询盘标记为已转订单。
+  if (body.inquiryId) {
+    db.prepare("UPDATE inquiries SET status = 'converted', updated_at = ? WHERE id = ?").run(now, body.inquiryId)
   }
 
   const row = findOrder(id)
