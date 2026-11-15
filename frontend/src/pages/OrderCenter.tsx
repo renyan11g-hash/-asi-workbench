@@ -1378,11 +1378,11 @@ function EmailsTab({ onChanged }: { onChanged: () => void }) {
     onError: (err) => toast.error(getErrorMessage(err)),
   })
 
-  const saveEmailDraft = async () => {
+  const saveEmailDraft = async (): Promise<import('@/types').EmailDraft | null> => {
     if (!viewing || viewing.status !== 'draft') return
     if (!viewing.subject.trim() || !viewing.content.trim()) {
       toast.error('邮件主题和正文不能为空')
-      return
+      return null
     }
     setSavingDraftId(viewing.id)
     try {
@@ -1393,8 +1393,10 @@ function EmailsTab({ onChanged }: { onChanged: () => void }) {
       setViewing(updated)
       void qc.invalidateQueries({ queryKey: ['oc-emails'] })
       toast.success('邮件草稿已保存')
+      return updated
     } catch (err) {
       toast.error(getErrorMessage(err))
+      return null
     } finally {
       setSavingDraftId(null)
     }
@@ -1640,10 +1642,12 @@ function EmailsTab({ onChanged }: { onChanged: () => void }) {
                   {savingDraftId === viewing.id && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />} 保存修改
                 </Button>
                 <Button
-                  onClick={() => {
-                    const d = viewing
-                    setViewing(null)
-                    void markSent(d)
+                  onClick={async () => {
+                    const saved = await saveEmailDraft()
+                    if (saved) {
+                      setViewing(null)
+                      await markSent(saved)
+                    }
                   }}
                 >
                   <Send className="mr-1 h-3.5 w-3.5" /> 标记为已发送
