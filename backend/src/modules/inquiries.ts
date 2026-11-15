@@ -37,6 +37,7 @@ interface InquiryRow {
   ai_category: string | null
   ai_draft: string | null
   ai_analysis: string | null
+  ai_analysis_manual: number
   created_at: string
   updated_at: string
 }
@@ -163,6 +164,7 @@ inquiriesRouter.put('/:id', async (req: Request, res: Response) => {
     params.push(JSON.stringify(body.aiAnalysis))
     updates.push('ai_category = ?')
     params.push(body.aiAnalysis.category)
+    updates.push('ai_analysis_manual = 1')
   }
 
   if (body.productId !== undefined) {
@@ -237,6 +239,18 @@ inquiriesRouter.post('/:id/ai-categorize', async (req: Request, res: Response) =
   const row = findInquiry(String(req.params.id))
   if (!row) throw new AppError(404, '询盘不存在')
 
+  const { overwriteManual = false } = z.object({ overwriteManual: z.boolean().optional() }).parse(req.body ?? {})
+  if (row.ai_analysis_manual === 1 && !overwriteManual && row.ai_analysis) {
+    let savedAnalysis: unknown
+    try {
+      savedAnalysis = JSON.parse(row.ai_analysis)
+    } catch {
+      throw new AppError(409, '人工分析数据格式异常，请先打开并重新保存分析')
+    }
+    res.json({ inquiry: rowToInquiry(row), analysis: savedAnalysis, preservedManual: true })
+    return
+  }
+
   const customer = db.prepare(
     'SELECT name, company, country, type FROM customers WHERE id = ?'
   ).get(row.customer_id) as { name: string; company: string | null; country: string | null; type: string } | undefined
@@ -297,7 +311,7 @@ inquiriesRouter.post('/:id/ai-categorize', async (req: Request, res: Response) =
   }
 
   const now = new Date().toISOString()
-  db.prepare('UPDATE inquiries SET ai_category = ?, ai_analysis = ?, updated_at = ? WHERE id = ?').run(
+  db.prepare('UPDATE inquiries SET ai_category = ?, ai_analysis = ?, ai_analysis_manual = 0, updated_at = ? WHERE id = ?').run(
     category,
     JSON.stringify(analysis),
     now,

@@ -745,6 +745,7 @@ function ensureTableColumn(tableName: string, name: string, ddl: string) {
 
 // 确保订单表有所有必需的列
 ensureTableColumn('inquiries', 'ai_analysis', 'ai_analysis TEXT')
+ensureTableColumn('inquiries', 'ai_analysis_manual', 'ai_analysis_manual INTEGER NOT NULL DEFAULT 0')
 ensureTableColumn('orders', 'deposit_amount', 'deposit_amount REAL')
 ensureTableColumn('orders', 'balance_amount', 'balance_amount REAL')
 
