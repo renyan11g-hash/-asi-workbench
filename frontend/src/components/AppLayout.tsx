@@ -9,6 +9,7 @@ import {
   Layers,
   LayoutDashboard,
   Package,
+  List,
   Settings as SettingsIcon,
   ShoppingBag,
   Sparkles,
@@ -34,6 +35,7 @@ const NAV_GROUPS: Array<{
     { to: '/product-dashboard', label: '产品工作总览', icon: Layers },
   ]},
   { title: '产品中心', items: [
+    { to: '/product-overview', label: '产品一览', icon: List },
     { to: '/sourcing-suggest', label: '市场选品', icon: Compass },
     { to: '/pipeline', label: '产品流水线', icon: Layers },
     { to: '/master-data', label: '产品资料库', icon: Database, badge: 'specs' },
@@ -54,6 +56,7 @@ const NAV_GROUPS: Array<{
 ]
 
 const TITLES: Record<string, { title: string; sub: string }> = {
+  '/product-overview': { title: '产品一览', sub: '快速查找产品、平台 Listing、1688 来源与供应商报价；AI 助手可围绕当前产品协助分析' },
   '/business-ops': { title: '业务运营中心', sub: '今日待办、客户销售、订单交付与经营数据' },
   '/product-dashboard': { title: '产品工作总览', sub: '查看产品档案流水线、选品与 Listing 处理进度' },
   '/order-costs': { title: '订单成本核算', sub: '录入采购、定制、物流等成本，核算毛利润与提成' },

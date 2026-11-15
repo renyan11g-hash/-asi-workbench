@@ -8,6 +8,7 @@ import { AppLayout } from "@/components/AppLayout";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const BusinessHub = lazy(() => import("./pages/BusinessHub"));
+const ProductOverview = lazy(() => import("./pages/ProductOverview"));
 const OrderCosts = lazy(() => import("./pages/OrderCosts"));
 const OrderCenter = lazy(() => import("./pages/OrderCenter"));
 const Sourcing = lazy(() => import("./pages/Sourcing"));
@@ -74,6 +75,7 @@ function App() {
             <Route element={<AppLayout />}>
               <Route index element={<Navigate to="/business-ops" replace />} />
               <Route path="product-dashboard" data-genie-key="Dashboard" data-genie-title="产品工作总览" element={<PageTransition transition="fade"><Dashboard /></PageTransition>} />
+              <Route path="product-overview" data-genie-key="ProductOverview" data-genie-title="产品一览" element={<PageTransition transition="fade"><ProductOverview /></PageTransition>} />
               <Route path="business-ops" data-genie-key="BusinessHub" data-genie-title="业务运营中心" element={<PageTransition transition="fade"><BusinessHub /></PageTransition>} />
               <Route path="order-costs" data-genie-key="OrderCosts" data-genie-title="订单成本核算" element={<PageTransition transition="fade"><OrderCosts /></PageTransition>} />
               <Route
