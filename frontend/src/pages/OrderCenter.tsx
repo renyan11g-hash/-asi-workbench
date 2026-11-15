@@ -53,6 +53,7 @@ import {
   CustomerType,
   InquiryStatus,
   InquiryType,
+  Inquiry,
   InquiryAiAnalysis,
   OrderStatus,
   PaymentStatus,
