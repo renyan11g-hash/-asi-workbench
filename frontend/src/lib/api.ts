@@ -2221,4 +2221,37 @@ export const businessOpsApi = {
     const { data } = await apiClient.put(`/business-ops/orders/${id}/financials`, payload)
     return data
   },
+
+  async getCustomerProfile(id:string) {
+    const { data } = await apiClient.get(`/business-ops/customers/${id}/profile`)
+    return data.profile
+  },
+  async saveCustomerProfile(id:string,payload:{tier:'A'|'B'|'C';source?:string;preferences?:string;nextFollowUpAt?:string|null}) {
+    const { data } = await apiClient.put(`/business-ops/customers/${id}/profile`,payload)
+    return data.profile
+  },
+  async getOrderFulfillment(id:string) {
+    const { data } = await apiClient.get(`/business-ops/orders/${id}/fulfillment`)
+    return data
+  },
+  async createShipment(id:string,payload:{carrier?:string;trackingNumber?:string;shippingMethod:'air'|'sea'|'express'|'rail'|'other';status:'pending'|'shipped'|'in_transit'|'delivered'|'exception';estimatedDelivery?:string|null;actualDelivery?:string|null;notes?:string}) {
+    const { data } = await apiClient.post(`/business-ops/orders/${id}/shipments`,payload)
+    return data
+  },
+  async updateShipment(id:string,patch:Partial<{carrier:string;trackingNumber:string;shippingMethod:'air'|'sea'|'express'|'rail'|'other';status:'pending'|'shipped'|'in_transit'|'delivered'|'exception';estimatedDelivery:string|null;actualDelivery:string|null;notes:string}>) {
+    const { data } = await apiClient.patch(`/business-ops/shipments/${id}`,patch)
+    return data
+  },
+  async createPayment(id:string,payload:{amount:number;paymentMethod:string;paymentDate?:string|null;notes?:string}) {
+    const { data } = await apiClient.post(`/business-ops/orders/${id}/payments`,payload)
+    return data
+  },
+  async createAfterSale(id:string,payload:{type:'quality_issue'|'shipping_issue'|'shortage'|'wrong_item'|'refund'|'other';status:'open'|'processing'|'resolved'|'closed';description:string;resolution?:string;refundAmount?:number}) {
+    const { data } = await apiClient.post(`/business-ops/orders/${id}/after-sales`,payload)
+    return data
+  },
+  async updateAfterSale(id:string,patch:Partial<{type:'quality_issue'|'shipping_issue'|'shortage'|'wrong_item'|'refund'|'other';status:'open'|'processing'|'resolved'|'closed';description:string;resolution:string;refundAmount:number}>) {
+    const { data } = await apiClient.patch(`/business-ops/after-sales/${id}`,patch)
+    return data
+  },
 }
