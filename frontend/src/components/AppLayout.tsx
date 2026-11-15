@@ -30,7 +30,7 @@ const NAV_GROUPS: Array<{
 }> = [
   { title: '业务总览', items: [
     { to: '/business-ops', label: '业务运营总览', icon: LayoutDashboard },
-    { to: '/', label: '产品工作总览', icon: Layers, end: true },
+    { to: '/product-dashboard', label: '产品工作总览', icon: Layers },
   ]},
   { title: '产品中心', items: [
     { to: '/sourcing-suggest', label: '市场选品', icon: Compass },
@@ -51,7 +51,7 @@ const NAV_GROUPS: Array<{
   ]},
 ]
 
-const TITLES: Record<string, { title: string; sub: string }> = {\n  '/business-ops': { title: '业务运营中心', sub: '今日待办、客户销售、订单交付与经营数据' },
+const TITLES: Record<string, { title: string; sub: string }> = {\n  '/business-ops': { title: '业务运营中心', sub: '今日待办、客户销售、订单交付与经营数据' },\n  '/product-dashboard': { title: '产品工作总览', sub: '查看产品档案流水线、选品与 Listing 处理进度' },
   '/': { title: '工作总览', sub: '今天该处理哪些产品、卡在哪一步、有多少待审核' },
   '/pipeline': { title: '产品流水线', sub: '一个产品一条档案：资料 → 评估 → 评估审核 → 英文文案 → 文案审核 → 预产品库 → RPA 档案库' },
   '/sourcing-suggest': { title: '选品预估', sub: 'AI 自动搜寻适合美国促销礼品市场的选品方向与 1688 搜索词（单个产品预估也在这）' },
