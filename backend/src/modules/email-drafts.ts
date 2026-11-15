@@ -18,6 +18,13 @@ const emailDraftSchema = z.object({
   status: z.enum(['draft', 'sent']).default('draft'),
 })
 
+interface CustomerRow {
+  id: string
+  name: string
+  company: string | null
+  email: string
+}
+
 interface EmailDraftRow {
   id: string
   inquiry_id: string | null
@@ -187,12 +194,7 @@ emailDraftsRouter.post('/ai-generate', async (req: Request, res: Response) => {
     })
     .parse(req.body ?? {})
 
-  let customer: {
-    id: string
-    name: string
-    company: string | null
-    email: string
-  } | null = null
+  let customer: CustomerRow | null = null
   let inquiryContent = ''
   let inquirySubject = ''
   let productInfo = ''
@@ -211,7 +213,7 @@ emailDraftsRouter.post('/ai-generate', async (req: Request, res: Response) => {
       throw new AppError(409, '询盘与所选客户不匹配，无法生成邮件')
     }
 
-    customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(inquiry.customer_id) as typeof customer
+    customer = (db.prepare('SELECT * FROM customers WHERE id = ?').get(inquiry.customer_id) as CustomerRow | undefined) ?? null
     inquirySubject = inquiry.subject
     inquiryContent = inquiry.content
 
@@ -234,7 +236,7 @@ emailDraftsRouter.post('/ai-generate', async (req: Request, res: Response) => {
       }
     }
   } else {
-    customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId) as typeof customer
+    customer = (db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId) as CustomerRow | undefined) ?? null
   }
 
   if (!customer) throw new AppError(404, '客户不存在')
