@@ -2186,4 +2186,40 @@ export const orderApi = {
   },
 
 
+
+// ========== 业务运营工作台 API ==========
+export const businessOpsApi = {
+  async overview(): Promise<{
+    products:number; customers:number; inquiries:number; newInquiries:number; quotedInquiries:number;
+    orders:number; activeOrders:number; unpaidOrders:number; openTasks:number; overdueTasks:number; todayTasks:number; untrackedOrders:number
+  }> {
+    const { data } = await apiClient.get('/business-ops/overview')
+    return data
+  },
+  async listTasks(status = 'open'): Promise<{ tasks: Array<Record<string, any>> }> {
+    const { data } = await apiClient.get('/business-ops/tasks', { params: { status } })
+    return data
+  },
+  async createTask(payload: { title:string; description?:string; taskType?:string; entityType?:string; entityId?:string; dueAt:string; priority?:string }) {
+    const { data } = await apiClient.post('/business-ops/tasks', payload)
+    return data
+  },
+  async updateTask(id:string, patch: { status?:'open'|'done'|'cancelled'; dueAt?:string; priority?:'low'|'normal'|'high' }) {
+    const { data } = await apiClient.patch(`/business-ops/tasks/${id}`, patch)
+    return data
+  },
+  async performance(): Promise<{ summary: Record<string,number>; details: Array<Record<string,any>>; note:string }> {
+    const { data } = await apiClient.get('/business-ops/performance')
+    return data
+  },
+  async getOrderFinancials(id:string) {
+    const { data } = await apiClient.get(`/business-ops/orders/${id}/financials`)
+    return data
+  },
+  async saveOrderFinancials(id:string, payload: { productCostCny:number; customizationCostCny:number; domesticShippingCny:number; internationalShippingUsd:number; otherCostUsd:number; exchangeRate:number; commissionRate:number; note?:string }) {
+    const { data } = await apiClient.put(`/business-ops/orders/${id}/financials`, payload)
+    return data
+  },
+}
+
 }
