@@ -2072,8 +2072,8 @@ export const orderApi = {
     return data.inquiry
   },
 
-  async categorizeInquiry(id: string): Promise<{ inquiry: Inquiry; analysis: InquiryAiAnalysis }> {
-    const { data } = await apiClient.post<{ inquiry: Inquiry; analysis: InquiryAiAnalysis }>(`/inquiries/${id}/ai-categorize`, {})
+  async categorizeInquiry(id: string, overwriteManual = false): Promise<{ inquiry: Inquiry; analysis: InquiryAiAnalysis; preservedManual?: boolean }> {
+    const { data } = await apiClient.post<{ inquiry: Inquiry; analysis: InquiryAiAnalysis; preservedManual?: boolean }>(`/inquiries/${id}/ai-categorize`, { overwriteManual })
     return data
   },
 

@@ -527,13 +527,13 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
     onError: (err) => toast.error(getErrorMessage(err)),
   })
 
-  const categorize = async (id: string) => {
+  const categorize = async (id: string, overwriteManual = false) => {
     setCategorizingId(id)
     try {
-      const result = await orderApi.categorizeInquiry(id)
+      const result = await orderApi.categorizeInquiry(id, overwriteManual)
       setAiAnalysis({ inquiryId: id, subject: result.inquiry.subject, analysis: result.analysis })
       setAnalysisOpen(true)
-      toast.success('AI 询盘分析完成')
+      toast.success(result.preservedManual ? '已保留人工确认的分析结果；未被 AI 覆盖' : 'AI 询盘分析完成')
       void qc.invalidateQueries({ queryKey: ['oc-inquiries'] })
     } catch (err) {
       toast.error(getErrorMessage(err))
@@ -797,6 +797,7 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setAnalysisOpen(false)}>关闭</Button>
+            <Button variant="outline" onClick={() => { if (aiAnalysis && window.confirm('重新运行 AI 分析将覆盖当前人工确认的分析内容，是否继续？')) void categorize(aiAnalysis.inquiryId, true) }} disabled={categorizingId !== null || !aiAnalysis}>AI 重新分析并覆盖</Button>
             <Button onClick={() => void saveAnalysis()} disabled={savingAnalysis || !aiAnalysis}>
               {savingAnalysis && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />} 保存人工修改
             </Button>
