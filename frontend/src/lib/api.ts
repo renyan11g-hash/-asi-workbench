@@ -2187,3 +2187,83 @@ export const orderApi = {
 
 
 }
+
+// ========== 业务运营工作台 API ==========
+export const businessOpsApi = {
+  async overview(): Promise<{
+    products:number; customers:number; inquiries:number; newInquiries:number; quotedInquiries:number;
+    orders:number; activeOrders:number; unpaidOrders:number; openTasks:number; overdueTasks:number; todayTasks:number; untrackedOrders:number
+  }> {
+    const { data } = await apiClient.get('/business-ops/overview')
+    return data
+  },
+  async listTasks(status = 'open'): Promise<{ tasks: Array<Record<string, any>> }> {
+    const { data } = await apiClient.get('/business-ops/tasks', { params: { status } })
+    return data
+  },
+  async createTask(payload: { title:string; description?:string; taskType?:string; entityType?:string; entityId?:string; dueAt:string; priority?:string }) {
+    const { data } = await apiClient.post('/business-ops/tasks', payload)
+    return data
+  },
+  async updateTask(id:string, patch: { status?:'open'|'done'|'cancelled'; dueAt?:string; priority?:'low'|'normal'|'high' }) {
+    const { data } = await apiClient.patch(`/business-ops/tasks/${id}`, patch)
+    return data
+  },
+  async performance(): Promise<{ summary: Record<string,number>; details: Array<Record<string,any>>; note:string }> {
+    const { data } = await apiClient.get('/business-ops/performance')
+    return data
+  },
+  async getOrderFinancials(id:string) {
+    const { data } = await apiClient.get(`/business-ops/orders/${id}/financials`)
+    return data
+  },
+  async saveOrderFinancials(id:string, payload: { productCostCny:number; customizationCostCny:number; domesticShippingCny:number; internationalShippingUsd:number; otherCostUsd:number; exchangeRate:number; commissionRate:number; note?:string }) {
+    const { data } = await apiClient.put(`/business-ops/orders/${id}/financials`, payload)
+    return data
+  },
+
+  async getCustomerProfile(id:string) {
+    const { data } = await apiClient.get(`/business-ops/customers/${id}/profile`)
+    return data.profile
+  },
+  async saveCustomerProfile(id:string,payload:{tier:'A'|'B'|'C';source?:string;preferences?:string;nextFollowUpAt?:string|null}) {
+    const { data } = await apiClient.put(`/business-ops/customers/${id}/profile`,payload)
+    return data.profile
+  },
+  async listInquiryQuotes(id:string) {
+    const { data } = await apiClient.get(`/business-ops/inquiries/${id}/quotes`)
+    return data.quotes
+  },
+  async createInquiryQuote(id:string,payload:{quoteNumber:string;amount:number;currency:'USD'|'CNY';quantity:number;shippingMethod?:string;productionTime?:string;transitTime?:string;validUntil?:string|null;notes?:string}) {
+    const { data } = await apiClient.post(`/business-ops/inquiries/${id}/quotes`,payload)
+    return data.quote
+  },
+  async updateQuoteStatus(id:string,status:'draft'|'sent'|'accepted'|'rejected'|'expired') {
+    const { data } = await apiClient.patch(`/business-ops/quotes/${id}/status`,{status})
+    return data.quote
+  },
+  async getOrderFulfillment(id:string) {
+    const { data } = await apiClient.get(`/business-ops/orders/${id}/fulfillment`)
+    return data
+  },
+  async createShipment(id:string,payload:{carrier?:string;trackingNumber?:string;shippingMethod:'air'|'sea'|'express'|'rail'|'other';status:'pending'|'shipped'|'in_transit'|'delivered'|'exception';estimatedDelivery?:string|null;actualDelivery?:string|null;notes?:string}) {
+    const { data } = await apiClient.post(`/business-ops/orders/${id}/shipments`,payload)
+    return data
+  },
+  async updateShipment(id:string,patch:Partial<{carrier:string;trackingNumber:string;shippingMethod:'air'|'sea'|'express'|'rail'|'other';status:'pending'|'shipped'|'in_transit'|'delivered'|'exception';estimatedDelivery:string|null;actualDelivery:string|null;notes:string}>) {
+    const { data } = await apiClient.patch(`/business-ops/shipments/${id}`,patch)
+    return data
+  },
+  async createPayment(id:string,payload:{amount:number;paymentMethod:string;paymentDate?:string|null;notes?:string}) {
+    const { data } = await apiClient.post(`/business-ops/orders/${id}/payments`,payload)
+    return data
+  },
+  async createAfterSale(id:string,payload:{type:'quality_issue'|'shipping_issue'|'shortage'|'wrong_item'|'refund'|'other';status:'open'|'processing'|'resolved'|'closed';description:string;resolution?:string;refundAmount?:number}) {
+    const { data } = await apiClient.post(`/business-ops/orders/${id}/after-sales`,payload)
+    return data
+  },
+  async updateAfterSale(id:string,patch:Partial<{type:'quality_issue'|'shipping_issue'|'shortage'|'wrong_item'|'refund'|'other';status:'open'|'processing'|'resolved'|'closed';description:string;resolution:string;refundAmount:number}>) {
+    const { data } = await apiClient.patch(`/business-ops/after-sales/${id}`,patch)
+    return data
+  },
+}

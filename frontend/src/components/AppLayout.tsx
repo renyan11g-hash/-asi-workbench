@@ -2,6 +2,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Archive,
   ClipboardCheck,
+  DollarSign,
   Compass,
   Database,
   FolderOpen,
@@ -26,40 +27,36 @@ import { cn } from '@/lib/utils'
  */
 const NAV_GROUPS: Array<{
   title: string
-  items: Array<{
-    to: string
-    label: string
-    icon: React.ElementType
-    end?: boolean
-    /** 红色数字角标：显示「这一步还有几条要处理」 */
-    badge?: 'specs' | 'evalReview' | 'review'
-  }>
+  items: Array<{ to: string; label: string; icon: React.ElementType; end?: boolean; badge?: 'specs' | 'evalReview' | 'review' }>
 }> = [
-  {
-    title: '工作流程',
-    items: [
-      { to: '/', label: '工作总览', icon: LayoutDashboard, end: true },
-      // 产品流水线是总览页，不挂数字（各步的数字挂到对应的功能页上）
-      { to: '/pipeline', label: '产品流水线', icon: Layers },
-      { to: '/sourcing-suggest', label: '选品预估', icon: Compass },
-      { to: '/master-data', label: '产品资料库', icon: Database, badge: 'specs' },
-      { to: '/evaluations', label: '评估库', icon: FolderOpen, badge: 'evalReview' },
-      { to: '/listing-reviews', label: 'listing 待审核中心', icon: ClipboardCheck, badge: 'review' },
-      { to: '/library', label: '预产品库', icon: Package },
-      { to: '/rpa', label: 'RPA 档案库', icon: Archive },
-    ],
-  },
-  {
-    title: '其他',
-    items: [
-      { to: '/order-center', label: '订单运营中心', icon: ShoppingBag },
-      { to: '/visual-styles', label: '视觉风格中心', icon: Sparkles },
-      { to: '/settings', label: '设置', icon: SettingsIcon },
-    ],
-  },
+  { title: '业务总览', items: [
+    { to: '/business-ops', label: '业务运营总览', icon: LayoutDashboard },
+    { to: '/product-dashboard', label: '产品工作总览', icon: Layers },
+  ]},
+  { title: '产品中心', items: [
+    { to: '/sourcing-suggest', label: '市场选品', icon: Compass },
+    { to: '/pipeline', label: '产品流水线', icon: Layers },
+    { to: '/master-data', label: '产品资料库', icon: Database, badge: 'specs' },
+    { to: '/evaluations', label: '选品评估库', icon: FolderOpen, badge: 'evalReview' },
+    { to: '/listing-reviews', label: 'Listing 待审核', icon: ClipboardCheck, badge: 'review' },
+    { to: '/library', label: '预产品库', icon: Package },
+    { to: '/rpa', label: 'RPA 档案库', icon: Archive },
+  ]},
+  { title: '客户与订单', items: [
+    { to: '/order-center', label: '客户 / 询盘 / 订单', icon: ShoppingBag },
+    { to: '/production', label: '生产批次进度', icon: ClipboardCheck },
+    { to: '/order-costs', label: '订单成本核算', icon: DollarSign },
+  ]},
+  { title: '系统设置', items: [
+    { to: '/visual-styles', label: '视觉风格中心', icon: Sparkles },
+    { to: '/settings', label: '设置', icon: SettingsIcon },
+  ]},
 ]
 
 const TITLES: Record<string, { title: string; sub: string }> = {
+  '/business-ops': { title: '业务运营中心', sub: '今日待办、客户销售、订单交付与经营数据' },
+  '/product-dashboard': { title: '产品工作总览', sub: '查看产品档案流水线、选品与 Listing 处理进度' },
+  '/order-costs': { title: '订单成本核算', sub: '录入采购、定制、物流等成本，核算毛利润与提成' },
   '/': { title: '工作总览', sub: '今天该处理哪些产品、卡在哪一步、有多少待审核' },
   '/pipeline': { title: '产品流水线', sub: '一个产品一条档案：资料 → 评估 → 评估审核 → 英文文案 → 文案审核 → 预产品库 → RPA 档案库' },
   '/sourcing-suggest': { title: '选品预估', sub: 'AI 自动搜寻适合美国促销礼品市场的选品方向与 1688 搜索词（单个产品预估也在这）' },
