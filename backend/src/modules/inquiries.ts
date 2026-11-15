@@ -15,6 +15,15 @@ const inquirySchema = z.object({
   content: z.string().min(1),
   type: z.enum(['price_inquiry', 'custom_quote', 'sample_request', 'general_question']).default('price_inquiry'),
   productId: z.string().optional(),
+  aiAnalysis: z.object({
+    category: z.enum(['pricing', 'sample', 'customization', 'logistics', 'product_match', 'general']),
+    intent: z.string().max(180),
+    summary: z.string().max(500),
+    requestedQuantity: z.string().max(120).nullable(),
+    customization: z.string().max(240),
+    missingInfo: z.array(z.string().max(160)).max(8),
+    recommendedNextStep: z.string().max(300),
+  }).optional(),
 })
 
 interface InquiryRow {
@@ -27,6 +36,7 @@ interface InquiryRow {
   product_id: string | null
   ai_category: string | null
   ai_draft: string | null
+  ai_analysis: string | null
   created_at: string
   updated_at: string
 }
@@ -42,6 +52,7 @@ function rowToInquiry(r: InquiryRow): Inquiry {
     productId: r.product_id ?? undefined,
     aiCategory: r.ai_category ?? undefined,
     aiDraft: r.ai_draft ?? undefined,
+    aiAnalysis: r.ai_analysis ? (() => { try { return JSON.parse(r.ai_analysis) } catch { return undefined } })() : undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -147,6 +158,13 @@ inquiriesRouter.put('/:id', async (req: Request, res: Response) => {
     updates.push('type = ?')
     params.push(body.type)
   }
+  if (body.aiAnalysis !== undefined) {
+    updates.push('ai_analysis = ?')
+    params.push(JSON.stringify(body.aiAnalysis))
+    updates.push('ai_category = ?')
+    params.push(body.aiAnalysis.category)
+  }
+
   if (body.productId !== undefined) {
     if (body.productId) {
       const product = db.prepare('SELECT id FROM products WHERE id = ?').get(body.productId)
@@ -279,8 +297,9 @@ inquiriesRouter.post('/:id/ai-categorize', async (req: Request, res: Response) =
   }
 
   const now = new Date().toISOString()
-  db.prepare('UPDATE inquiries SET ai_category = ?, updated_at = ? WHERE id = ?').run(
+  db.prepare('UPDATE inquiries SET ai_category = ?, ai_analysis = ?, updated_at = ? WHERE id = ?').run(
     category,
+    JSON.stringify(analysis),
     now,
     row.id
   )

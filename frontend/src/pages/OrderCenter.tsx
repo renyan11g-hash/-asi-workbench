@@ -53,6 +53,7 @@ import {
   CustomerType,
   InquiryStatus,
   InquiryType,
+  Inquiry,
   InquiryAiAnalysis,
   OrderStatus,
   PaymentStatus,
@@ -480,7 +481,8 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [categorizingId, setCategorizingId] = useState<string | null>(null)
   const [analysisOpen, setAnalysisOpen] = useState(false)
-  const [aiAnalysis, setAiAnalysis] = useState<{ subject: string; analysis: InquiryAiAnalysis } | null>(null)
+  const [aiAnalysis, setAiAnalysis] = useState<{ inquiryId: string; subject: string; analysis: InquiryAiAnalysis } | null>(null)
+  const [savingAnalysis, setSavingAnalysis] = useState(false)
   const [form, setForm] = useState({ customerId: '', subject: '', content: '', type: 'price_inquiry' as InquiryType, productId: '' })
 
   const { data: customers } = useQuery({ queryKey: ['oc-customers', ''], queryFn: () => orderApi.listCustomers() })
@@ -529,7 +531,7 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
     setCategorizingId(id)
     try {
       const result = await orderApi.categorizeInquiry(id)
-      setAiAnalysis({ subject: result.inquiry.subject, analysis: result.analysis })
+      setAiAnalysis({ inquiryId: id, subject: result.inquiry.subject, analysis: result.analysis })
       setAnalysisOpen(true)
       toast.success('AI 询盘分析完成')
       void qc.invalidateQueries({ queryKey: ['oc-inquiries'] })
@@ -538,6 +540,37 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
     } finally {
       setCategorizingId(null)
     }
+  }
+
+  const openManualAnalysis = (inquiry: Inquiry) => {
+    setAiAnalysis({
+      inquiryId: inquiry.id,
+      subject: inquiry.subject,
+      analysis: inquiry.aiAnalysis ?? {
+        category: 'general', intent: '', summary: '', requestedQuantity: null,
+        customization: '', missingInfo: [], recommendedNextStep: '',
+      },
+    })
+    setAnalysisOpen(true)
+  }
+
+  const saveAnalysis = async () => {
+    if (!aiAnalysis) return
+    setSavingAnalysis(true)
+    try {
+      await orderApi.updateInquiryAnalysis(aiAnalysis.inquiryId, aiAnalysis.analysis)
+      toast.success('询盘分析已保存')
+      void qc.invalidateQueries({ queryKey: ['oc-inquiries'] })
+      setAnalysisOpen(false)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setSavingAnalysis(false)
+    }
+  }
+
+  const updateAnalysis = (patch: Partial<InquiryAiAnalysis>) => {
+    setAiAnalysis((current) => current ? { ...current, analysis: { ...current.analysis, ...patch } } : current)
   }
 
   const remove = async (id: string) => {
@@ -626,6 +659,7 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
                       </SelectContent>
                     </Select>
                     <InquiryQuoteButton inquiry={i} onChanged={() => { void qc.invalidateQueries({ queryKey: ['oc-inquiries'] }); onChanged() }} />
+                    <Button variant="ghost" size="sm" title={i.aiAnalysis ? '查看/编辑已保存分析' : '手动录入询盘分析'} onClick={() => openManualAnalysis(i)}><ClipboardList className="h-3.5 w-3.5" /></Button>
                     <Button variant="ghost" size="sm" title="AI 询盘分析" onClick={() => void categorize(i.id)} disabled={categorizingId === i.id}>
                       {categorizingId === i.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                     </Button>
@@ -708,6 +742,20 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
           </DialogHeader>
           {aiAnalysis && (
             <div className="space-y-4 text-sm">
+              <div className="grid gap-1.5">
+                <Label>询盘分类（可手动选择）</Label>
+                <Select value={aiAnalysis.analysis.category} onValueChange={(v) => updateAnalysis({ category: v as InquiryAiAnalysis['category'] })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="pricing">价格 / 报价</SelectItem>
+                    <SelectItem value="sample">样品需求</SelectItem>
+                    <SelectItem value="customization">定制需求</SelectItem>
+                    <SelectItem value="logistics">物流 / 交付</SelectItem>
+                    <SelectItem value="product_match">产品匹配</SelectItem>
+                    <SelectItem value="general">一般咨询</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="secondary">{({
                   pricing: '价格 / 报价',
@@ -720,35 +768,38 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
                 <span className="text-slate-500">{aiAnalysis.analysis.intent || '意图未明确'}</span>
               </div>
               <section className="space-y-1">
-                <h4 className="font-medium text-slate-900">需求摘要</h4>
-                <p className="whitespace-pre-wrap text-slate-700">{aiAnalysis.analysis.summary || 'AI 未能提炼出明确摘要'}</p>
+                <Label>需求摘要（可手动修改）</Label>
+                <Textarea rows={3} value={aiAnalysis.analysis.summary} onChange={(e) => updateAnalysis({ summary: e.target.value })} />
+              </section>
+              <section className="space-y-1">
+                <Label>客户意图</Label>
+                <Input value={aiAnalysis.analysis.intent} onChange={(e) => updateAnalysis({ intent: e.target.value })} />
               </section>
               <div className="grid gap-3 sm:grid-cols-2">
                 <section className="space-y-1 rounded-lg bg-slate-50 p-3">
-                  <h4 className="font-medium text-slate-900">询问数量</h4>
-                  <p className="text-slate-700">{aiAnalysis.analysis.requestedQuantity || '客户未明确提及'}</p>
+                  <Label>询问数量</Label>
+                  <Input value={aiAnalysis.analysis.requestedQuantity ?? ''} placeholder="手动填写；未知可留空" onChange={(e) => updateAnalysis({ requestedQuantity: e.target.value || null })} />
                 </section>
                 <section className="space-y-1 rounded-lg bg-slate-50 p-3">
-                  <h4 className="font-medium text-slate-900">定制要求</h4>
-                  <p className="text-slate-700">{aiAnalysis.analysis.customization || '未明确提及'}</p>
+                  <Label>定制要求</Label>
+                  <Textarea rows={2} value={aiAnalysis.analysis.customization} onChange={(e) => updateAnalysis({ customization: e.target.value })} />
                 </section>
               </div>
               <section className="space-y-2">
                 <h4 className="font-medium text-slate-900">待补充 / 待确认信息</h4>
-                {aiAnalysis.analysis.missingInfo.length ? (
-                  <ul className="list-disc space-y-1 pl-5 text-amber-800">
-                    {aiAnalysis.analysis.missingInfo.map((item, index) => <li key={index}>{item}</li>)}
-                  </ul>
-                ) : <p className="text-slate-500">AI 未识别出明显缺失项，仍建议人工复核</p>}
+                <Textarea rows={3} value={aiAnalysis.analysis.missingInfo.join('\n')} placeholder="每行一项，可手动增删" onChange={(e) => updateAnalysis({ missingInfo: e.target.value.split('\n').map((v) => v.trim()).filter(Boolean).slice(0, 8) })} />
               </section>
               <section className="space-y-1 rounded-lg border p-3">
-                <h4 className="font-medium text-slate-900">建议下一步</h4>
-                <p className="text-slate-700">{aiAnalysis.analysis.recommendedNextStep || '请人工判断下一步'}</p>
+                <Label>建议下一步</Label>
+                <Textarea rows={2} value={aiAnalysis.analysis.recommendedNextStep} onChange={(e) => updateAnalysis({ recommendedNextStep: e.target.value })} />
               </section>
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setAnalysisOpen(false)}>关闭</Button>
+            <Button onClick={() => void saveAnalysis()} disabled={savingAnalysis || !aiAnalysis}>
+              {savingAnalysis && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />} 保存人工修改
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

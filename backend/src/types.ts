@@ -544,6 +544,17 @@ export interface Customer {
   updatedAt: string
 }
 
+/** 询盘分析结果 */
+export interface InquiryAiAnalysis {
+  category: 'pricing' | 'sample' | 'customization' | 'logistics' | 'product_match' | 'general'
+  intent: string
+  summary: string
+  requestedQuantity: string | null
+  customization: string
+  missingInfo: string[]
+  recommendedNextStep: string
+}
+
 /** 询盘记录 */
 export interface Inquiry {
   id: string
@@ -556,6 +567,8 @@ export interface Inquiry {
   productId?: string
   /** AI分类结果 */
   aiCategory?: string
+  /** AI分析结果及人工修订版本 */
+  aiAnalysis?: InquiryAiAnalysis
   /** AI生成的回复草稿 */
   aiDraft?: string
   createdAt: string
