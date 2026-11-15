@@ -19,7 +19,6 @@ export default function OrderCosts() {
   const [exchangeRate,setExchangeRate]=useState('7.2')
   const [commissionRate,setCommissionRate]=useState('0.4')
   const [note,setNote]=useState('')
-  const current=useQuery({queryKey:['order-financials',orderId],queryFn:()=>businessOpsApi.getOrderFinancials(orderId),enabled:Boolean(orderId)})
   const save=useMutation({
     mutationFn:()=>businessOpsApi.saveOrderFinancials(orderId,{
       productCostCny:Number(productCostCny),customizationCostCny:Number(customizationCostCny),domesticShippingCny:Number(domesticShippingCny),
