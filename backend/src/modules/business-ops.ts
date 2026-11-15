@@ -23,6 +23,25 @@ CREATE TABLE IF NOT EXISTS business_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_business_tasks_due ON business_tasks(status, due_at);
 CREATE INDEX IF NOT EXISTS idx_business_tasks_entity ON business_tasks(entity_type, entity_id);
+
+CREATE TABLE IF NOT EXISTS inquiry_quotes (
+  id TEXT PRIMARY KEY,
+  inquiry_id TEXT NOT NULL,
+  quote_number TEXT NOT NULL,
+  amount REAL NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  quantity INTEGER NOT NULL,
+  shipping_method TEXT NOT NULL DEFAULT '',
+  production_time TEXT NOT NULL DEFAULT '',
+  transit_time TEXT NOT NULL DEFAULT '',
+  valid_until TEXT,
+  notes TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (inquiry_id) REFERENCES inquiries(id)
+);
+CREATE INDEX IF NOT EXISTS idx_inquiry_quotes_inquiry ON inquiry_quotes(inquiry_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS customer_profiles (
   customer_id TEXT PRIMARY KEY,
   tier TEXT NOT NULL DEFAULT 'C',
@@ -331,4 +350,45 @@ businessOpsRouter.patch('/after-sales/:id', (req: Request, res: Response) => {
     db.prepare(`UPDATE after_sales SET ${sets.join(', ')} WHERE id = ?`).run(...values)
   }
   res.json({ afterSale: db.prepare('SELECT * FROM after_sales WHERE id = ?').get(id) })
+})
+
+
+const quoteSchema = z.object({
+  quoteNumber: z.string().min(1).max(80),
+  amount: z.number().positive(),
+  currency: z.enum(['USD','CNY']).default('USD'),
+  quantity: z.number().int().positive(),
+  shippingMethod: z.string().max(100).optional().default(''),
+  productionTime: z.string().max(200).optional().default(''),
+  transitTime: z.string().max(200).optional().default(''),
+  validUntil: z.string().nullable().optional(),
+  notes: z.string().max(3000).optional().default(''),
+})
+
+businessOpsRouter.get('/inquiries/:id/quotes', (req: Request, res: Response) => {
+  const inquiryId = String(req.params.id)
+  if (!db.prepare('SELECT id FROM inquiries WHERE id = ?').get(inquiryId)) throw new AppError(404, '询盘不存在')
+  const quotes = db.prepare('SELECT * FROM inquiry_quotes WHERE inquiry_id = ? ORDER BY created_at DESC').all(inquiryId)
+  res.json({ quotes })
+})
+
+businessOpsRouter.post('/inquiries/:id/quotes', (req: Request, res: Response) => {
+  const inquiryId = String(req.params.id)
+  if (!db.prepare('SELECT id FROM inquiries WHERE id = ?').get(inquiryId)) throw new AppError(404, '询盘不存在')
+  const body = quoteSchema.parse(req.body ?? {})
+  if (db.prepare('SELECT id FROM inquiry_quotes WHERE quote_number = ?').get(body.quoteNumber)) throw new AppError(409, '报价编号已存在')
+  const id = randomUUID()
+  const now = new Date().toISOString()
+  db.prepare('INSERT INTO inquiry_quotes (id,inquiry_id,quote_number,amount,currency,quantity,shipping_method,production_time,transit_time,valid_until,notes,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id,inquiryId,body.quoteNumber,body.amount,body.currency,body.quantity,body.shippingMethod,body.productionTime,body.transitTime,body.validUntil ?? null,body.notes,'draft',now,now)
+  db.prepare("UPDATE inquiries SET status='quoted',updated_at=? WHERE id=?").run(now,inquiryId)
+  res.status(201).json({ quote: db.prepare('SELECT * FROM inquiry_quotes WHERE id = ?').get(id) })
+})
+
+businessOpsRouter.patch('/quotes/:id/status', (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  if (!db.prepare('SELECT id FROM inquiry_quotes WHERE id = ?').get(id)) throw new AppError(404, '报价记录不存在')
+  const body = z.object({ status: z.enum(['draft','sent','accepted','rejected','expired']) }).parse(req.body ?? {})
+  db.prepare('UPDATE inquiry_quotes SET status=?,updated_at=? WHERE id=?').run(body.status,new Date().toISOString(),id)
+  res.json({ quote: db.prepare('SELECT * FROM inquiry_quotes WHERE id = ?').get(id) })
 })
