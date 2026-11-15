@@ -2113,6 +2113,11 @@ export const orderApi = {
     return data
   },
 
+  async getOrder(id: string): Promise<{ order: Order; items: OrderItem[] }> {
+    const { data } = await apiClient.get<{ order: Order; items: OrderItem[] }>(`/orders/${id}`)
+    return data
+  },
+
   async updateOrderStatus(id: string, status: OrderStatus): Promise<Order> {
     const { data } = await apiClient.patch<{ order: Order }>(`/orders/${id}/status`, { status })
     return data.order

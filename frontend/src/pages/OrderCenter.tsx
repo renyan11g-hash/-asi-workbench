@@ -56,6 +56,7 @@ import {
   InquiryType,
   Inquiry,
   InquiryAiAnalysis,
+  OrderItem,
   OrderStatus,
   PaymentStatus,
   Product,
@@ -932,6 +933,12 @@ function OrdersTab({ products, initialInquiry, onInitialInquiryHandled, onChange
   const [statusFilter, setStatusFilter] = useState('all')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [detailOrderId, setDetailOrderId] = useState<string | null>(null)
+  const { data: orderDetail, isLoading: detailLoading } = useQuery({
+    queryKey: ['oc-order-detail', detailOrderId],
+    queryFn: () => orderApi.getOrder(detailOrderId as string),
+    enabled: !!detailOrderId,
+  })
   const [form, setForm] = useState({
     customerId: '',
     inquiryId: '',
@@ -1123,6 +1130,7 @@ function OrdersTab({ products, initialInquiry, onInitialInquiryHandled, onChange
                 </TableCell>
                 <TableCell className="text-slate-400">{fmtDate(o.createdAt)}</TableCell>
                 <TableCell className="text-right">
+                  <Button variant="ghost" size="sm" onClick={() => setDetailOrderId(o.id)}>明细</Button>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -1139,6 +1147,41 @@ function OrdersTab({ products, initialInquiry, onInitialInquiryHandled, onChange
           </TableBody>
         </Table>
       )}
+
+      <Dialog open={!!detailOrderId} onOpenChange={(open) => { if (!open) setDetailOrderId(null) }}>
+        <DialogContent className="max-h-[88vh] max-w-xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>订单明细</DialogTitle>
+            <DialogDescription>{orderDetail?.order.orderNumber ?? '加载订单信息…'}</DialogDescription>
+          </DialogHeader>
+          {detailLoading ? <div className="py-8 text-center text-sm text-slate-500"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />加载中…</div> : orderDetail ? <div className="space-y-3 text-sm">
+            <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-3">
+              <div><span className="text-slate-500">客户：</span>{customerName(orderDetail.order.customerId)}</div>
+              <div><span className="text-slate-500">来源询盘：</span>{inquiryList.find((item) => item.id === orderDetail.order.inquiryId)?.subject ?? '—'}</div>
+              <div><span className="text-slate-500">订单状态：</span>{ORDER_STATUS[orderDetail.order.status]?.label ?? orderDetail.order.status}</div>
+              <div><span className="text-slate-500">付款状态：</span>{PAYMENT_STATUS[orderDetail.order.paymentStatus]?.label ?? orderDetail.order.paymentStatus}</div>
+            </div>
+            <div className="space-y-2">
+              <div className="font-semibold">产品明细</div>
+              {(orderDetail.items ?? []).map((item: OrderItem) => {
+                const product = products.find((p) => p.id === item.productId)
+                return <div key={item.id} className="rounded-lg border p-3">
+                  <div className="font-medium">{product?.source.sourceTitle ?? `产品 ${item.productId.slice(0, 8)}`}</div>
+                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500"><span>数量：{item.quantity}</span><span>单价：{fmtUsd(item.unitPrice)}</span><span>小计：{fmtUsd(item.totalPrice)}</span></div>
+                  {item.imprintSpec && <div className="mt-2 text-xs text-slate-600">印刷规格：{item.imprintSpec}</div>}
+                </div>
+              })}
+              {orderDetail.items?.length === 0 && <p className="text-xs text-slate-400">暂无产品明细</p>}
+            </div>
+            <div className="space-y-1 border-t pt-3 text-right">
+              <div>订单总额：<span className="font-semibold">{fmtUsd(orderDetail.order.totalAmount)}</span></div>
+              <div className="text-xs text-slate-500">定金：{orderDetail.order.depositAmount ? fmtUsd(orderDetail.order.depositAmount) : '—'} · 尾款：{orderDetail.order.balanceAmount ? fmtUsd(orderDetail.order.balanceAmount) : '—'}</div>
+            </div>
+            {orderDetail.order.notes && <div className="rounded-lg border p-3 text-xs text-slate-600"><div className="mb-1 font-semibold text-slate-700">备注</div>{orderDetail.order.notes}</div>}
+          </div> : <p className="py-6 text-center text-sm text-slate-400">无法加载订单详情</p>}
+          <DialogFooter><Button variant="outline" onClick={() => setDetailOrderId(null)}>关闭</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto">
