@@ -11,9 +11,9 @@ import { Textarea } from '@/components/ui/textarea'
 
 const centers = [
   { title:'产品中心', desc:'市场选品、供应商、产品资料、Listing 与图片', links:[['选品预估','/sourcing-suggest'],['产品流水线','/pipeline'],['产品资料库','/master-data'],['Listing 审核','/listing-reviews'],['正式产品库','/library']] },
-  { title:'客户销售中心', desc:'客户档案、询盘、报价邮件与销售推进', links:[['客户与询盘','/order-center'],['邮件草稿','/order-center']] },
-  { title:'订单交付中心', desc:'订单状态、生产、物流、付款与售后', links:[['订单运营中心','/order-center'],['生产进度','/production']] },
-  { title:'经营分析中心', desc:'成本完整度、订单利润、提成与经营数据', links:[['经营分析','/business-ops']] },
+  { title:'客户销售中心', desc:'客户档案、询盘、报价邮件与销售推进', links:[['客户与询盘','/order-center'],['邮件草稿','/order-center'],['客户跟进待办','/business-ops']] },
+  { title:'订单交付中心', desc:'订单状态、生产、物流、付款与售后', links:[['订单运营中心','/order-center'],['生产进度','/production'],['成本与提成','/order-costs']] },
+  { title:'经营分析中心', desc:'成本完整度、订单利润、提成与经营数据', links:[['经营分析总览','/business-ops'],['录入订单成本','/order-costs']] },
   { title:'工作任务中心', desc:'把客户跟进、报价提醒和订单节点放进统一待办', links:[['今日工作台','/business-ops']] },
 ]
 
