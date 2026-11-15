@@ -212,3 +212,111 @@ businessOpsRouter.get('/performance', (_req: Request, res: Response) => {
     note:'利润和提成只对已录入完整成本及汇率的订单计算；未录入成本的订单不会被当作零成本。',
   })
 })
+
+
+// ---------- 订单履约：物流、收款、售后 ----------
+
+const shipmentSchema = z.object({
+  carrier: z.string().max(100).optional().default(''),
+  trackingNumber: z.string().max(200).optional().default(''),
+  shippingMethod: z.enum(['air','sea','express','rail','other']).default('air'),
+  status: z.enum(['pending','shipped','in_transit','delivered','exception']).default('pending'),
+  estimatedDelivery: z.string().nullable().optional(),
+  actualDelivery: z.string().nullable().optional(),
+  notes: z.string().max(2000).optional().default(''),
+})
+
+const paymentSchema = z.object({
+  amount: z.number().positive(),
+  paymentMethod: z.string().min(1).max(100),
+  paymentDate: z.string().nullable().optional(),
+  notes: z.string().max(2000).optional().default(''),
+})
+
+const afterSalesSchema = z.object({
+  type: z.enum(['quality_issue','shipping_issue','shortage','wrong_item','refund','other']).default('quality_issue'),
+  status: z.enum(['open','processing','resolved','closed']).default('open'),
+  description: z.string().min(1).max(3000),
+  resolution: z.string().max(3000).optional().default(''),
+  refundAmount: z.number().min(0).optional().default(0),
+})
+
+function ensureOrder(orderId: string) {
+  const row = db.prepare('SELECT id, customer_id FROM orders WHERE id = ?').get(orderId) as {id:string;customer_id:string}|undefined
+  if (!row) throw new AppError(404, '订单不存在')
+  return row
+}
+
+businessOpsRouter.get('/orders/:id/fulfillment', (req: Request, res: Response) => {
+  const order = ensureOrder(String(req.params.id))
+  const shipments = db.prepare('SELECT * FROM shipments WHERE order_id = ? ORDER BY created_at DESC').all(order.id)
+  const payments = db.prepare('SELECT * FROM payments WHERE order_id = ? ORDER BY COALESCE(payment_date, created_at) DESC').all(order.id)
+  const afterSales = db.prepare('SELECT * FROM after_sales WHERE order_id = ? ORDER BY updated_at DESC').all(order.id)
+  const paymentSummary = db.prepare('SELECT COALESCE(SUM(amount),0) AS paid_amount FROM payments WHERE order_id = ?').get(order.id) as {paid_amount:number}
+  res.json({ shipments, payments, afterSales, paidAmount: Number(paymentSummary.paid_amount || 0) })
+})
+
+businessOpsRouter.post('/orders/:id/shipments', (req: Request, res: Response) => {
+  const order = ensureOrder(String(req.params.id))
+  const body = shipmentSchema.parse(req.body ?? {})
+  const id = randomUUID()
+  const now = new Date().toISOString()
+  db.prepare(`INSERT INTO shipments (id,order_id,tracking_number,carrier,shipping_method,status,estimated_delivery,actual_delivery,notes,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id,order.id,body.trackingNumber || null,body.carrier || null,body.shippingMethod,body.status,body.estimatedDelivery ?? null,body.actualDelivery ?? null,body.notes,now,now)
+  const shipment = db.prepare('SELECT * FROM shipments WHERE id = ?').get(id)
+  res.status(201).json({ shipment })
+})
+
+businessOpsRouter.patch('/shipments/:id', (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const current = db.prepare('SELECT id FROM shipments WHERE id = ?').get(id)
+  if (!current) throw new AppError(404, '物流记录不存在')
+  const body = shipmentSchema.partial().parse(req.body ?? {})
+  const columns: Record<string,string> = { carrier:'carrier',trackingNumber:'tracking_number',shippingMethod:'shipping_method',status:'status',estimatedDelivery:'estimated_delivery',actualDelivery:'actual_delivery',notes:'notes' }
+  const sets:string[]=[]; const values:unknown[]=[]
+  for (const [key,value] of Object.entries(body)) { sets.push(columns[key]+' = ?'); values.push(value ?? null) }
+  if (sets.length) {
+    sets.push('updated_at = ?'); values.push(new Date().toISOString()); values.push(id)
+    db.prepare(`UPDATE shipments SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+  }
+  res.json({ shipment: db.prepare('SELECT * FROM shipments WHERE id = ?').get(id) })
+})
+
+businessOpsRouter.post('/orders/:id/payments', (req: Request, res: Response) => {
+  const order = ensureOrder(String(req.params.id))
+  const body = paymentSchema.parse(req.body ?? {})
+  const id = randomUUID()
+  const now = new Date().toISOString()
+  db.prepare('INSERT INTO payments (id,order_id,amount,payment_method,payment_date,notes,created_at) VALUES (?,?,?,?,?,?,?)')
+    .run(id,order.id,body.amount,body.paymentMethod,body.paymentDate ?? now,body.notes,now)
+  const paid = db.prepare('SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE order_id = ?').get(order.id) as {total:number}
+  const orderRow = db.prepare('SELECT total_amount FROM orders WHERE id = ?').get(order.id) as {total_amount:number}
+  const paymentStatus = paid.total >= orderRow.total_amount ? 'paid' : paid.total > 0 ? 'partial' : 'unpaid'
+  db.prepare('UPDATE orders SET payment_status = ?, updated_at = ? WHERE id = ?').run(paymentStatus,now,order.id)
+  res.status(201).json({ payment: db.prepare('SELECT * FROM payments WHERE id = ?').get(id), paidAmount: Number(paid.total), paymentStatus })
+})
+
+businessOpsRouter.post('/orders/:id/after-sales', (req: Request, res: Response) => {
+  const order = ensureOrder(String(req.params.id))
+  const body = afterSalesSchema.parse(req.body ?? {})
+  const id = randomUUID()
+  const now = new Date().toISOString()
+  db.prepare('INSERT INTO after_sales (id,order_id,customer_id,type,status,description,resolution,refund_amount,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(id,order.id,order.customer_id,body.type,body.status,body.description,body.resolution || null,body.refundAmount ?? 0,now,now)
+  res.status(201).json({ afterSale: db.prepare('SELECT * FROM after_sales WHERE id = ?').get(id) })
+})
+
+businessOpsRouter.patch('/after-sales/:id', (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const current = db.prepare('SELECT id FROM after_sales WHERE id = ?').get(id)
+  if (!current) throw new AppError(404, '售后记录不存在')
+  const body = afterSalesSchema.partial().parse(req.body ?? {})
+  const columns: Record<string,string> = { type:'type',status:'status',description:'description',resolution:'resolution',refundAmount:'refund_amount' }
+  const sets:string[]=[]; const values:unknown[]=[]
+  for (const [key,value] of Object.entries(body)) { sets.push(columns[key]+' = ?'); values.push(value ?? null) }
+  if (sets.length) {
+    sets.push('updated_at = ?'); values.push(new Date().toISOString()); values.push(id)
+    db.prepare(`UPDATE after_sales SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+  }
+  res.json({ afterSale: db.prepare('SELECT * FROM after_sales WHERE id = ?').get(id) })
+})
