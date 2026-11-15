@@ -199,7 +199,7 @@ businessOpsRouter.get('/performance', (_req: Request, res: Response) => {
       orderId:r.id, orderNumber:r.order_number, customerName:r.customer_name, status:r.status,
       paymentStatus:r.payment_status, revenueUsd:revenue, costUsd, profitUsd:profit,
       margin:profit == null || revenue <= 0 ? null : profit / revenue * 100,
-      commission:profit == null ? null : profit * Number(r.commission_rate ?? 0.4),
+      commission:profit == null ? null : Math.max(0, profit) * Number(r.commission_rate ?? 0.4),
       createdAt:r.created_at, costRecorded:complete,
     }
   })
