@@ -262,14 +262,16 @@ businessOpsRouter.post('/orders/:id/shipments', (req: Request, res: Response) =>
   const id = randomUUID()
   const now = new Date().toISOString()
   db.prepare(`INSERT INTO shipments (id,order_id,tracking_number,carrier,shipping_method,status,estimated_delivery,actual_delivery,notes,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id,order.id,body.trackingNumber || null,body.carrier || null,body.shippingMethod,body.status,body.estimatedDelivery ?? null,body.actualDelivery ?? null,body.notes,now,now)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id,order.id,body.trackingNumber || null,body.carrier || null,body.shippingMethod,body.status,body.estimatedDelivery ?? null,body.actualDelivery ?? (body.status==='delivered'?now:null),body.notes,now,now)
+  if (body.status === 'shipped' || body.status === 'in_transit') db.prepare("UPDATE orders SET status='shipped',updated_at=? WHERE id=?").run(now,order.id)
+  if (body.status === 'delivered') db.prepare("UPDATE orders SET status='delivered',updated_at=? WHERE id=?").run(now,order.id)
   const shipment = db.prepare('SELECT * FROM shipments WHERE id = ?').get(id)
   res.status(201).json({ shipment })
 })
 
 businessOpsRouter.patch('/shipments/:id', (req: Request, res: Response) => {
   const id = String(req.params.id)
-  const current = db.prepare('SELECT id FROM shipments WHERE id = ?').get(id)
+  const current = db.prepare('SELECT id,order_id FROM shipments WHERE id = ?').get(id) as {id:string;order_id:string}|undefined
   if (!current) throw new AppError(404, '物流记录不存在')
   const body = shipmentSchema.partial().parse(req.body ?? {})
   const columns: Record<string,string> = { carrier:'carrier',trackingNumber:'tracking_number',shippingMethod:'shipping_method',status:'status',estimatedDelivery:'estimated_delivery',actualDelivery:'actual_delivery',notes:'notes' }
@@ -279,18 +281,26 @@ businessOpsRouter.patch('/shipments/:id', (req: Request, res: Response) => {
     sets.push('updated_at = ?'); values.push(new Date().toISOString()); values.push(id)
     db.prepare(`UPDATE shipments SET ${sets.join(', ')} WHERE id = ?`).run(...values)
   }
+  const now = new Date().toISOString()
+  if (body.status === 'shipped' || body.status === 'in_transit') db.prepare("UPDATE orders SET status='shipped',updated_at=? WHERE id=?").run(now,current.order_id)
+  if (body.status === 'delivered') {
+    db.prepare("UPDATE shipments SET actual_delivery=COALESCE(actual_delivery,?) WHERE id=?").run(now,id)
+    db.prepare("UPDATE orders SET status='delivered',updated_at=? WHERE id=?").run(now,current.order_id)
+  }
   res.json({ shipment: db.prepare('SELECT * FROM shipments WHERE id = ?').get(id) })
 })
 
 businessOpsRouter.post('/orders/:id/payments', (req: Request, res: Response) => {
   const order = ensureOrder(String(req.params.id))
   const body = paymentSchema.parse(req.body ?? {})
+  const paidBefore = db.prepare('SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE order_id = ?').get(order.id) as {total:number}
+  const orderRow = db.prepare('SELECT total_amount FROM orders WHERE id = ?').get(order.id) as {total_amount:number}
+  if (Number(paidBefore.total) + body.amount > Number(orderRow.total_amount) + 0.01) throw new AppError(400, '本次收款超过订单剩余应收金额')
   const id = randomUUID()
   const now = new Date().toISOString()
   db.prepare('INSERT INTO payments (id,order_id,amount,payment_method,payment_date,notes,created_at) VALUES (?,?,?,?,?,?,?)')
     .run(id,order.id,body.amount,body.paymentMethod,body.paymentDate ?? now,body.notes,now)
   const paid = db.prepare('SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE order_id = ?').get(order.id) as {total:number}
-  const orderRow = db.prepare('SELECT total_amount FROM orders WHERE id = ?').get(order.id) as {total_amount:number}
   const paymentStatus = paid.total >= orderRow.total_amount ? 'paid' : paid.total > 0 ? 'partial' : 'unpaid'
   db.prepare('UPDATE orders SET payment_status = ?, updated_at = ? WHERE id = ?').run(paymentStatus,now,order.id)
   res.status(201).json({ payment: db.prepare('SELECT * FROM payments WHERE id = ?').get(id), paidAmount: Number(paid.total), paymentStatus })
