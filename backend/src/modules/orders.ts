@@ -16,6 +16,7 @@ const orderSchema = z.object({
   depositAmount: z.number().optional(),
   balanceAmount: z.number().optional(),
   notes: z.string().max(1000).optional(),
+  inquiryId: z.string().optional(),
 })
 
 const orderItemSchema = z.object({
@@ -35,6 +36,7 @@ interface OrderRow {
   deposit_amount: number | null
   balance_amount: number | null
   notes: string | null
+  inquiry_id: string | null
   created_at: string
   updated_at: string
 }
@@ -61,6 +63,7 @@ function rowToOrder(r: OrderRow): Order {
     depositAmount: r.deposit_amount ?? undefined,
     balanceAmount: r.balance_amount ?? undefined,
     notes: r.notes ?? undefined,
+    inquiryId: r.inquiry_id ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -141,6 +144,13 @@ ordersRouter.post('/', async (req: Request, res: Response) => {
     throw new AppError(404, '客户不存在')
   }
 
+  // 如果订单来自询盘，验证询盘存在且属于同一客户。
+  if (body.inquiryId) {
+    const inquiry = db.prepare('SELECT id, customer_id FROM inquiries WHERE id = ?').get(body.inquiryId) as { id: string; customer_id: string } | undefined
+    if (!inquiry) throw new AppError(404, '来源询盘不存在')
+    if (inquiry.customer_id !== body.customerId) throw new AppError(400, '来源询盘与订单客户不一致')
+  }
+
   // 验证订单号是否已存在
   const existingOrder = db.prepare('SELECT id FROM orders WHERE order_number = ?').get(body.orderNumber)
   if (existingOrder) {
@@ -161,8 +171,8 @@ ordersRouter.post('/', async (req: Request, res: Response) => {
 
   // 创建订单
   db.prepare(
-    `INSERT INTO orders (id, customer_id, order_number, status, payment_status, total_amount, deposit_amount, balance_amount, notes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO orders (id, customer_id, order_number, status, payment_status, total_amount, deposit_amount, balance_amount, notes, inquiry_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     body.customerId,
@@ -173,9 +183,15 @@ ordersRouter.post('/', async (req: Request, res: Response) => {
     body.depositAmount ?? null,
     body.balanceAmount ?? null,
     body.notes ?? null,
+    body.inquiryId ?? null,
     now,
     now
   )
+
+  // 从询盘创建订单后，将询盘标记为已转订单。
+  if (body.inquiryId) {
+    db.prepare("UPDATE inquiries SET status = 'converted', updated_at = ? WHERE id = ?").run(now, body.inquiryId)
+  }
 
   // 创建订单明细
   for (const item of items) {
