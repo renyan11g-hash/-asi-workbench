@@ -342,7 +342,7 @@ export type ProductStatus = 'sourced' | 'listed' | 'archived' | 'trashed' | 'pen
 
 export interface Product {
   id: string
-  /** Workbench 内部稳定产品编号；历史字段 code 保留兼容 */
+  /** 历史业务编号（可能随归档流程变化）；稳定 GLS 编号见 glsCode */
   code: string
   /** Workbench 内部稳定 GLS 编号；未分配时为空 */
   glsCode?: string
