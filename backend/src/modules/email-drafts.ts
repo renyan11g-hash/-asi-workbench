@@ -224,7 +224,7 @@ emailDraftsRouter.post('/ai-generate', async (req: Request, res: Response) => {
         if (product.listing) {
           try {
             const listing = JSON.parse(product.listing) as { title?: string; summary?: string }
-            productInfo = [listing.title, listing.summary].filter(Boolean).join('\\n')
+            productInfo = [listing.title, listing.summary].filter(Boolean).join('\n')
           } catch {
             productInfo = product.source_title
           }
@@ -255,7 +255,7 @@ Original Inquiry:
 Subject: ${inquirySubject || 'General inquiry'}
 Content: ${inquiryContent || 'No specific inquiry provided'}
 
-${productInfo ? `Product information from Workbench records (not a source of price or delivery promises unless explicitly stated):\\n${productInfo}` : 'No product information is recorded.'}
+${productInfo ? `Product information from Workbench records (not a source of price or delivery promises unless explicitly stated):\n${productInfo}` : 'No product information is recorded.'}
 
 Draft a professional reply. Address the inquiry, answer only what the recorded facts support, and clearly leave unknown commercial details for manual confirmation. Include a polite next step and closing.
 
