@@ -180,7 +180,8 @@ businessOpsRouter.get('/performance', (_req: Request, res: Response) => {
   const rows = db.prepare(`
     SELECT o.id,o.order_number,o.total_amount,o.status,o.payment_status,o.created_at,
       c.name AS customer_name, f.product_cost_cny,f.customization_cost_cny,f.domestic_shipping_cny,
-      f.international_shipping_usd,f.other_cost_usd,f.exchange_rate,f.commission_rate
+      f.international_shipping_usd,f.other_cost_usd,f.exchange_rate,f.commission_rate,
+      COALESCE((SELECT SUM(a.refund_amount) FROM after_sales a WHERE a.order_id=o.id),0) AS refund_usd
     FROM orders o JOIN customers c ON c.id=o.customer_id
     LEFT JOIN order_financials f ON f.order_id=o.id
     WHERE o.status != 'cancelled' ORDER BY o.created_at DESC LIMIT 300
@@ -194,20 +195,21 @@ businessOpsRouter.get('/performance', (_req: Request, res: Response) => {
         + Number(r.international_shipping_usd) + Number(r.other_cost_usd)
       : null
     const revenue = Number(r.total_amount || 0)
-    const profit = costUsd == null ? null : revenue - costUsd
+    const refundUsd = Number(r.refund_usd || 0)
+    const profit = costUsd == null ? null : revenue - costUsd - refundUsd
     return {
       orderId:r.id, orderNumber:r.order_number, customerName:r.customer_name, status:r.status,
-      paymentStatus:r.payment_status, revenueUsd:revenue, costUsd, profitUsd:profit,
+      paymentStatus:r.payment_status, revenueUsd:revenue, costUsd, refundUsd, profitUsd:profit,
       margin:profit == null || revenue <= 0 ? null : profit / revenue * 100,
       commission:profit == null ? null : Math.max(0, profit) * Number(r.commission_rate ?? 0.4),
       createdAt:r.created_at, costRecorded:complete,
     }
   })
   const complete = details.filter(d => d.costRecorded)
-  const sum = (key: 'revenueUsd'|'costUsd'|'profitUsd'|'commission') => complete.reduce((n,d)=>n+Number(d[key] ?? 0),0)
+  const sum = (key: 'revenueUsd'|'costUsd'|'refundUsd'|'profitUsd'|'commission') => complete.reduce((n,d)=>n+Number(d[key] ?? 0),0)
   res.json({
     summary:{ orderCount:details.length, costRecordedCount:complete.length, untrackedCount:details.length-complete.length,
-      revenueUsd:sum('revenueUsd'), costUsd:sum('costUsd'), profitUsd:sum('profitUsd'), commissionUsd:sum('commission') },
+      revenueUsd:sum('revenueUsd'), costUsd:sum('costUsd'), refundUsd:sum('refundUsd'), profitUsd:sum('profitUsd'), commissionUsd:sum('commission') },
     details,
     note:'利润和提成只对已录入完整成本及汇率的订单计算；未录入成本的订单不会被当作零成本。',
   })
