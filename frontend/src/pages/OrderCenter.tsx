@@ -939,6 +939,11 @@ function OrdersTab({ products, initialInquiry, onInitialInquiryHandled, onChange
     queryFn: () => orderApi.getOrder(detailOrderId as string),
     enabled: !!detailOrderId,
   })
+  const { data: orderQuotes, isLoading: quotesLoading } = useQuery({
+    queryKey: ['oc-order-quotes', orderDetail?.order.inquiryId],
+    queryFn: () => businessOpsApi.listInquiryQuotes(orderDetail?.order.inquiryId as string),
+    enabled: !!detailOrderId && !!orderDetail?.order.inquiryId,
+  })
   const [form, setForm] = useState({
     customerId: '',
     inquiryId: '',
@@ -1172,6 +1177,26 @@ function OrdersTab({ products, initialInquiry, onInitialInquiryHandled, onChange
                 </div>
               })}
               {orderDetail.items?.length === 0 && <p className="text-xs text-slate-400">暂无产品明细</p>}
+            </div>
+            <div className="space-y-2 border-t pt-3">
+              <div className="font-semibold">关联询盘的历史报价</div>
+              {quotesLoading ? <p className="text-xs text-slate-400">报价记录加载中…</p> : !orderDetail.order.inquiryId ? <p className="text-xs text-slate-400">该订单没有关联来源询盘，因此没有可追溯的报价记录。</p> : (orderQuotes ?? []).length === 0 ? <p className="text-xs text-slate-400">来源询盘暂无历史报价记录。</p> : (orderQuotes ?? []).map((quote: any) => (
+                <div key={quote.id} className="rounded-lg border p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium">{quote.quote_number}</span>
+                    <Badge variant="secondary">{({ draft: '草稿', sent: '已发送', accepted: '已接受', rejected: '已拒绝', expired: '已过期' } as Record<string, string>)[quote.status] ?? quote.status}</Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-slate-600">{quote.currency} {Number(quote.amount).toFixed(2)} · {quote.quantity} pcs</div>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
+                    {quote.shipping_method && <span>运输：{quote.shipping_method}</span>}
+                    {quote.production_time && <span>生产：{quote.production_time}</span>}
+                    {quote.transit_time && <span>运输时效：{quote.transit_time}</span>}
+                    {quote.valid_until && <span>有效期至：{fmtDate(quote.valid_until)}</span>}
+                  </div>
+                  {quote.notes && <p className="mt-2 whitespace-pre-wrap text-xs text-slate-600">{quote.notes}</p>}
+                  <p className="mt-2 text-[11px] text-slate-400">报价创建：{fmtDate(quote.created_at)}</p>
+                </div>
+              ))}
             </div>
             <div className="space-y-1 border-t pt-3 text-right">
               <div>订单总额：<span className="font-semibold">{fmtUsd(orderDetail.order.totalAmount)}</span></div>
