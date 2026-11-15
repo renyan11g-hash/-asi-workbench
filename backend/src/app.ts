@@ -29,6 +29,7 @@ import { productSpecsRouter } from './modules/product-specs'
 import { productionRouter } from './modules/production'
 import { libraryRouter } from './modules/library'
 import { adminRouter } from './modules/admin'
+import { businessOpsRouter } from './modules/business-ops'
 
 export const createApp = (): Application => {
   const app = express()
@@ -74,6 +75,7 @@ export const createApp = (): Application => {
   app.use(`${env.API_PREFIX}/supplier-communications`, supplierCommunicationsRouter)
   app.use(`${env.API_PREFIX}/email-drafts`, emailDraftsRouter)
   app.use(`${env.API_PREFIX}/dashboard`, dashboardRouter)
+  app.use(`${env.API_PREFIX}/business-ops`, businessOpsRouter)
   app.use(`${env.API_PREFIX}/product-images`, productImagesRouter)
   // 视觉风格中心：参考图库 / 结构化风格配置 / 自动匹配（图片真身进 DB，长期复用）
   app.use(`${env.API_PREFIX}/visual-styles`, visualStylesRouter)
