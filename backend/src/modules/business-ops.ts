@@ -72,7 +72,7 @@ const taskSchema = z.object({
   taskType: z.enum(['follow_up', 'quote', 'supplier', 'production', 'shipping', 'after_sales', 'other']).default('follow_up'),
   entityType: z.enum(['customer', 'inquiry', 'order', 'product', 'supplier']).optional(),
   entityId: z.string().max(100).optional(),
-  dueAt: z.string().min(1),
+  dueAt: z.string().datetime(),
   priority: z.enum(['low', 'normal', 'high']).default('normal'),
   status: z.enum(['open', 'done', 'cancelled']).default('open'),
 })
