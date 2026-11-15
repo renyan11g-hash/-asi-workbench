@@ -90,8 +90,8 @@ export default function BusinessHub() {
         <div className="rounded-lg bg-slate-50 p-3"><div className="text-xs text-slate-500">预估提成</div><div className="mt-1 text-xl font-semibold">{p?money(p.summary.commissionUsd):'—'}</div></div>
       </div>
       {p?.note&&<p className="mt-3 text-xs text-amber-700">{p.note}</p>}
-      <div className="mt-4 overflow-x-auto"><table className="w-full text-left text-xs"><thead className="border-b text-slate-500"><tr><th className="py-2">订单号</th><th>客户</th><th>销售额</th><th>成本</th><th>毛利润</th><th>提成</th><th>成本状态</th></tr></thead><tbody>
-        {(p?.details??[]).slice(0,8).map((r:any)=><tr key={r.orderId} className="border-b last:border-0"><td className="py-2 font-medium">{r.orderNumber}</td><td>{r.customerName}</td><td>{money(r.revenueUsd)}</td><td>{r.costRecorded?money(r.costUsd):'—'}</td><td>{r.profitUsd==null?'—':money(r.profitUsd)}</td><td>{r.commission==null?'—':money(r.commission)}</td><td>{r.costRecorded?'已录入':'待补成本'}</td></tr>)}
+      <div className="mt-4 overflow-x-auto"><table className="w-full text-left text-xs"><thead className="border-b text-slate-500"><tr><th className="py-2">订单号</th><th>客户</th><th>销售额</th><th>成本</th><th>退款</th><th>毛利润</th><th>提成</th><th>成本状态</th></tr></thead><tbody>
+        {(p?.details??[]).slice(0,8).map((r:any)=><tr key={r.orderId} className="border-b last:border-0"><td className="py-2 font-medium">{r.orderNumber}</td><td>{r.customerName}</td><td>{money(r.revenueUsd)}</td><td>{r.costRecorded?money(r.costUsd):'—'}</td><td>{money(r.refundUsd)}</td><td>{r.profitUsd==null?'—':money(r.profitUsd)}</td><td>{r.commission==null?'—':money(r.commission)}</td><td>{r.costRecorded?'已录入':'待补成本'}</td></tr>)}
       </tbody></table></div>
     </section>
   </div>
