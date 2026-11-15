@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Building2,
@@ -1510,7 +1510,9 @@ function CustomerProfileButton({ customer, onChanged }: { customer: Customer; on
   const save = useMutation({
     mutationFn:async()=>{
       const saved=await businessOpsApi.saveCustomerProfile(customer.id,{tier,source,preferences,nextFollowUpAt:nextFollowUpAt?new Date(nextFollowUpAt).toISOString():null})
-      if(nextFollowUpAt){
+      const oldFollowUp=profile.data?.next_follow_up_at
+      const changedFollowUp=nextFollowUpAt && (!oldFollowUp || new Date(oldFollowUp).getTime()!==new Date(nextFollowUpAt).getTime())
+      if(changedFollowUp){
         await businessOpsApi.createTask({
           title:`跟进客户：${customer.name}`,
           description:preferences || '按客户档案中的偏好继续跟进',
@@ -1532,11 +1534,15 @@ function CustomerProfileButton({ customer, onChanged }: { customer: Customer; on
     },
     onError:(err)=>toast.error(getErrorMessage(err))
   })
-  const load=()=>{
-    setOpen(true)
+  useEffect(()=>{
+    if(!open || !profile.data) return
     const p=profile.data
-    if(p){setTier(p.tier??'C');setSource(p.source??'');setPreferences(p.preferences??'');setNextFollowUpAt(p.next_follow_up_at?new Date(p.next_follow_up_at).toISOString().slice(0,16):'')}
-  }
+    setTier(p.tier??'C')
+    setSource(p.source??'')
+    setPreferences(p.preferences??'')
+    setNextFollowUpAt(p.next_follow_up_at?new Date(p.next_follow_up_at).toISOString().slice(0,16):'')
+  },[open,profile.data])
+  const load=()=>setOpen(true)
   return <>
     <Button variant="ghost" size="sm" onClick={load}>画像</Button>
     <Dialog open={open} onOpenChange={setOpen}>
