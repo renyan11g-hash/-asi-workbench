@@ -599,6 +599,7 @@ export interface Order {
   /** 尾款（USD） */
   balanceAmount?: number
   notes?: string
+  inquiryId?: string
   createdAt: string
   updatedAt: string
 }

@@ -527,9 +527,11 @@ CREATE TABLE IF NOT EXISTS orders (
   deposit_amount REAL,
   balance_amount REAL,
   notes TEXT,
+  inquiry_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  FOREIGN KEY (customer_id) REFERENCES customers(id)
+  FOREIGN KEY (customer_id) REFERENCES customers(id),
+  FOREIGN KEY (inquiry_id) REFERENCES inquiries(id)
 );
 
 CREATE TABLE IF NOT EXISTS order_items (
@@ -748,6 +750,8 @@ ensureTableColumn('inquiries', 'ai_analysis', 'ai_analysis TEXT')
 ensureTableColumn('inquiries', 'ai_analysis_manual', 'ai_analysis_manual INTEGER NOT NULL DEFAULT 0')
 ensureTableColumn('orders', 'deposit_amount', 'deposit_amount REAL')
 ensureTableColumn('orders', 'balance_amount', 'balance_amount REAL')
+ensureTableColumn('orders', 'inquiry_id', 'inquiry_id TEXT')
+tryExec('orders.inquiry_id index', () => db.exec('CREATE INDEX IF NOT EXISTS idx_orders_inquiry ON orders(inquiry_id)'))
 
 // 批量任务：老库补 phase 列（表是后建的，线上可能已存在旧结构）
 ensureTableColumn('batch_jobs', 'phase', "phase TEXT NOT NULL DEFAULT 'draft'")
