@@ -206,6 +206,9 @@ export const api = {
       evaluation?: Evaluation | null
       listing?: Listing | null
       status?: ProductStatus
+      platformName?: string
+      platformProductId?: string
+      platformUrl?: string
       /** RPA 库产品：确认修改后带 force 重试（会生成新版本） */
       force?: boolean
     }

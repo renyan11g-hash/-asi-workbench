@@ -367,8 +367,14 @@ export interface ProductImage {
 
 export interface Product {
   id: string
-  /** 对外产品编号（RPA0001）：一个产品从录入到上架始终同一个编号 */
+  /** Workbench 内部稳定产品编号；历史字段 code 保留兼容 */
   code: string
+  /** 当前平台名称，例如 Ripple */
+  platformName?: string
+  /** 当前平台自己的商品编号 */
+  platformProductId?: string
+  /** 当前平台商品详情链接 */
+  platformUrl?: string
   /** 关联的选品评估草稿 id（评估库 ↔ 产品库 同步） */
   draftId: string | null
   source: SourceInfo

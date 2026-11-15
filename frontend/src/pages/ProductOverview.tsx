@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Search, Package, Sparkles, MessageCircle, Copy, Loader2, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,11 @@ export default function ProductOverview() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [question, setQuestion] = useState('')
   const [replying, setReplying] = useState(false)
+  const [platformName, setPlatformName] = useState('')
+  const [platformProductId, setPlatformProductId] = useState('')
+  const [platformUrl, setPlatformUrl] = useState('')
+  const [savingPlatform, setSavingPlatform] = useState(false)
+  const queryClient = useQueryClient()
 
   const { data: products = [], isLoading } = useQuery({
     queryKey: ['products', 'overview'],
@@ -41,6 +46,34 @@ export default function ProductOverview() {
 
   const selected = filtered.find((p) => p.id === selectedId) ?? products.find((p) => p.id === selectedId) ?? filtered[0] ?? null
   const selectedComms = selected ? communications.filter((c) => c.productId === selected.id) : []
+
+  useEffect(() => {
+    setPlatformName(selected?.platformName ?? '')
+    setPlatformProductId(selected?.platformProductId ?? '')
+    setPlatformUrl(selected?.platformUrl ?? '')
+  }, [selected?.id, selected?.platformName, selected?.platformProductId, selected?.platformUrl])
+
+  const savePlatformInfo = async () => {
+    if (!selected || savingPlatform) return
+    if (platformUrl.trim() && !/^https?:\\/\\//i.test(platformUrl.trim())) {
+      toast.error('平台链接需要以 http:// 或 https:// 开头')
+      return
+    }
+    setSavingPlatform(true)
+    try {
+      await api.updateProduct(selected.id, {
+        platformName: platformName.trim(),
+        platformProductId: platformProductId.trim(),
+        platformUrl: platformUrl.trim(),
+      })
+      await queryClient.invalidateQueries({ queryKey: ['products', 'overview'] })
+      toast.success('平台商品信息已保存')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setSavingPlatform(false)
+    }
+  }
 
   const askAssistant = async () => {
     if (!selected || !question.trim() || replying) return
@@ -116,6 +149,7 @@ export default function ProductOverview() {
                     <p className="mt-1 text-xs text-slate-500">{selected.source.sourceTitle}</p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {selected.source.sourceUrl && <Button size="sm" variant="outline" onClick={() => window.open(selected.source.sourceUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-1 h-3.5 w-3.5" />1688 来源</Button>}
+                      {selected.platformUrl && <Button size="sm" variant="outline" onClick={() => window.open(selected.platformUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-1 h-3.5 w-3.5" />平台商品</Button>}
                       <Button size="sm" variant="outline" onClick={() => copyText(selected.code || '')}><Copy className="mr-1 h-3.5 w-3.5" />复制 GLS</Button>
                       <Button size="sm" onClick={() => window.location.href = `/listing/${selected.id}`}>打开产品档案</Button>
                     </div>
@@ -131,8 +165,14 @@ export default function ProductOverview() {
                   <Info label="重量" value={selected.source.weightG != null ? `${selected.source.weightG} g` : '待补充'} />
                   <Info label="每箱数量" value={selected.source.pcsPerCarton ? `${selected.source.pcsPerCarton} pcs` : '待补充'} />
                 </div>
-                <div className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  ASI / ESP 商品链接：当前产品资料尚无独立链接字段，暂不从 1688 来源链接冒充。后续单独补充平台链接字段。
+                <div className="mt-4 space-y-3 rounded-lg border border-slate-200 p-3">
+                  <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-medium">平台商品信息</h3>{selected.platformUrl && <a href={selected.platformUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline"><ExternalLink className="h-3 w-3" />打开平台链接</a>}</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="space-y-1 text-xs text-slate-500">平台名称<Input value={platformName} onChange={(e) => setPlatformName(e.target.value)} placeholder="例如 Ripple" /></label>
+                    <label className="space-y-1 text-xs text-slate-500">平台商品编号<Input value={platformProductId} onChange={(e) => setPlatformProductId(e.target.value)} placeholder="平台上的商品编号" /></label>
+                  </div>
+                  <label className="block space-y-1 text-xs text-slate-500">平台商品链接<Input value={platformUrl} onChange={(e) => setPlatformUrl(e.target.value)} placeholder="https://…" /></label>
+                  <div className="flex items-center justify-between gap-2"><span className="text-xs text-slate-500">空字段会保留为空，不会用 1688 链接代替。</span><Button size="sm" onClick={() => void savePlatformInfo()} disabled={savingPlatform}>{savingPlatform ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}保存平台信息</Button></div>
                 </div>
               </section>
 

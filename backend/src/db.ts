@@ -673,6 +673,10 @@ ensureColumn('selection_reason', 'selection_reason TEXT')
 // 产品编号（RPA0001 这样的对外编号）：一个产品从录入到上架始终是同一个编号，
 // 流水线上认编号比认 UUID 方便，也方便和 Excel / ASI ESP 里的记录对上。
 ensureColumn('code', "code TEXT NOT NULL DEFAULT ''")
+// 平台商品位置与 GLS 内部产品身份分开保存；历史产品默认空，不推断或伪造链接。
+ensureColumn('platform_name', "platform_name TEXT NOT NULL DEFAULT ''")
+ensureColumn('platform_product_id', "platform_product_id TEXT NOT NULL DEFAULT ''")
+ensureColumn('platform_url', "platform_url TEXT NOT NULL DEFAULT ''")
 
 // 英文标题单独存一列：流水线列表要显示「英文文案写到哪了」，
 // 但要显示英文标题就得把整条 listing JSON 都读出来（一条几 KB、几百条就是几 MB）。
