@@ -206,6 +206,9 @@ export const api = {
       evaluation?: Evaluation | null
       listing?: Listing | null
       status?: ProductStatus
+      platformName?: string
+      platformProductId?: string
+      platformUrl?: string
       /** RPA 库产品：确认修改后带 force 重试（会生成新版本） */
       force?: boolean
     }
@@ -2266,4 +2269,11 @@ export const businessOpsApi = {
     const { data } = await apiClient.patch(`/business-ops/after-sales/${id}`,patch)
     return data
   },
+}
+
+
+// 独立导出供应商沟通列表查询，供轻量业务页面复用。
+export async function listSupplierCommunications(params?: { productId?: string }): Promise<SupplierCommunication[]> {
+  const { data } = await apiClient.get<{ communications: SupplierCommunication[] }>('/supplier-communications', { params })
+  return data.communications
 }

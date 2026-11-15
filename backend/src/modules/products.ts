@@ -67,6 +67,9 @@ const updateSchema = z.object({
   evaluation: z.any().nullable().optional(),
   listing: z.any().nullable().optional(),
   status: z.enum(['sourced', 'listed', 'archived', 'pending_review']).optional(),
+  platformName: z.string().trim().max(80).optional(),
+  platformProductId: z.string().trim().max(120).optional(),
+  platformUrl: z.string().trim().max(2000).optional(),
 })
 
 type SourceInput = z.infer<typeof sourceSchema>
@@ -101,6 +104,10 @@ export function toSourceInfo(s: SourceInput): SourceInfo {
 interface Row {
   id: string
   code: string
+  gls_code?: string | null
+  platform_name?: string | null
+  platform_product_id?: string | null
+  platform_url?: string | null
   draft_id: string | null
   source_title: string
   source_url: string
@@ -165,6 +172,10 @@ function rowToProduct(r: Row): Product {
   return {
     id: r.id,
     code: r.code ?? '',
+    glsCode: r.gls_code ?? '',
+    platformName: r.platform_name ?? '',
+    platformProductId: r.platform_product_id ?? '',
+    platformUrl: r.platform_url ?? '',
     draftId: r.draft_id ?? null,
     source: {
       sourceTitle: r.source_title,
@@ -1547,6 +1558,16 @@ productsRouter.patch('/:id', async (req: Request, res: Response) => {
   const nowIso = new Date().toISOString()
 
   updateProductRow(id, source, evaluation, listing, nextStatus, nowIso)
+  // 平台 Listing 信息独立于源资料和文案保存，编辑 source/listing 时不会覆盖。
+  const platformUpdates: string[] = []
+  const platformParams: unknown[] = []
+  if (patch.platformName !== undefined) { platformUpdates.push('platform_name = ?'); platformParams.push(patch.platformName) }
+  if (patch.platformProductId !== undefined) { platformUpdates.push('platform_product_id = ?'); platformParams.push(patch.platformProductId) }
+  if (patch.platformUrl !== undefined) { platformUpdates.push('platform_url = ?'); platformParams.push(patch.platformUrl) }
+  if (platformUpdates.length) {
+    platformParams.push(nowIso, id)
+    db.prepare(`UPDATE products SET ${platformUpdates.join(', ')}, updated_at = ? WHERE id = ?`).run(...platformParams)
+  }
   if (nextStatus === 'pending_review') {
     db.prepare("UPDATE products SET review_state='pending', updated_at=? WHERE id=?").run(nowIso, id)
   }

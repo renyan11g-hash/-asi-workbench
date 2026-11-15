@@ -367,8 +367,16 @@ export interface ProductImage {
 
 export interface Product {
   id: string
-  /** 对外产品编号（RPA0001）：一个产品从录入到上架始终同一个编号 */
+  /** 历史业务编号（可能随归档流程变化）；稳定 GLS 编号见 glsCode */
   code: string
+  /** Workbench 内部稳定 GLS 编号；未分配时为空 */
+  glsCode?: string
+  /** 当前平台名称，例如 Ripple */
+  platformName?: string
+  /** 当前平台自己的商品编号 */
+  platformProductId?: string
+  /** 当前平台商品详情链接 */
+  platformUrl?: string
   /** 关联的选品评估草稿 id（评估库 ↔ 产品库 同步） */
   draftId: string | null
   source: SourceInfo
