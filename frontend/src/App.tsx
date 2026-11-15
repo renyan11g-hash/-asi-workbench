@@ -71,12 +71,8 @@ function App() {
           <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route element={<AppLayout />}>
-              <Route
-                index
-                data-genie-key="Dashboard"
-                data-genie-title="工作台概览"
-                element={<PageTransition transition="fade"><Dashboard /></PageTransition>}
-              />
+              <Route index element={<Navigate to="/business-ops" replace />} />
+              <Route path="product-dashboard" data-genie-key="Dashboard" data-genie-title="产品工作总览" element={<PageTransition transition="fade"><Dashboard /></PageTransition>} />
               <Route
                 path="sourcing-suggest"
                 data-genie-key="SourcingSuggest"
