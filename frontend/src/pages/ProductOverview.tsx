@@ -39,7 +39,8 @@ export default function ProductOverview() {
     const q = keyword.trim().toLowerCase()
     if (!q) return products
     return products.filter((p) => [
-      p.code, p.source.sourceTitle, p.listing?.title, p.source.supplier,
+      p.code, p.platformName, p.platformProductId, p.platformUrl,
+      p.source.sourceTitle, p.listing?.title, p.source.supplier,
       p.source.sourceUrl, p.source.category, ...(p.source.sourceKeywords ?? []),
     ].some((v) => String(v ?? '').toLowerCase().includes(q)))
   }, [products, keyword])
@@ -55,9 +56,14 @@ export default function ProductOverview() {
 
   const savePlatformInfo = async () => {
     if (!selected || savingPlatform) return
-    if (platformUrl.trim() && !/^https?:\\/\\//i.test(platformUrl.trim())) {
-      toast.error('平台链接需要以 http:// 或 https:// 开头')
-      return
+    if (platformUrl.trim()) {
+      try {
+        const parsed = new URL(platformUrl.trim())
+        if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('invalid protocol')
+      } catch {
+        toast.error('请输入有效的 http:// 或 https:// 平台链接')
+        return
+      }
     }
     setSavingPlatform(true)
     try {
