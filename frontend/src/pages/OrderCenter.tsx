@@ -118,6 +118,10 @@ export default function OrderCenter() {
   const qc = useQueryClient()
   const [searchParams] = useSearchParams()
   const [tab, setTab] = useState(searchParams.get('tab') ?? 'dashboard')
+  useEffect(() => {
+    const requestedTab = searchParams.get('tab')
+    if (requestedTab) setTab(requestedTab)
+  }, [searchParams])
 
   const invalidate = (keys: string[]) => {
     for (const k of keys) void qc.invalidateQueries({ queryKey: [k] })
