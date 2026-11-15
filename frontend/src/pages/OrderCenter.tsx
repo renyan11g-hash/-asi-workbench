@@ -3,6 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Building2,
   ClipboardList,
+  Truck,
+  CreditCard,
+  LifeBuoy,
   Loader2,
   Mail,
   MessageSquare,
@@ -135,6 +138,7 @@ export default function OrderCenter() {
           <TabsTrigger value="customers"><Users className="mr-1 h-3.5 w-3.5" />客户管理</TabsTrigger>
           <TabsTrigger value="inquiries"><ClipboardList className="mr-1 h-3.5 w-3.5" />询盘管理</TabsTrigger>
           <TabsTrigger value="orders"><Building2 className="mr-1 h-3.5 w-3.5" />订单管理</TabsTrigger>
+          <TabsTrigger value="fulfillment"><Truck className="mr-1 h-3.5 w-3.5" />履约 / 收款 / 售后</TabsTrigger>
           <TabsTrigger value="communications"><MessageSquare className="mr-1 h-3.5 w-3.5" />供应商沟通</TabsTrigger>
           <TabsTrigger value="emails"><Mail className="mr-1 h-3.5 w-3.5" />邮件草稿</TabsTrigger>
         </TabsList>
@@ -150,6 +154,9 @@ export default function OrderCenter() {
         </TabsContent>
         <TabsContent value="orders" className="mt-4">
           <OrdersTab products={productList} onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
+        </TabsContent>
+        <TabsContent value="fulfillment" className="mt-4">
+          <FulfillmentTab onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
         </TabsContent>
         <TabsContent value="communications" className="mt-4">
           <CommunicationsTab products={productList} />
@@ -1558,4 +1565,112 @@ function CustomerProfileButton({ customer, onChanged }: { customer: Customer; on
       </DialogContent>
     </Dialog>
   </>
+}
+
+
+
+function FulfillmentTab({ onChanged }: { onChanged:()=>void }) {
+  const qc=useQueryClient()
+  const [orderId,setOrderId]=useState('')
+  const [carrier,setCarrier]=useState('')
+  const [trackingNumber,setTrackingNumber]=useState('')
+  const [shippingMethod,setShippingMethod]=useState<'air'|'sea'|'express'|'rail'|'other'>('sea')
+  const [shipmentStatus,setShipmentStatus]=useState<'pending'|'shipped'|'in_transit'|'delivered'|'exception'>('pending')
+  const [estimatedDelivery,setEstimatedDelivery]=useState('')
+  const [shipmentNotes,setShipmentNotes]=useState('')
+  const [paymentAmount,setPaymentAmount]=useState('')
+  const [paymentMethod,setPaymentMethod]=useState('Bank Transfer')
+  const [paymentDate,setPaymentDate]=useState(new Date().toISOString().slice(0,10))
+  const [paymentNotes,setPaymentNotes]=useState('')
+  const [afterType,setAfterType]=useState<'quality_issue'|'shipping_issue'|'shortage'|'wrong_item'|'refund'|'other'>('quality_issue')
+  const [afterDescription,setAfterDescription]=useState('')
+  const [afterResolution,setAfterResolution]=useState('')
+  const [refundAmount,setRefundAmount]=useState('0')
+  const orders=useQuery({queryKey:['oc-orders','all'],queryFn:()=>orderApi.listOrders()})
+  const fulfillment=useQuery({queryKey:['order-fulfillment',orderId],queryFn:()=>businessOpsApi.getOrderFulfillment(orderId),enabled:Boolean(orderId)})
+  const selected=(orders.data??[]).find(o=>o.id===orderId)
+  const refresh=()=>{
+    void qc.invalidateQueries({queryKey:['order-fulfillment',orderId]})
+    void qc.invalidateQueries({queryKey:['oc-orders']})
+    void qc.invalidateQueries({queryKey:['business-ops-performance']})
+    onChanged()
+  }
+  const shipment=useMutation({
+    mutationFn:()=>businessOpsApi.createShipment(orderId,{carrier,trackingNumber,shippingMethod,status:shipmentStatus,estimatedDelivery:estimatedDelivery?new Date(estimatedDelivery).toISOString():null,notes:shipmentNotes}),
+    onSuccess:()=>{toast.success('物流记录已保存');setCarrier('');setTrackingNumber('');setShipmentNotes('');refresh()},
+    onError:(e)=>toast.error(getErrorMessage(e))
+  })
+  const payment=useMutation({
+    mutationFn:()=>businessOpsApi.createPayment(orderId,{amount:Number(paymentAmount),paymentMethod,paymentDate:paymentDate?new Date(paymentDate).toISOString():null,notes:paymentNotes}),
+    onSuccess:(r:any)=>{toast.success(`收款已记录，累计收款 ${fmtUsd(r.paidAmount)}`);setPaymentAmount('');setPaymentNotes('');refresh()},
+    onError:(e)=>toast.error(getErrorMessage(e))
+  })
+  const afterSale=useMutation({
+    mutationFn:()=>businessOpsApi.createAfterSale(orderId,{type:afterType,status:'open',description:afterDescription,resolution:afterResolution,refundAmount:Number(refundAmount||0)}),
+    onSuccess:()=>{toast.success('售后记录已创建');setAfterDescription('');setAfterResolution('');setRefundAmount('0');refresh()},
+    onError:(e)=>toast.error(getErrorMessage(e))
+  })
+  const shipmentStatusMutation=useMutation({
+    mutationFn:({id,status}:{id:string;status:'pending'|'shipped'|'in_transit'|'delivered'|'exception'})=>businessOpsApi.updateShipment(id,{status}),
+    onSuccess:refresh,onError:(e)=>toast.error(getErrorMessage(e))
+  })
+  const afterStatusMutation=useMutation({
+    mutationFn:({id,status}:{id:string;status:'open'|'processing'|'resolved'|'closed'})=>businessOpsApi.updateAfterSale(id,{status}),
+    onSuccess:refresh,onError:(e)=>toast.error(getErrorMessage(e))
+  })
+  const statusLabels:Record<string,string>={pending:'待发货',shipped:'已发货',in_transit:'运输中',delivered:'已送达',exception:'异常'}
+  const afterLabels:Record<string,string>={open:'待处理',processing:'处理中',resolved:'已解决',closed:'已关闭'}
+  return <div className="space-y-4">
+    <SectionCard title="选择订单" hint="物流、收款和售后记录都绑定到具体订单">
+      <Select value={orderId} onValueChange={setOrderId}>
+        <SelectTrigger className="max-w-xl"><SelectValue placeholder="选择订单号 / 客户" /></SelectTrigger>
+        <SelectContent>{(orders.data??[]).map(o=><SelectItem key={o.id} value={o.id}>{o.orderNumber} · {fmtUsd(o.totalAmount)} · {o.status}</SelectItem>)}</SelectContent>
+      </Select>
+      {selected&&<p className="mt-2 text-xs text-slate-500">当前订单：{selected.orderNumber} · 收款状态：{PAYMENT_STATUS[selected.paymentStatus]?.label??selected.paymentStatus}</p>}
+    </SectionCard>
+    {!orderId?<div className="rounded-xl border border-dashed p-10 text-center text-sm text-slate-400">先选择一笔订单，再管理履约记录</div>:<>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <SectionCard title="物流管理" hint="可登记多段物流记录及追踪号">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div><Label>承运商</Label><Input value={carrier} onChange={e=>setCarrier(e.target.value)} placeholder="DHL / FedEx / Freight Forwarder"/></div>
+            <div><Label>追踪号</Label><Input value={trackingNumber} onChange={e=>setTrackingNumber(e.target.value)}/></div>
+            <div><Label>运输方式</Label><Select value={shippingMethod} onValueChange={v=>setShippingMethod(v as typeof shippingMethod)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="sea">海运</SelectItem><SelectItem value="air">空运</SelectItem><SelectItem value="express">快递</SelectItem><SelectItem value="rail">铁路</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div>
+            <div><Label>物流状态</Label><Select value={shipmentStatus} onValueChange={v=>setShipmentStatus(v as typeof shipmentStatus)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{Object.entries(statusLabels).map(([k,v])=><SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div>
+            <div><Label>预计送达</Label><Input type="date" value={estimatedDelivery} onChange={e=>setEstimatedDelivery(e.target.value)}/></div>
+            <div><Label>备注</Label><Input value={shipmentNotes} onChange={e=>setShipmentNotes(e.target.value)}/></div>
+          </div>
+          <Button className="mt-3" size="sm" onClick={()=>shipment.mutate()} disabled={shipment.isPending}>添加物流记录</Button>
+          <div className="mt-4 space-y-2">{(fulfillment.data?.shipments??[]).map((s:any)=><div key={s.id} className="rounded-lg border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-medium">{s.carrier||'未填写承运商'} · {s.tracking_number||'无追踪号'}</div><Select value={s.status} onValueChange={v=>shipmentStatusMutation.mutate({id:s.id,status:v as typeof shipmentStatus})}><SelectTrigger className="h-8 w-28"><SelectValue/></SelectTrigger><SelectContent>{Object.entries(statusLabels).map(([k,v])=><SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div>
+            <p className="mt-1 text-xs text-slate-500">{s.shipping_method} · 预计送达：{s.estimated_delivery?.slice(0,10)||'未填写'} · {s.notes||''}</p>
+          </div>)}</div>
+        </SectionCard>
+        <SectionCard title="收款记录" hint="每次到账单独记录，自动累计并更新订单收款状态">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div><Label>本次到账金额（USD）</Label><Input type="number" min="0.01" step="0.01" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)}/></div>
+            <div><Label>收款方式</Label><Input value={paymentMethod} onChange={e=>setPaymentMethod(e.target.value)} placeholder="Wire / PayPal / Card"/></div>
+            <div><Label>到账日期</Label><Input type="date" value={paymentDate} onChange={e=>setPaymentDate(e.target.value)}/></div>
+            <div><Label>备注</Label><Input value={paymentNotes} onChange={e=>setPaymentNotes(e.target.value)}/></div>
+          </div>
+          <Button className="mt-3" size="sm" onClick={()=>payment.mutate()} disabled={payment.isPending||Number(paymentAmount)<=0}>登记到账</Button>
+          <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm">累计到账：<strong>{fmtUsd(fulfillment.data?.paidAmount??0)}</strong> / {fmtUsd(selected?.totalAmount??0)}</div>
+          <div className="mt-3 space-y-2">{(fulfillment.data?.payments??[]).map((p:any)=><div key={p.id} className="flex justify-between rounded-lg border p-3 text-xs"><span>{p.payment_method} · {p.payment_date?.slice(0,10)||'日期未录'}</span><strong>{fmtUsd(p.amount)}</strong></div>)}</div>
+        </SectionCard>
+      </div>
+      <SectionCard title="售后管理" hint="记录质量、物流、短装、错发、退款等问题，并跟踪处理状态">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div><Label>问题类型</Label><Select value={afterType} onValueChange={v=>setAfterType(v as typeof afterType)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="quality_issue">质量问题</SelectItem><SelectItem value="shipping_issue">物流问题</SelectItem><SelectItem value="shortage">短装</SelectItem><SelectItem value="wrong_item">错发</SelectItem><SelectItem value="refund">退款</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div>
+          <div><Label>退款金额（USD）</Label><Input type="number" min="0" step="0.01" value={refundAmount} onChange={e=>setRefundAmount(e.target.value)}/></div>
+          <div className="sm:col-span-2"><Label>问题描述</Label><Textarea rows={2} value={afterDescription} onChange={e=>setAfterDescription(e.target.value)} placeholder="记录客户反馈、照片/证据、影响范围…"/></div>
+          <div className="sm:col-span-2"><Label>初步处理方案</Label><Textarea rows={2} value={afterResolution} onChange={e=>setAfterResolution(e.target.value)}/></div>
+        </div>
+        <Button className="mt-3" size="sm" onClick={()=>afterSale.mutate()} disabled={afterSale.isPending||!afterDescription.trim()}>创建售后记录</Button>
+        <div className="mt-4 space-y-2">{(fulfillment.data?.afterSales??[]).map((a:any)=><div key={a.id} className="rounded-lg border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-medium">{a.type} · {a.description}</div><Select value={a.status} onValueChange={v=>afterStatusMutation.mutate({id:a.id,status:v as 'open'|'processing'|'resolved'|'closed'})}><SelectTrigger className="h-8 w-28"><SelectValue/></SelectTrigger><SelectContent>{Object.entries(afterLabels).map(([k,v])=><SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div>
+          {a.resolution&&<p className="mt-1 text-xs text-slate-500">处理：{a.resolution}</p>}
+          {Number(a.refund_amount)>0&&<p className="mt-1 text-xs text-rose-600">退款：{fmtUsd(a.refund_amount)}</p>}
+        </div>)}</div>
+      </SectionCard>
+    </>}
+  </div>
 }
