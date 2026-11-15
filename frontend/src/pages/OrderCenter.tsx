@@ -1520,23 +1520,7 @@ function CustomerProfileButton({ customer, onChanged }: { customer: Customer; on
     enabled:open,
   })
   const save = useMutation({
-    mutationFn:async()=>{
-      const saved=await businessOpsApi.saveCustomerProfile(customer.id,{tier,source,preferences,nextFollowUpAt:nextFollowUpAt?new Date(nextFollowUpAt).toISOString():null})
-      const oldFollowUp=profile.data?.next_follow_up_at
-      const changedFollowUp=nextFollowUpAt && (!oldFollowUp || new Date(oldFollowUp).getTime()!==new Date(nextFollowUpAt).getTime())
-      if(changedFollowUp){
-        await businessOpsApi.createTask({
-          title:`跟进客户：${customer.name}`,
-          description:preferences || '按客户档案中的偏好继续跟进',
-          taskType:'follow_up',
-          entityType:'customer',
-          entityId:customer.id,
-          dueAt:new Date(nextFollowUpAt).toISOString(),
-          priority:tier==='A'?'high':'normal'
-        })
-      }
-      return saved
-    },
+    mutationFn:()=>businessOpsApi.saveCustomerProfile(customer.id,{tier,source,preferences,nextFollowUpAt:nextFollowUpAt?new Date(nextFollowUpAt).toISOString():null}),
     onSuccess:()=>{
       toast.success('客户画像已保存')
       void qc.invalidateQueries({queryKey:['customer-profile',customer.id]})
@@ -1566,7 +1550,7 @@ function CustomerProfileButton({ customer, onChanged }: { customer: Customer; on
           <div className="grid gap-1.5"><Label>采购偏好 / 需求</Label><Textarea rows={3} value={preferences} onChange={e=>setPreferences(e.target.value)} placeholder="常采购品类、目标价格、印刷要求、交期偏好…"/></div>
           <div className="grid gap-1.5"><Label>下一次跟进时间</Label><Input type="datetime-local" value={nextFollowUpAt} onChange={e=>setNextFollowUpAt(e.target.value)}/></div>
         </div>}
-        <DialogFooter><Button variant="outline" onClick={()=>setOpen(false)}>取消</Button><Button onClick={()=>save.mutate()} disabled={save.isPending||profile.isLoading}>{save.isPending?'保存中…':'保存画像并创建跟进任务'}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={()=>setOpen(false)}>取消</Button><Button onClick={()=>save.mutate()} disabled={save.isPending||profile.isLoading}>{save.isPending?'保存中…':'保存画像并同步跟进任务'}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   </>
