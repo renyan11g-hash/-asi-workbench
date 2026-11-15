@@ -1,0 +1,30 @@
+name: 保活（避免 Render 免费实例休眠）
+
+# Render 免费 Web Service 空闲 15 分钟就会休眠，下次打开要等 30–60 秒冷启动，
+# 表现为「页面一直卡在加载中，刷新好几次才打开」。
+# 这个工作流在白天每 10 分钟探一次 /api/health，让实例保持热启动。
+# 只覆盖北京时间 08:00–24:00（= UTC 00:00–16:00），每月约 490 小时，
+# 留在 Render 免费额度（750 小时/月）以内。
+on:
+  schedule:
+    - cron: '*/10 0-16 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /api/health
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 https://asi-workbench.onrender.com/api/health || true)
+            echo "try $i -> $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 15
+          done
+          echo "健康检查未通过（实例可能正在重启），本次跳过，不判失败"

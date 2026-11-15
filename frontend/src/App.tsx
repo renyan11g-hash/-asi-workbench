@@ -1,25 +1,36 @@
+import { lazy, Suspense } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PageTransition } from "@/components/PageTransition";
 import { AppLayout } from "@/components/AppLayout";
-import Dashboard from "./pages/Dashboard";
-import OrderCenter from "./pages/OrderCenter";
-import Sourcing from "./pages/Sourcing";
-import Batch from "./pages/Batch";
-import MasterData from "./pages/MasterData";
-import Pipeline from "./pages/Pipeline";
-import SourcingSuggest from "./pages/SourcingSuggest";
-import Evaluations from "./pages/Evaluations";
-import Library from "./pages/Library";
-import ListingEditor from "./pages/ListingEditor";
-import VisualStyles from "./pages/VisualStyles";
-import ListingReviews from "./pages/ListingReviews";
-import Production from "./pages/Production";
-import RpaArchive from "./pages/RpaArchive";
-import SettingsPage from "./pages/SettingsPage";
-import NotFound from "./pages/NotFound";
+
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const OrderCenter = lazy(() => import("./pages/OrderCenter"));
+const Sourcing = lazy(() => import("./pages/Sourcing"));
+const Batch = lazy(() => import("./pages/Batch"));
+const MasterData = lazy(() => import("./pages/MasterData"));
+const Pipeline = lazy(() => import("./pages/Pipeline"));
+const SourcingSuggest = lazy(() => import("./pages/SourcingSuggest"));
+const Evaluations = lazy(() => import("./pages/Evaluations"));
+const Library = lazy(() => import("./pages/Library"));
+const ListingEditor = lazy(() => import("./pages/ListingEditor"));
+const VisualStyles = lazy(() => import("./pages/VisualStyles"));
+const ListingReviews = lazy(() => import("./pages/ListingReviews"));
+const Production = lazy(() => import("./pages/Production"));
+const RpaArchive = lazy(() => import("./pages/RpaArchive"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const NotFound = lazy(() => import("./pages/NotFound"));
+
+/** 路由懒加载的兜底：只占内容区，不闪白整页 */
+function RouteFallback() {
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center text-sm text-slate-400">
+      正在加载页面…
+    </div>
+  );
+}
 
 /**
  * Configure TanStack Query client with optimized defaults
@@ -56,6 +67,7 @@ function App() {
       <TooltipProvider>
         <Toaster richColors position="top-center" />
         <BrowserRouter>
+          <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route element={<AppLayout />}>
               <Route
@@ -155,6 +167,7 @@ function App() {
             </Route>
             <Route path="*" data-genie-key="NotFound" data-genie-title="Not Found" element={<NotFound />} />
           </Routes>
+          </Suspense>
         </BrowserRouter>
       </TooltipProvider>
     </QueryClientProvider>
