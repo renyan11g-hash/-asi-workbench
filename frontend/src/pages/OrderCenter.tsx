@@ -155,7 +155,7 @@ export default function OrderCenter() {
           <DashboardTab onGoTab={setTab} />
         </TabsContent>
         <TabsContent value="customers" className="mt-4">
-          <CustomersTab onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
+          <CustomersTab onCreateOrder={(inquiry) => { setOrderSourceInquiry(inquiry); setTab('orders') }} onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
         </TabsContent>
         <TabsContent value="inquiries" className="mt-4">
           <InquiriesTab products={productList} onCreateOrder={(inquiry) => { setOrderSourceInquiry(inquiry); setTab('orders') }} onChanged={() => invalidate(['oc-overview', 'oc-tasks'])} />
@@ -304,7 +304,7 @@ function DashboardTab({ onGoTab }: { onGoTab: (t: string) => void }) {
 }
 
 // ---------- 客户 Tab ----------
-function CustomersTab({ onChanged }: { onChanged: () => void }) {
+function CustomersTab({ onCreateOrder, onChanged }: { onCreateOrder: (inquiry: Inquiry) => void; onChanged: () => void }) {
   const qc = useQueryClient()
   const [q, setQ] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -403,7 +403,7 @@ function CustomersTab({ onChanged }: { onChanged: () => void }) {
                 <TableCell><Badge variant="secondary">{CUSTOMER_TYPE[c.type]}</Badge></TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
-                    <CustomerProfileButton customer={c} onChanged={onChanged} />
+                    <CustomerProfileButton customer={c} onCreateOrder={onCreateOrder} onChanged={onChanged} />
                     <Button variant="ghost" size="sm" onClick={() => openEdit(c)}>编辑</Button>
                     <Button variant="ghost" size="sm" className="text-rose-600" onClick={() => void remove(c.id)} disabled={deletingId === c.id}>
                       {deletingId === c.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
@@ -1799,7 +1799,7 @@ function EmailsTab({ onChanged }: { onChanged: () => void }) {
 
 
 
-function CustomerProfileButton({ customer, onChanged }: { customer: Customer; onChanged: () => void }) {
+function CustomerProfileButton({ customer, onCreateOrder, onChanged }: { customer: Customer; onCreateOrder: (inquiry: Inquiry) => void; onChanged: () => void }) {
   const qc = useQueryClient()
   const [open,setOpen] = useState(false)
   const [tier,setTier] = useState<'A'|'B'|'C'>('C')
@@ -1846,7 +1846,7 @@ function CustomerProfileButton({ customer, onChanged }: { customer: Customer; on
         </div>}
         <div className="border-t pt-3">
           <div className="mb-2 flex items-center justify-between"><div className="text-sm font-semibold">历史询盘与报价</div><span className="text-xs text-slate-400">{inquiries.data?.length ?? 0} 条询盘</span></div>
-          {inquiries.isLoading ? <p className="py-3 text-xs text-slate-400">询盘加载中…</p> : (inquiries.data ?? []).length === 0 ? <p className="py-3 text-xs text-slate-400">暂无历史询盘</p> : <div className="space-y-2">{(inquiries.data ?? []).map((item) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5"><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{item.subject}</div><div className="mt-1 text-xs text-slate-500">{INQUIRY_STATUS[item.status]?.label ?? item.status} · {fmtDate(item.createdAt)}</div></div><InquiryQuoteButton inquiry={item} onChanged={() => { void qc.invalidateQueries({ queryKey: ['customer-inquiries', customer.id] }); onChanged() }} /></div>)}</div>}
+          {inquiries.isLoading ? <p className="py-3 text-xs text-slate-400">询盘加载中…</p> : (inquiries.data ?? []).length === 0 ? <p className="py-3 text-xs text-slate-400">暂无历史询盘</p> : <div className="space-y-2">{(inquiries.data ?? []).map((item) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5"><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{item.subject}</div><div className="mt-1 text-xs text-slate-500">{INQUIRY_STATUS[item.status]?.label ?? item.status} · {fmtDate(item.createdAt)}</div></div><div className="flex items-center gap-1"><InquiryQuoteButton inquiry={item} onChanged={() => { void qc.invalidateQueries({ queryKey: ['customer-inquiries', customer.id] }); onChanged() }} /><Button variant="ghost" size="sm" disabled={item.status === "converted"} onClick={() => { setOpen(false); onCreateOrder(item) }}>转订单</Button></div></div>)}</div>}
         </div>
         <div className="border-t pt-3">
           <div className="mb-2 flex items-center justify-between"><div className="text-sm font-semibold">历史订单</div><span className="text-xs text-slate-400">{orders.data?.length ?? 0} 笔订单</span></div>
