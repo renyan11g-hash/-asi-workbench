@@ -53,6 +53,7 @@ import {
   CustomerType,
   InquiryStatus,
   InquiryType,
+  InquiryAiAnalysis,
   OrderStatus,
   PaymentStatus,
   Product,
@@ -412,6 +413,59 @@ function CustomersTab({ onChanged }: { onChanged: () => void }) {
         </Table>
       )}
 
+      <Dialog open={analysisOpen} onOpenChange={setAnalysisOpen}>
+        <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>AI 询盘分析</DialogTitle>
+            <DialogDescription>{aiAnalysis?.subject ?? ''} · 结果基于已录入信息生成，报价和交付承诺仍需人工核实</DialogDescription>
+          </DialogHeader>
+          {aiAnalysis && (
+            <div className="space-y-4 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">{({
+                  pricing: '价格 / 报价',
+                  sample: '样品需求',
+                  customization: '定制需求',
+                  logistics: '物流 / 交付',
+                  product_match: '产品匹配',
+                  general: '一般咨询',
+                } as Record<string, string>)[aiAnalysis.analysis.category]}</Badge>
+                <span className="text-slate-500">{aiAnalysis.analysis.intent || '意图未明确'}</span>
+              </div>
+              <section className="space-y-1">
+                <h4 className="font-medium text-slate-900">需求摘要</h4>
+                <p className="whitespace-pre-wrap text-slate-700">{aiAnalysis.analysis.summary || 'AI 未能提炼出明确摘要'}</p>
+              </section>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <section className="space-y-1 rounded-lg bg-slate-50 p-3">
+                  <h4 className="font-medium text-slate-900">询问数量</h4>
+                  <p className="text-slate-700">{aiAnalysis.analysis.requestedQuantity || '客户未明确提及'}</p>
+                </section>
+                <section className="space-y-1 rounded-lg bg-slate-50 p-3">
+                  <h4 className="font-medium text-slate-900">定制要求</h4>
+                  <p className="text-slate-700">{aiAnalysis.analysis.customization || '未明确提及'}</p>
+                </section>
+              </div>
+              <section className="space-y-2">
+                <h4 className="font-medium text-slate-900">待补充 / 待确认信息</h4>
+                {aiAnalysis.analysis.missingInfo.length ? (
+                  <ul className="list-disc space-y-1 pl-5 text-amber-800">
+                    {aiAnalysis.analysis.missingInfo.map((item, index) => <li key={index}>{item}</li>)}
+                  </ul>
+                ) : <p className="text-slate-500">AI 未识别出明显缺失项，仍建议人工复核</p>}
+              </section>
+              <section className="space-y-1 rounded-lg border p-3">
+                <h4 className="font-medium text-slate-900">建议下一步</h4>
+                <p className="text-slate-700">{aiAnalysis.analysis.recommendedNextStep || '请人工判断下一步'}</p>
+              </section>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAnalysisOpen(false)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
           <DialogHeader>
@@ -476,6 +530,8 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [categorizingId, setCategorizingId] = useState<string | null>(null)
+  const [analysisOpen, setAnalysisOpen] = useState(false)
+  const [aiAnalysis, setAiAnalysis] = useState<{ subject: string; analysis: InquiryAiAnalysis } | null>(null)
   const [form, setForm] = useState({ customerId: '', subject: '', content: '', type: 'price_inquiry' as InquiryType, productId: '' })
 
   const { data: customers } = useQuery({ queryKey: ['oc-customers', ''], queryFn: () => orderApi.listCustomers() })
@@ -523,8 +579,10 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
   const categorize = async (id: string) => {
     setCategorizingId(id)
     try {
-      const inq = await orderApi.categorizeInquiry(id)
-      toast.success(`AI 分类完成：${inq.aiCategory ?? 'general'}`)
+      const result = await orderApi.categorizeInquiry(id)
+      setAiAnalysis({ subject: result.inquiry.subject, analysis: result.analysis })
+      setAnalysisOpen(true)
+      toast.success('AI 询盘分析完成')
       void qc.invalidateQueries({ queryKey: ['oc-inquiries'] })
     } catch (err) {
       toast.error(getErrorMessage(err))
@@ -592,7 +650,7 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
               <TableHead>客户</TableHead>
               <TableHead>类型</TableHead>
               <TableHead>关联产品</TableHead>
-              <TableHead>AI 分类</TableHead>
+              <TableHead>AI 意图</TableHead>
               <TableHead>状态</TableHead>
               <TableHead>日期</TableHead>
               <TableHead className="w-40 text-right">操作</TableHead>
@@ -619,7 +677,7 @@ function InquiriesTab({ products, onChanged }: { products: Product[]; onChanged:
                       </SelectContent>
                     </Select>
                     <InquiryQuoteButton inquiry={i} onChanged={() => { void qc.invalidateQueries({ queryKey: ['oc-inquiries'] }); onChanged() }} />
-                    <Button variant="ghost" size="sm" title="AI 分类" onClick={() => void categorize(i.id)} disabled={categorizingId === i.id}>
+                    <Button variant="ghost" size="sm" title="AI 询盘分析" onClick={() => void categorize(i.id)} disabled={categorizingId === i.id}>
                       {categorizingId === i.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                     </Button>
                     <Button variant="ghost" size="sm" className="text-rose-600" onClick={() => void remove(i.id)} disabled={deletingId === i.id}>

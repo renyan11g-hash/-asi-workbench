@@ -18,6 +18,7 @@ import {
   ImprintRecommendResult,
   LibraryRow,
   Inquiry,
+  InquiryAiAnalysis,
   InquiryStatus,
   Listing,
   ListingQcReport,
@@ -2071,9 +2072,9 @@ export const orderApi = {
     return data.inquiry
   },
 
-  async categorizeInquiry(id: string): Promise<Inquiry> {
-    const { data } = await apiClient.post<{ inquiry: Inquiry }>(`/inquiries/${id}/ai-categorize`, {})
-    return data.inquiry
+  async categorizeInquiry(id: string): Promise<{ inquiry: Inquiry; analysis: InquiryAiAnalysis }> {
+    const { data } = await apiClient.post<{ inquiry: Inquiry; analysis: InquiryAiAnalysis }>(`/inquiries/${id}/ai-categorize`, {})
+    return data
   },
 
   async deleteInquiry(id: string): Promise<void> {
