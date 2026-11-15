@@ -88,7 +88,7 @@ businessOpsRouter.get('/overview', (_req: Request, res: Response) => {
   const activeOrders = count("SELECT COUNT(*) AS c FROM orders WHERE status IN ('confirmed','production','shipped')")
   const unpaidOrders = count("SELECT COUNT(*) AS c FROM orders WHERE payment_status IN ('unpaid','partial','overdue')")
   const openTasks = count("SELECT COUNT(*) AS c FROM business_tasks WHERE status = 'open'")
-  const overdueTasks = count("SELECT COUNT(*) AS c FROM business_tasks WHERE status = 'open' AND due_at < datetime('now')")
+  const overdueTasks = count("SELECT COUNT(*) AS c FROM business_tasks WHERE status = 'open' AND julianday(due_at) < julianday('now')")
   const today = count("SELECT COUNT(*) AS c FROM business_tasks WHERE status = 'open' AND date(due_at) = date('now')")
   const untrackedOrders = count("SELECT COUNT(*) AS c FROM orders o LEFT JOIN order_financials f ON f.order_id=o.id WHERE o.status NOT IN ('cancelled') AND f.order_id IS NULL")
   res.json({ products, customers, inquiries, newInquiries, quotedInquiries, orders, activeOrders, unpaidOrders, openTasks, overdueTasks, todayTasks: today, untrackedOrders })
@@ -158,7 +158,7 @@ businessOpsRouter.put('/customers/:id/profile', (req: Request, res: Response) =>
     tier: z.enum(['A','B','C']).default('C'),
     source: z.string().max(200).optional().default(''),
     preferences: z.string().max(2000).optional().default(''),
-    nextFollowUpAt: z.string().nullable().optional(),
+    nextFollowUpAt: z.string().datetime().nullable().optional(),
   }).parse(req.body ?? {})
   const previous = db.prepare('SELECT next_follow_up_at FROM customer_profiles WHERE customer_id = ?').get(customerId) as {next_follow_up_at:string|null}|undefined
   const now = new Date().toISOString()
