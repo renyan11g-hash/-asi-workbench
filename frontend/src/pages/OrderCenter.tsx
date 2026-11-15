@@ -1665,12 +1665,33 @@ function FulfillmentTab({ onChanged }: { onChanged:()=>void }) {
           <div className="sm:col-span-2"><Label>初步处理方案</Label><Textarea rows={2} value={afterResolution} onChange={e=>setAfterResolution(e.target.value)}/></div>
         </div>
         <Button className="mt-3" size="sm" onClick={()=>afterSale.mutate()} disabled={afterSale.isPending||!afterDescription.trim()}>创建售后记录</Button>
-        <div className="mt-4 space-y-2">{(fulfillment.data?.afterSales??[]).map((a:any)=><div key={a.id} className="rounded-lg border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-medium">{a.type} · {a.description}</div><Select value={a.status} onValueChange={v=>afterStatusMutation.mutate({id:a.id,status:v as 'open'|'processing'|'resolved'|'closed'})}><SelectTrigger className="h-8 w-28"><SelectValue/></SelectTrigger><SelectContent>{Object.entries(afterLabels).map(([k,v])=><SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div>
-          {a.resolution&&<p className="mt-1 text-xs text-slate-500">处理：{a.resolution}</p>}
-          {Number(a.refund_amount)>0&&<p className="mt-1 text-xs text-rose-600">退款：{fmtUsd(a.refund_amount)}</p>}
-        </div>)}</div>
+        <div className="mt-4 space-y-2">{(fulfillment.data?.afterSales??[]).map((a:any)=><AfterSaleEditor key={a.id} item={a} onSave={(patch)=>businessOpsApi.updateAfterSale(a.id,patch).then(refresh)} />)}</div>
       </SectionCard>
     </>}
+  </div>
+}
+
+
+
+function AfterSaleEditor({item,onSave}:{item:any;onSave:(patch:any)=>Promise<unknown>}) {
+  const [status,setStatus]=useState(item.status as 'open'|'processing'|'resolved'|'closed')
+  const [resolution,setResolution]=useState(item.resolution??'')
+  const [refundAmount,setRefundAmount]=useState(String(item.refund_amount??0))
+  const [saving,setSaving]=useState(false)
+  const labels:Record<string,string>={open:'待处理',processing:'处理中',resolved:'已解决',closed:'已关闭'}
+  const save=async()=>{
+    setSaving(true)
+    try{await onSave({status,resolution,refundAmount:Number(refundAmount||0)});toast.success('售后处理已更新')}
+    catch(e){toast.error(getErrorMessage(e))}
+    finally{setSaving(false)}
+  }
+  return <div className="rounded-lg border p-3">
+    <div className="text-sm font-medium">{item.type} · {item.description}</div>
+    <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+      <div><Label className="text-xs">处理状态</Label><Select value={status} onValueChange={v=>setStatus(v as typeof status)}><SelectTrigger className="mt-1 h-8"><SelectValue/></SelectTrigger><SelectContent>{Object.entries(labels).map(([k,v])=><SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div>
+      <div><Label className="text-xs">退款金额（USD）</Label><Input className="mt-1 h-8" type="number" min="0" step="0.01" value={refundAmount} onChange={e=>setRefundAmount(e.target.value)}/></div>
+      <div className="flex items-end"><Button size="sm" variant="outline" onClick={()=>void save()} disabled={saving}>{saving?'保存中':'保存处理'}</Button></div>
+    </div>
+    <div className="mt-2"><Label className="text-xs">处理结果 / 解决方案</Label><Textarea rows={2} className="mt-1" value={resolution} onChange={e=>setResolution(e.target.value)}/></div>
   </div>
 }
