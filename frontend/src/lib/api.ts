@@ -2067,6 +2067,11 @@ export const orderApi = {
     return data.inquiry
   },
 
+  async updateInquiryProduct(id: string, productId: string | null): Promise<Inquiry> {
+    const { data } = await apiClient.put<{ inquiry: Inquiry }>(`/inquiries/${id}`, { productId })
+    return data.inquiry
+  },
+
   async updateInquiryStatus(id: string, status: InquiryStatus): Promise<Inquiry> {
     const { data } = await apiClient.patch<{ inquiry: Inquiry }>(`/inquiries/${id}/status`, { status })
     return data.inquiry
