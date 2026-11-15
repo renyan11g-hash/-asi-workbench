@@ -140,6 +140,8 @@ emailDraftsRouter.put('/:id', async (req: Request, res: Response) => {
   const row = findEmailDraft(String(req.params.id))
   if (!row) throw new AppError(404, '邮件草稿不存在')
 
+  if (row.status === 'sent') throw new AppError(409, '已标记发送的邮件不能再编辑')
+
   const body = emailDraftSchema.partial().parse(req.body ?? {})
   const now = new Date().toISOString()
 
