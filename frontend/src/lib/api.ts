@@ -2270,3 +2270,10 @@ export const businessOpsApi = {
     return data
   },
 }
+
+
+// 独立导出供应商沟通列表查询，供轻量业务页面复用。
+export async function listSupplierCommunications(params?: { productId?: string }): Promise<SupplierCommunication[]> {
+  const { data } = await apiClient.get<{ communications: SupplierCommunication[] }>('/supplier-communications', { params })
+  return data.communications
+}
