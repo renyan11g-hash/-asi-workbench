@@ -152,17 +152,29 @@ businessOpsRouter.get('/customers/:id/profile', (req: Request, res: Response) =>
 
 businessOpsRouter.put('/customers/:id/profile', (req: Request, res: Response) => {
   const customerId = String(req.params.id)
-  if (!db.prepare('SELECT id FROM customers WHERE id = ?').get(customerId)) throw new AppError(404, '客户不存在')
+  const customer = db.prepare('SELECT id,name FROM customers WHERE id = ?').get(customerId) as {id:string;name:string}|undefined
+  if (!customer) throw new AppError(404, '客户不存在')
   const body = z.object({
     tier: z.enum(['A','B','C']).default('C'),
     source: z.string().max(200).optional().default(''),
     preferences: z.string().max(2000).optional().default(''),
     nextFollowUpAt: z.string().nullable().optional(),
   }).parse(req.body ?? {})
+  const previous = db.prepare('SELECT next_follow_up_at FROM customer_profiles WHERE customer_id = ?').get(customerId) as {next_follow_up_at:string|null}|undefined
   const now = new Date().toISOString()
   db.prepare(`INSERT INTO customer_profiles (customer_id,tier,source,preferences,next_follow_up_at,updated_at)
     VALUES (?,?,?,?,?,?) ON CONFLICT(customer_id) DO UPDATE SET tier=excluded.tier,source=excluded.source,preferences=excluded.preferences,next_follow_up_at=excluded.next_follow_up_at,updated_at=excluded.updated_at`)
     .run(customerId, body.tier, body.source, body.preferences, body.nextFollowUpAt ?? null, now)
+  const oldTime = previous?.next_follow_up_at ? new Date(previous.next_follow_up_at).getTime() : null
+  const newTime = body.nextFollowUpAt ? new Date(body.nextFollowUpAt).getTime() : null
+  if (oldTime !== newTime) {
+    db.prepare("UPDATE business_tasks SET status='cancelled',updated_at=? WHERE entity_type='customer' AND entity_id=? AND task_type='follow_up' AND status='open'").run(now,customerId)
+    if (body.nextFollowUpAt) {
+      const taskId = randomUUID()
+      db.prepare(`INSERT INTO business_tasks (id,title,description,task_type,entity_type,entity_id,due_at,priority,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(taskId,'跟进客户：'+customer.name,body.preferences || '按客户档案中的偏好继续跟进','follow_up','customer',customerId,body.nextFollowUpAt,body.tier==='A'?'high':'normal','open',now,now)
+    }
+  }
   res.json({ profile: db.prepare('SELECT * FROM customer_profiles WHERE customer_id = ?').get(customerId) })
 })
 
