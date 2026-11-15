@@ -1322,6 +1322,7 @@ function EmailsTab({ onChanged }: { onChanged: () => void }) {
   const [viewing, setViewing] = useState<import('@/types').EmailDraft | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
+  const [savingDraftId, setSavingDraftId] = useState<string | null>(null)
   const [form, setForm] = useState({ customerId: '', inquiryId: 'none', subject: '', content: '' })
   const [aiForm, setAiForm] = useState({ customerId: '', inquiryId: 'none', tone: 'professional' as 'professional' | 'friendly' | 'formal' })
 
@@ -1376,6 +1377,28 @@ function EmailsTab({ onChanged }: { onChanged: () => void }) {
     },
     onError: (err) => toast.error(getErrorMessage(err)),
   })
+
+  const saveEmailDraft = async () => {
+    if (!viewing || viewing.status !== 'draft') return
+    if (!viewing.subject.trim() || !viewing.content.trim()) {
+      toast.error('邮件主题和正文不能为空')
+      return
+    }
+    setSavingDraftId(viewing.id)
+    try {
+      const updated = await orderApi.updateEmailDraft(viewing.id, {
+        subject: viewing.subject.trim(),
+        content: viewing.content,
+      })
+      setViewing(updated)
+      void qc.invalidateQueries({ queryKey: ['oc-emails'] })
+      toast.success('邮件草稿已保存')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setSavingDraftId(null)
+    }
+  }
 
   const markSent = async (d: import('@/types').EmailDraft) => {
     setSendingId(d.id)
@@ -1590,23 +1613,42 @@ function EmailsTab({ onChanged }: { onChanged: () => void }) {
       <Dialog open={Boolean(viewing)} onOpenChange={(open) => !open && setViewing(null)}>
         <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{viewing?.subject}</DialogTitle>
+            <DialogTitle>{viewing?.status === 'draft' ? '编辑邮件草稿' : viewing?.subject}</DialogTitle>
             <DialogDescription>
               {viewing ? `${customerName(viewing.customerId)} · ${viewing.isAiGenerated ? 'AI 生成' : '手写'} · ${viewing.status === 'sent' ? '已发送' : '草稿'}` : ''}
             </DialogDescription>
           </DialogHeader>
-          <pre className="whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm leading-relaxed text-slate-800">{viewing?.content}</pre>
+          {viewing?.status === 'draft' ? (
+            <div className="grid gap-3">
+              <div className="grid gap-1.5">
+                <Label>邮件主题</Label>
+                <Input value={viewing.subject} onChange={(e) => setViewing({ ...viewing, subject: e.target.value })} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>邮件正文</Label>
+                <Textarea rows={12} value={viewing.content} onChange={(e) => setViewing({ ...viewing, content: e.target.value })} />
+              </div>
+              <p className="text-xs text-slate-500">AI 生成内容仅为草稿；核实价格、运费、交期等信息后，再自行发送并标记状态。</p>
+            </div>
+          ) : (
+            <pre className="whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm leading-relaxed text-slate-800">{viewing?.content}</pre>
+          )}
           <DialogFooter>
             {viewing?.status === 'draft' && (
-              <Button
-                onClick={() => {
-                  const d = viewing
-                  setViewing(null)
-                  void markSent(d)
-                }}
-              >
-                <Send className="mr-1 h-3.5 w-3.5" /> 标记为已发送
-              </Button>
+              <>
+                <Button variant="outline" onClick={() => void saveEmailDraft()} disabled={savingDraftId === viewing.id || !viewing.subject.trim() || !viewing.content.trim()}>
+                  {savingDraftId === viewing.id && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />} 保存修改
+                </Button>
+                <Button
+                  onClick={() => {
+                    const d = viewing
+                    setViewing(null)
+                    void markSent(d)
+                  }}
+                >
+                  <Send className="mr-1 h-3.5 w-3.5" /> 标记为已发送
+                </Button>
+              </>
             )}
             <Button variant="outline" onClick={() => setViewing(null)}>关闭</Button>
           </DialogFooter>

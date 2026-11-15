@@ -2193,6 +2193,11 @@ export const orderApi = {
     return data.emailDraft
   },
 
+  async updateEmailDraft(id: string, payload: { subject: string; content: string }): Promise<EmailDraft> {
+    const { data } = await apiClient.put<{ emailDraft: EmailDraft }>(`/email-drafts/${id}`, payload)
+    return data.emailDraft
+  },
+
   async markEmailSent(id: string): Promise<EmailDraft> {
     const { data } = await apiClient.patch<{ emailDraft: EmailDraft }>(`/email-drafts/${id}/send`, {})
     return data.emailDraft
