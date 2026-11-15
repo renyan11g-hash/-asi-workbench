@@ -1379,7 +1379,7 @@ function EmailsTab({ onChanged }: { onChanged: () => void }) {
   })
 
   const saveEmailDraft = async (): Promise<import('@/types').EmailDraft | null> => {
-    if (!viewing || viewing.status !== 'draft') return
+    if (!viewing || viewing.status !== 'draft') return null
     if (!viewing.subject.trim() || !viewing.content.trim()) {
       toast.error('邮件主题和正文不能为空')
       return null
