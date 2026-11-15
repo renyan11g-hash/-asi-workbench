@@ -721,7 +721,7 @@ function InquiriesTab({ products, onCreateOrder, onChanged }: { products: Produc
                       </SelectContent>
                     </Select>
                     <InquiryQuoteButton inquiry={i} onChanged={() => { void qc.invalidateQueries({ queryKey: ['oc-inquiries'] }); onChanged() }} />
-                    <Button variant="ghost" size="sm" title="从此询盘创建订单" onClick={() => onCreateOrder(i)}>转订单</Button>
+                    <Button variant="ghost" size="sm" title={i.status === "converted" ? "该询盘已转订单" : "从此询盘创建订单"} disabled={i.status === "converted"} onClick={() => onCreateOrder(i)}>转订单</Button>
                     <Button variant="ghost" size="sm" title="AI 匹配产品并人工确认关联" onClick={() => void matchInquiryProducts(i)} disabled={matchingLoading || products.length === 0}><Package className="h-3.5 w-3.5" /></Button>
                     <Button variant="ghost" size="sm" title={i.aiAnalysis ? '查看/编辑已保存分析' : '手动录入询盘分析'} onClick={() => openManualAnalysis(i)}><ClipboardList className="h-3.5 w-3.5" /></Button>
                     <Button variant="ghost" size="sm" title="AI 询盘分析" onClick={() => void categorize(i.id)} disabled={categorizingId === i.id}>
@@ -997,6 +997,7 @@ function OrdersTab({ products, initialInquiry, onInitialInquiryHandled, onChange
       toast.success('订单已创建')
       setDialogOpen(false)
       void qc.invalidateQueries({ queryKey: ['oc-orders'] })
+      void qc.invalidateQueries({ queryKey: ['oc-inquiries'] })
       onChanged()
     },
     onError: (err) => toast.error(getErrorMessage(err)),
