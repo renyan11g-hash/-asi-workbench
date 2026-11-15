@@ -341,12 +341,6 @@ function CustomersTab({ onChanged }: { onChanged: () => void }) {
     onError: (err) => toast.error(getErrorMessage(err)),
   })
 
-  const openSavedAnalysis = (inquiry: Inquiry) => {
-    if (!inquiry.aiAnalysis) return
-    setAiAnalysis({ inquiryId: inquiry.id, subject: inquiry.subject, analysis: inquiry.aiAnalysis })
-    setAnalysisOpen(true)
-  }
-
   const openManualAnalysis = (inquiry: Inquiry) => {
     setAiAnalysis({
       inquiryId: inquiry.id,
