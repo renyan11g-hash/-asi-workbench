@@ -4,8 +4,6 @@ import {
   Building2,
   ClipboardList,
   Truck,
-  CreditCard,
-  LifeBuoy,
   Loader2,
   Mail,
   MessageSquare,
@@ -1612,10 +1610,6 @@ function FulfillmentTab({ onChanged }: { onChanged:()=>void }) {
   })
   const shipmentStatusMutation=useMutation({
     mutationFn:({id,status}:{id:string;status:'pending'|'shipped'|'in_transit'|'delivered'|'exception'})=>businessOpsApi.updateShipment(id,{status}),
-    onSuccess:refresh,onError:(e)=>toast.error(getErrorMessage(e))
-  })
-  const afterStatusMutation=useMutation({
-    mutationFn:({id,status}:{id:string;status:'open'|'processing'|'resolved'|'closed'})=>businessOpsApi.updateAfterSale(id,{status}),
     onSuccess:refresh,onError:(e)=>toast.error(getErrorMessage(e))
   })
   const statusLabels:Record<string,string>={pending:'待发货',shipped:'已发货',in_transit:'运输中',delivered:'已送达',exception:'异常'}
