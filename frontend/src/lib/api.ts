@@ -2223,6 +2223,10 @@ export const orderApi = {
 
 // ========== 业务运营工作台 API ==========
 export const businessOpsApi = {
+  async assistant(payload: { messages: Array<{ role: 'user' | 'assistant'; content: string }> }): Promise<{ reply: string; entities: Array<{ type: 'product'|'customer'|'inquiry'|'order'|'quote'; id: string }>; missingInfo: string[]; counts: Record<string,number> }> {
+    const { data } = await apiClient.post('/business-ops/assistant', payload, LONG_TIMEOUT)
+    return data
+  },
   async overview(): Promise<{
     products:number; customers:number; inquiries:number; newInquiries:number; quotedInquiries:number;
     orders:number; activeOrders:number; unpaidOrders:number; openTasks:number; overdueTasks:number; todayTasks:number; untrackedOrders:number

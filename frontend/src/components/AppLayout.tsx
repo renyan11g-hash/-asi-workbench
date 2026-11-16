@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Archive,
+  Bot,
   ClipboardCheck,
   DollarSign,
   Compass,
@@ -32,6 +33,7 @@ const NAV_GROUPS: Array<{
 }> = [
   { title: '业务总览', items: [
     { to: '/business-ops', label: '业务运营总览', icon: LayoutDashboard },
+    { to: '/business-assistant', label: 'AI 业务助手', icon: Bot },
     { to: '/product-dashboard', label: '产品工作总览', icon: Layers },
   ]},
   { title: '产品中心', items: [
@@ -58,6 +60,7 @@ const NAV_GROUPS: Array<{
 const TITLES: Record<string, { title: string; sub: string }> = {
   '/product-overview': { title: '产品一览', sub: '快速查找产品、平台 Listing、1688 来源与供应商报价；AI 助手可围绕当前产品协助分析' },
   '/business-ops': { title: '业务运营中心', sub: '今日待办、客户销售、订单交付与经营数据' },
+  '/business-assistant': { title: 'AI 业务助手', sub: '跨产品、客户、询盘、报价、订单和供应商沟通检索；AI 只读分析，业务修改由你确认' },
   '/product-dashboard': { title: '产品工作总览', sub: '查看产品档案流水线、选品与 Listing 处理进度' },
   '/order-costs': { title: '订单成本核算', sub: '录入采购、定制、物流等成本，核算毛利润与提成' },
   '/': { title: '工作总览', sub: '今天该处理哪些产品、卡在哪一步、有多少待审核' },
