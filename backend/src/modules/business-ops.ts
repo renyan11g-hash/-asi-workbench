@@ -445,7 +445,7 @@ businessOpsRouter.post('/assistant', async (req: Request, res: Response) => {
   if (!latestQuestion) throw new AppError(400, '请输入要查询的问题')
   const retrievalText = userMessages.slice(-4).map(m => m.content).join(' ')
 
-  const stopWords = new Set(['帮我','请问','请帮','一下','这个','那个','怎么','如何','哪些','什么','是否','有没有','可以','现在','目前','相关','情况','信息','资料','查询','查一下','分析','总结','看看','告诉我','最近','分别','来自','对应','然后','还有','以及','一下子','the','and','for','with','from','what','which','when','where','how','please','about','show','find','help','can','you','our','your','looking','need'])
+  const stopWords = new Set(['帮我','请问','请帮','一下','这个','那个','怎么','如何','哪些','什么','是否','有没有','可以','现在','目前','相关','情况','信息','资料','查询','查一下','分析','总结','看看','告诉我','最近','分别','来自','对应','然后','还有','以及','一下子','客户','产品','订单','询盘','报价','供应商','平台','记录','新询','the','and','for','with','from','what','which','when','where','how','please','about','show','find','help','can','you','our','your','looking','need'])
   const rawTerms = retrievalText.match(/[\u4e00-\u9fff]{2,}|[a-z0-9][a-z0-9._-]{2,}/gi) ?? []
   const expandedTerms = rawTerms.flatMap(token => {
     const lower = token.toLowerCase()
@@ -509,6 +509,7 @@ businessOpsRouter.post('/assistant', async (req: Request, res: Response) => {
     '先直接回答用户问题，再列出关键依据和需要人工确认的缺口。金额必须保留原币种；日期按数据原样表达。',
     '如果多个记录名称相似，指出歧义，不要擅自认定为同一客户或同一产品。',
     '你是只读助手：不得声称已创建、修改、删除、发送邮件、联系供应商或更改状态；可给出建议和可复制草稿，但所有操作必须由用户在对应页面人工确认。',
+    '检索数据按匹配条件截取有限条目，并非完整报表；用户要求完整清单、指定时间范围统计或精确转化率时，不得用这批样本冒充全量结果，应说明需要使用对应报表或进一步筛选。',
     '从 suppliedEntities 中挑选真正支撑回答的记录，返回对应 type 和 id，不得创造 ID。最多 8 条。',
     '只返回严格 JSON：{"reply":"中文回答","entities":[{"type":"product|customer|inquiry|order|quote","id":"已有ID"}],"missingInfo":["需要人工补充的信息"]}。'
   ].join('\n')
