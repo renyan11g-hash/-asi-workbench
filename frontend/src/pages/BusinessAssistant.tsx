@@ -4,7 +4,7 @@ import { Bot, Send, Loader2, Package, Users, MessageSquare, ClipboardList, FileT
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { api, businessOpsApi } from '@/lib/api'
+import { orderApi, businessOpsApi } from '@/lib/api'
 import { useNavigate } from 'react-router-dom'
 
 type Entity = { type: 'product'|'customer'|'inquiry'|'order'|'quote'; id: string; customerId?: string }
@@ -25,7 +25,7 @@ export default function BusinessAssistant() {
   const emailDraftMutation = useMutation({
     mutationFn: (entity: Entity) => {
       if (!entity.customerId) throw new Error('该询盘缺少客户关联，无法生成邮件草稿')
-      return api.generateEmailDraft({ customerId: entity.customerId, inquiryId: entity.id, tone: 'professional' })
+      return orderApi.generateEmailDraft({ customerId: entity.customerId, inquiryId: entity.id, tone: 'professional' })
     },
     onSuccess: () => {
       toast.success('邮件草稿已生成并保存，可在「邮件草稿」中编辑确认；不会自动发送')
