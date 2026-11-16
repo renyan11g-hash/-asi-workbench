@@ -397,6 +397,18 @@ businessOpsRouter.post('/inquiries/:id/quotes', (req: Request, res: Response) =>
   res.status(201).json({ quote: db.prepare('SELECT * FROM inquiry_quotes WHERE id = ?').get(id) })
 })
 
+businessOpsRouter.put('/quotes/:id', (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const existing = db.prepare('SELECT id, status FROM inquiry_quotes WHERE id = ?').get(id) as { id: string; status: string } | undefined
+  if (!existing) throw new AppError(404, '报价记录不存在')
+  if (existing.status !== 'draft') throw new AppError(409, '只有草稿状态的报价可以编辑；已发送或已确认的报价请保留原记录并新建报价版本')
+  const body = quoteSchema.parse(req.body ?? {})
+  if (db.prepare('SELECT id FROM inquiry_quotes WHERE quote_number = ? AND id <> ?').get(body.quoteNumber, id)) throw new AppError(409, '报价编号已存在')
+  db.prepare('UPDATE inquiry_quotes SET quote_number=?,amount=?,currency=?,quantity=?,shipping_method=?,production_time=?,transit_time=?,valid_until=?,notes=?,updated_at=? WHERE id=?')
+    .run(body.quoteNumber,body.amount,body.currency,body.quantity,body.shippingMethod,body.productionTime,body.transitTime,body.validUntil ?? null,body.notes,new Date().toISOString(),id)
+  res.json({ quote: db.prepare('SELECT * FROM inquiry_quotes WHERE id = ?').get(id) })
+})
+
 businessOpsRouter.patch('/quotes/:id/status', (req: Request, res: Response) => {
   const id = String(req.params.id)
   if (!db.prepare('SELECT id FROM inquiry_quotes WHERE id = ?').get(id)) throw new AppError(404, '报价记录不存在')
