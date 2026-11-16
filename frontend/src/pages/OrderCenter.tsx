@@ -2084,6 +2084,7 @@ function InquiryQuoteButton({inquiry,onChanged}:{inquiry:import('@/types').Inqui
     onError:(e)=>toast.error(getErrorMessage(e))
   })
   const openDialog=()=>{
+    resetForm()
     setQuoteNumber(`Q-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${Math.floor(Math.random()*900+100)}`)
     setOpen(true)
   }
@@ -2092,7 +2093,7 @@ function InquiryQuoteButton({inquiry,onChanged}:{inquiry:import('@/types').Inqui
     <Button variant="ghost" size="sm" title="报价历史" onClick={openDialog}>报价</Button>
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
-        <DialogHeader><DialogTitle>询盘报价记录</DialogTitle><DialogDescription>{inquiry.subject} · 报价版本单独保存，方便追踪改价和运输方案</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>询盘报价记录</DialogTitle><DialogDescription>{inquiry.subject} · 报价版本单独保存；已发送或已接受的报价不允许改写，接受报价也不会自动创建订单</DialogDescription></DialogHeader>
         <div className="rounded-lg border p-3">
           <div className="mb-3 flex items-center justify-between text-sm font-semibold"><span>{editingQuoteId?'编辑报价草稿':'新增报价版本'}</span>{editingQuoteId&&<Button type="button" size="sm" variant="ghost" onClick={resetForm}>取消编辑</Button>}</div>
           <div className="grid gap-2 sm:grid-cols-2">
