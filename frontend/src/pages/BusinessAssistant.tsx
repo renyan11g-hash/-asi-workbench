@@ -38,7 +38,9 @@ export default function BusinessAssistant() {
   const reset = () => { setMessages([]); setInput('') }
   const openEntity = (entity: Entity) => {
     if (entity.type === 'product') navigate(`/listing/${entity.id}`)
-    else navigate('/order-center')
+    else if (entity.type === 'customer') navigate('/order-center?tab=customers')
+    else if (entity.type === 'inquiry' || entity.type === 'quote') navigate('/order-center?tab=inquiries')
+    else navigate('/order-center?tab=orders')
   }
   const EntityIcon = ({type}:{type:string}) => type === 'product' ? <Package className="h-3.5 w-3.5"/> : type === 'customer' ? <Users className="h-3.5 w-3.5"/> : type === 'inquiry' ? <MessageSquare className="h-3.5 w-3.5"/> : type === 'order' ? <ClipboardList className="h-3.5 w-3.5"/> : <FileText className="h-3.5 w-3.5"/>
   return (
