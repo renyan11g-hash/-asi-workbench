@@ -2089,13 +2089,16 @@ function InquiryQuoteButton({inquiry,onChanged}:{inquiry:import('@/types').Inqui
     setOpen(true)
   }
   const labels:Record<string,string>={draft:'草稿',sent:'已发送',accepted:'已接受',rejected:'未接受',expired:'已过期'}
-  const nextQuoteStatuses=(status:string):string[]=>({
-    draft:['draft','sent'],
-    sent:['sent','accepted','rejected','expired'],
-    accepted:['accepted'],
-    rejected:['rejected'],
-    expired:['expired'],
-  }[status]??[status])
+  const nextQuoteStatuses=(status:string):string[]=>{
+    const transitions:Record<string,string[]> = {
+      draft:['draft','sent'],
+      sent:['sent','accepted','rejected','expired'],
+      accepted:['accepted'],
+      rejected:['rejected'],
+      expired:['expired'],
+    }
+    return transitions[status]??[status]
+  }
   return <>
     <Button variant="ghost" size="sm" title="报价历史" onClick={openDialog}>报价</Button>
     <Dialog open={open} onOpenChange={setOpen}>
