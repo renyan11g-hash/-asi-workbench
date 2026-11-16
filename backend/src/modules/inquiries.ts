@@ -205,8 +205,17 @@ inquiriesRouter.patch('/:id/status', async (req: Request, res: Response) => {
     })
     .parse(req.body ?? {})
 
+  if (status === 'converted' && row.status !== 'converted') {
+    throw new AppError(409, '询盘只能在人工确认创建订单后自动标记为已转订单')
+  }
+  if (row.status === 'converted' && status !== 'converted') {
+    throw new AppError(409, '该询盘已生成订单，不能将状态改回未转订单；如需撤销请处理关联订单')
+  }
+
   const now = new Date().toISOString()
-  db.prepare('UPDATE inquiries SET status = ?, updated_at = ? WHERE id = ?').run(status, now, row.id)
+  if (status !== row.status) {
+    db.prepare('UPDATE inquiries SET status = ?, updated_at = ? WHERE id = ?').run(status, now, row.id)
+  }
 
   const updated = findInquiry(row.id)
   res.json({ inquiry: updated ? rowToInquiry(updated) : null })

@@ -2089,6 +2089,13 @@ function InquiryQuoteButton({inquiry,onChanged}:{inquiry:import('@/types').Inqui
     setOpen(true)
   }
   const labels:Record<string,string>={draft:'草稿',sent:'已发送',accepted:'已接受',rejected:'未接受',expired:'已过期'}
+  const nextQuoteStatuses=(status:string):string[]=>({
+    draft:['draft','sent'],
+    sent:['sent','accepted','rejected','expired'],
+    accepted:['accepted'],
+    rejected:['rejected'],
+    expired:['expired'],
+  }[status]??[status])
   return <>
     <Button variant="ghost" size="sm" title="报价历史" onClick={openDialog}>报价</Button>
     <Dialog open={open} onOpenChange={setOpen}>
@@ -2112,7 +2119,7 @@ function InquiryQuoteButton({inquiry,onChanged}:{inquiry:import('@/types').Inqui
         <div>
           <div className="mb-2 text-sm font-semibold">历史报价</div>
           <div className="space-y-2">{(quotes.data??[]).map((q:any)=><div key={q.id} className="rounded-lg border p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-medium">{q.quote_number} · {q.currency} {Number(q.amount).toFixed(2)} / {q.quantity} pcs</div><div className="flex items-center gap-2">{q.status==='draft'&&<Button type="button" size="sm" variant="outline" onClick={()=>fillEditForm(q)}>编辑草稿</Button>}<Select value={q.status} onValueChange={v=>update.mutate({id:q.id,status:v as 'draft'|'sent'|'accepted'|'rejected'|'expired'})}><SelectTrigger className="h-8 w-28"><SelectValue/></SelectTrigger><SelectContent>{Object.entries(labels).map(([k,v])=><SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div></div>
+            <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-medium">{q.quote_number} · {q.currency} {Number(q.amount).toFixed(2)} / {q.quantity} pcs</div><div className="flex items-center gap-2">{q.status==='draft'&&<Button type="button" size="sm" variant="outline" onClick={()=>fillEditForm(q)}>编辑草稿</Button>}<Select value={q.status} onValueChange={v=>update.mutate({id:q.id,status:v as 'draft'|'sent'|'accepted'|'rejected'|'expired'})}><SelectTrigger className="h-8 w-28"><SelectValue/></SelectTrigger><SelectContent>{nextQuoteStatuses(q.status).map(k=><SelectItem key={k} value={k}>{labels[k]??k}</SelectItem>)}</SelectContent></Select></div></div>
             <p className="mt-1 text-xs text-slate-500">{q.shipping_method||'运输方式未注明'} · 生产：{q.production_time||'未注明'} · 运输：{q.transit_time||'未注明'} · 有效期：{q.valid_until?.slice(0,10)||'未注明'}</p>
             {q.notes&&<p className="mt-1 whitespace-pre-wrap text-xs text-slate-500">{q.notes}</p>}
           </div>)}</div>
