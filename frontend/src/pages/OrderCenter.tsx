@@ -2064,10 +2064,18 @@ function InquiryQuoteButton({inquiry,onChanged}:{inquiry:import('@/types').Inqui
   const [transitTime,setTransitTime]=useState('')
   const [validUntil,setValidUntil]=useState('')
   const [notes,setNotes]=useState('')
+  const [editingQuoteId,setEditingQuoteId]=useState<string|null>(null)
+  const resetForm=()=>{setEditingQuoteId(null);setQuoteNumber('');setAmount('');setCurrency('USD');setQuantity('500');setShippingMethod('Sea Freight');setProductionTime('');setTransitTime('');setValidUntil('');setNotes('')}
+  const fillEditForm=(q:any)=>{setEditingQuoteId(q.id);setQuoteNumber(q.quote_number);setAmount(String(q.amount));setCurrency(q.currency==='CNY'?'CNY':'USD');setQuantity(String(q.quantity));setShippingMethod(q.shipping_method??'');setProductionTime(q.production_time??'');setTransitTime(q.transit_time??'');setValidUntil(q.valid_until?.slice(0,10)??'');setNotes(q.notes??'')}
   const quotes=useQuery({queryKey:['inquiry-quotes',inquiry.id],queryFn:()=>businessOpsApi.listInquiryQuotes(inquiry.id),enabled:open})
   const create=useMutation({
     mutationFn:()=>businessOpsApi.createInquiryQuote(inquiry.id,{quoteNumber,amount:Number(amount),currency,quantity:Number(quantity),shippingMethod,productionTime,transitTime,validUntil:validUntil?new Date(validUntil).toISOString():null,notes}),
     onSuccess:()=>{toast.success('报价记录已保存');setQuoteNumber('');setAmount('');setNotes('');void qc.invalidateQueries({queryKey:['inquiry-quotes',inquiry.id]});onChanged()},
+    onError:(e)=>toast.error(getErrorMessage(e))
+  })
+  const edit=useMutation({
+    mutationFn:()=>businessOpsApi.updateInquiryQuote(editingQuoteId as string,{quoteNumber,amount:Number(amount),currency,quantity:Number(quantity),shippingMethod,productionTime,transitTime,validUntil:validUntil?new Date(validUntil).toISOString():null,notes}),
+    onSuccess:()=>{toast.success('报价草稿已更新');resetForm();void qc.invalidateQueries({queryKey:['inquiry-quotes',inquiry.id]});onChanged()},
     onError:(e)=>toast.error(getErrorMessage(e))
   })
   const update=useMutation({
@@ -2086,7 +2094,7 @@ function InquiryQuoteButton({inquiry,onChanged}:{inquiry:import('@/types').Inqui
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader><DialogTitle>询盘报价记录</DialogTitle><DialogDescription>{inquiry.subject} · 报价版本单独保存，方便追踪改价和运输方案</DialogDescription></DialogHeader>
         <div className="rounded-lg border p-3">
-          <div className="mb-3 text-sm font-semibold">新增报价版本</div>
+          <div className="mb-3 flex items-center justify-between text-sm font-semibold"><span>{editingQuoteId?'编辑报价草稿':'新增报价版本'}</span>{editingQuoteId&&<Button type="button" size="sm" variant="ghost" onClick={resetForm}>取消编辑</Button>}</div>
           <div className="grid gap-2 sm:grid-cols-2">
             <div><Label>报价编号</Label><Input value={quoteNumber} onChange={e=>setQuoteNumber(e.target.value)}/></div>
             <div><Label>报价金额</Label><Input type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)}/></div>
@@ -2098,12 +2106,12 @@ function InquiryQuoteButton({inquiry,onChanged}:{inquiry:import('@/types').Inqui
             <div><Label>运输时效</Label><Input value={transitTime} onChange={e=>setTransitTime(e.target.value)} placeholder="25-30 days"/></div>
             <div className="sm:col-span-2"><Label>备注 / 报价条件</Label><Textarea rows={2} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="含不含运费、Setup Fee、印刷条件、付款条件等"/></div>
           </div>
-          <Button className="mt-3" size="sm" onClick={()=>create.mutate()} disabled={create.isPending||!quoteNumber.trim()||Number(amount)<=0||Number(quantity)<=0}>保存报价版本</Button>
+          <Button className="mt-3" size="sm" onClick={()=>editingQuoteId?edit.mutate():create.mutate()} disabled={create.isPending||edit.isPending||!quoteNumber.trim()||Number(amount)<=0||Number(quantity)<=0}>{edit.isPending?'保存中…':editingQuoteId?'保存修改':'保存报价版本'}</Button>
         </div>
         <div>
           <div className="mb-2 text-sm font-semibold">历史报价</div>
           <div className="space-y-2">{(quotes.data??[]).map((q:any)=><div key={q.id} className="rounded-lg border p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-medium">{q.quote_number} · {q.currency} {Number(q.amount).toFixed(2)} / {q.quantity} pcs</div><Select value={q.status} onValueChange={v=>update.mutate({id:q.id,status:v as 'draft'|'sent'|'accepted'|'rejected'|'expired'})}><SelectTrigger className="h-8 w-28"><SelectValue/></SelectTrigger><SelectContent>{Object.entries(labels).map(([k,v])=><SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div>
+            <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-medium">{q.quote_number} · {q.currency} {Number(q.amount).toFixed(2)} / {q.quantity} pcs</div><div className="flex items-center gap-2">{q.status==='draft'&&<Button type="button" size="sm" variant="outline" onClick={()=>fillEditForm(q)}>编辑草稿</Button>}<Select value={q.status} onValueChange={v=>update.mutate({id:q.id,status:v as 'draft'|'sent'|'accepted'|'rejected'|'expired'})}><SelectTrigger className="h-8 w-28"><SelectValue/></SelectTrigger><SelectContent>{Object.entries(labels).map(([k,v])=><SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div></div>
             <p className="mt-1 text-xs text-slate-500">{q.shipping_method||'运输方式未注明'} · 生产：{q.production_time||'未注明'} · 运输：{q.transit_time||'未注明'} · 有效期：{q.valid_until?.slice(0,10)||'未注明'}</p>
             {q.notes&&<p className="mt-1 whitespace-pre-wrap text-xs text-slate-500">{q.notes}</p>}
           </div>)}</div>
