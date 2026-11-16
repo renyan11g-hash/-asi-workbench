@@ -445,12 +445,18 @@ businessOpsRouter.post('/assistant', async (req: Request, res: Response) => {
   if (!latestQuestion) throw new AppError(400, '请输入要查询的问题')
   const retrievalText = userMessages.slice(-4).map(m => m.content).join(' ')
 
-  const stopWords = new Set(['帮我','请问','请帮','一下','这个','那个','怎么','如何','哪些','什么','是否','有没有','可以','现在','目前','相关','情况','信息','资料','查询','查一下','分析','总结','看看','告诉我','the','and','for','with','from','what','which','when','where','how','please','about','show','find','help','can','you','our','your'])
-  const terms = Array.from(new Set(
-    (retrievalText.match(/[\u4e00-\u9fff]{2,}|[a-z0-9][a-z0-9._-]{2,}/gi) ?? [])
-      .map(x => x.toLowerCase())
-      .filter(x => !stopWords.has(x))
-  )).slice(0, 8)
+  const stopWords = new Set(['帮我','请问','请帮','一下','这个','那个','怎么','如何','哪些','什么','是否','有没有','可以','现在','目前','相关','情况','信息','资料','查询','查一下','分析','总结','看看','告诉我','最近','分别','来自','对应','然后','还有','以及','一下子','the','and','for','with','from','what','which','when','where','how','please','about','show','find','help','can','you','our','your','looking','need'])
+  const rawTerms = retrievalText.match(/[\u4e00-\u9fff]{2,}|[a-z0-9][a-z0-9._-]{2,}/gi) ?? []
+  const expandedTerms = rawTerms.flatMap(token => {
+    const lower = token.toLowerCase()
+    if (/^[\u4e00-\u9fff]+$/.test(lower)) {
+      const pairs = Array.from({ length: Math.max(0, lower.length - 1) }, (_, i) => lower.slice(i, i + 2))
+      const triples = lower.length > 4 ? Array.from({ length: lower.length - 2 }, (_, i) => lower.slice(i, i + 3)) : []
+      return [...triples, ...pairs]
+    }
+    return [lower]
+  })
+  const terms = Array.from(new Set(expandedTerms.filter(x => x.length >= 2 && !stopWords.has(x)))).slice(-12)
 
   const buildWhere = (columns: string[]) => {
     if (!terms.length) return { sql: '1=1', params: [] as string[] }
@@ -465,12 +471,12 @@ businessOpsRouter.post('/assistant', async (req: Request, res: Response) => {
   const taskWhere = buildWhere(['title','description'])
   const supplierWhere = buildWhere(['sc.supplier_name','sc.content','sc.response','p.source_title','p.gls_code'])
 
-  const customers = db.prepare("SELECT id,name,company,country,type,notes,updated_at FROM customers WHERE " + customerWhere.sql + " ORDER BY updated_at DESC LIMIT 8").all(...customerWhere.params)
-  const inquiries = db.prepare("SELECT i.id,i.subject,i.content,i.status,i.type,i.ai_category,i.product_id,i.created_at,i.updated_at,c.name AS customer_name,c.company AS customer_company,p.gls_code,p.source_title AS product_title FROM inquiries i JOIN customers c ON c.id=i.customer_id LEFT JOIN products p ON p.id=i.product_id WHERE " + inquiryWhere.sql + " ORDER BY i.updated_at DESC LIMIT 8").all(...inquiryWhere.params)
+  const customers = db.prepare("SELECT id,name,company,country,type,substr(notes,1,300) AS notes,updated_at FROM customers WHERE " + customerWhere.sql + " ORDER BY updated_at DESC LIMIT 8").all(...customerWhere.params)
+  const inquiries = db.prepare("SELECT i.id,i.subject,substr(i.content,1,800) AS content,i.status,i.type,i.ai_category,i.product_id,i.created_at,i.updated_at,c.name AS customer_name,c.company AS customer_company,p.gls_code,p.source_title AS product_title FROM inquiries i JOIN customers c ON c.id=i.customer_id LEFT JOIN products p ON p.id=i.product_id WHERE " + inquiryWhere.sql + " ORDER BY i.updated_at DESC LIMIT 8").all(...inquiryWhere.params)
   const products = db.prepare("SELECT id,gls_code,code,source_title,source_url,supplier,price_cny,moq,material_cn,size_cn,weight_g,platform_name,platform_product_id,platform_url,listing,status,updated_at FROM products WHERE status != 'trashed' AND (" + productWhere.sql + ") ORDER BY updated_at DESC LIMIT 10").all(...productWhere.params) as Array<Record<string, any>>
   const orders = db.prepare("SELECT o.id,o.order_number,o.status,o.payment_status,o.total_amount,o.created_at,o.updated_at,c.name AS customer_name,c.company AS customer_company,i.id AS inquiry_id,i.subject AS inquiry_subject FROM orders o JOIN customers c ON c.id=o.customer_id LEFT JOIN inquiries i ON i.id=o.inquiry_id LEFT JOIN order_items oi ON oi.order_id=o.id LEFT JOIN products p ON p.id=oi.product_id WHERE " + orderWhere.sql + " GROUP BY o.id ORDER BY o.updated_at DESC LIMIT 8").all(...orderWhere.params)
-  const quotes = db.prepare("SELECT q.id,q.inquiry_id,q.quote_number,q.amount,q.currency,q.quantity,q.shipping_method,q.production_time,q.transit_time,q.valid_until,q.notes,q.status,q.created_at,i.subject AS inquiry_subject,c.name AS customer_name FROM inquiry_quotes q JOIN inquiries i ON i.id=q.inquiry_id JOIN customers c ON c.id=i.customer_id WHERE " + quoteWhere.sql + " ORDER BY q.updated_at DESC LIMIT 10").all(...quoteWhere.params)
-  const supplierCommunications = db.prepare("SELECT sc.id,sc.product_id,sc.supplier_name,sc.content,sc.response,sc.price_cny,sc.moq,sc.lead_time,sc.created_at,p.gls_code,p.source_title AS product_title FROM supplier_communications sc LEFT JOIN products p ON p.id=sc.product_id WHERE " + supplierWhere.sql + " ORDER BY sc.created_at DESC LIMIT 8").all(...supplierWhere.params)
+  const quotes = db.prepare("SELECT q.id,q.inquiry_id,q.quote_number,q.amount,q.currency,q.quantity,q.shipping_method,q.production_time,q.transit_time,q.valid_until,substr(q.notes,1,300) AS notes,q.status,q.created_at,i.subject AS inquiry_subject,c.name AS customer_name FROM inquiry_quotes q JOIN inquiries i ON i.id=q.inquiry_id JOIN customers c ON c.id=i.customer_id WHERE " + quoteWhere.sql + " ORDER BY q.updated_at DESC LIMIT 10").all(...quoteWhere.params)
+  const supplierCommunications = db.prepare("SELECT sc.id,sc.product_id,sc.supplier_name,substr(sc.content,1,500) AS content,substr(sc.response,1,500) AS response,sc.price_cny,sc.moq,sc.lead_time,sc.created_at,p.gls_code,p.source_title AS product_title FROM supplier_communications sc LEFT JOIN products p ON p.id=sc.product_id WHERE " + supplierWhere.sql + " ORDER BY sc.created_at DESC LIMIT 8").all(...supplierWhere.params)
   const tasks = db.prepare("SELECT id,title,description,task_type,entity_type,entity_id,due_at,priority,status FROM business_tasks WHERE status='open' AND (" + taskWhere.sql + ") ORDER BY due_at ASC LIMIT 8").all(...taskWhere.params)
   const count = (sql: string) => (db.prepare(sql).get() as { c: number }).c
   const counts = {
