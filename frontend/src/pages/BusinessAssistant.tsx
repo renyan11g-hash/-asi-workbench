@@ -4,10 +4,10 @@ import { Bot, Send, Loader2, Package, Users, MessageSquare, ClipboardList, FileT
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { businessOpsApi } from '@/lib/api'
+import { api, businessOpsApi } from '@/lib/api'
 import { useNavigate } from 'react-router-dom'
 
-type Entity = { type: 'product'|'customer'|'inquiry'|'order'|'quote'; id: string }
+type Entity = { type: 'product'|'customer'|'inquiry'|'order'|'quote'; id: string; customerId?: string }
 type Message = { role: 'user' | 'assistant'; content: string; entities?: Entity[]; missingInfo?: string[] }
 const suggestions = [
   '帮我查一下最近有哪些新询盘，分别来自哪些客户？',
@@ -22,6 +22,17 @@ export default function BusinessAssistant() {
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
   const navigate = useNavigate()
+  const emailDraftMutation = useMutation({
+    mutationFn: (entity: Entity) => {
+      if (!entity.customerId) throw new Error('该询盘缺少客户关联，无法生成邮件草稿')
+      return api.generateEmailDraft({ customerId: entity.customerId, inquiryId: entity.id, tone: 'professional' })
+    },
+    onSuccess: () => {
+      toast.success('邮件草稿已生成并保存，可在「邮件草稿」中编辑确认；不会自动发送')
+      navigate('/order-center?tab=emails')
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : '邮件草稿生成失败'),
+  })
   const mutation = useMutation({
     mutationFn: (next: Message[]) => businessOpsApi.assistant({ messages: next.map(({role,content}) => ({role,content})) }),
     onSuccess: (result, next) => setMessages([...next, { role: 'assistant', content: result.reply, entities: result.entities, missingInfo: result.missingInfo }]),
@@ -63,7 +74,7 @@ export default function BusinessAssistant() {
             {messages.map((m,i) => <div key={i} className={m.role === 'user' ? 'ml-8 rounded-xl bg-blue-50 p-3' : 'mr-4 rounded-xl border bg-slate-50 p-4'}>
               <div className="mb-1 text-[11px] font-semibold text-slate-500">{m.role === 'user' ? '你' : 'AI 业务助手'}</div>
               <div className="whitespace-pre-wrap text-sm leading-6 text-slate-800">{m.content}</div>
-              {!!m.entities?.length && <div className="mt-3 flex flex-wrap gap-2">{m.entities.map(e => <button key={`${e.type}:${e.id}`} onClick={() => openEntity(e)} className="inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50"><EntityIcon type={e.type}/>{entityLabels[e.type] ?? e.type} · 打开记录</button>)}</div>}
+              {!!m.entities?.length && <div className="mt-3 flex flex-wrap gap-2">{m.entities.map(e => <span key={`${e.type}:${e.id}`} className="inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1.5 text-xs text-blue-700"><EntityIcon type={e.type}/>{entityLabels[e.type] ?? e.type} · <button onClick={() => openEntity(e)} className="underline underline-offset-2">打开记录</button>{e.type === 'inquiry' && e.customerId && <><span className="text-slate-300">|</span><button onClick={() => emailDraftMutation.mutate(e)} disabled={emailDraftMutation.isPending} className="font-semibold text-violet-700 hover:underline disabled:opacity-50">{emailDraftMutation.isPending ? '生成中…' : '生成邮件草稿'}</button></>}</span>)}</div>}
               {!!m.missingInfo?.length && <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900"><div className="mb-1 font-semibold">还需要人工确认</div>{m.missingInfo.map((x,j)=><div key={j}>• {x}</div>)}</div>}
             </div>)}
             {mutation.isPending && <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="h-4 w-4 animate-spin"/>正在检索业务资料并分析…</div>}

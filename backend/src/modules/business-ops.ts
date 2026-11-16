@@ -472,7 +472,7 @@ businessOpsRouter.post('/assistant', async (req: Request, res: Response) => {
   const supplierWhere = buildWhere(['sc.supplier_name','sc.content','sc.response','p.source_title','p.gls_code'])
 
   const customers = db.prepare("SELECT id,name,company,country,type,substr(notes,1,300) AS notes,updated_at FROM customers WHERE " + customerWhere.sql + " ORDER BY updated_at DESC LIMIT 8").all(...customerWhere.params)
-  const inquiries = db.prepare("SELECT i.id,i.subject,substr(i.content,1,800) AS content,i.status,i.type,i.ai_category,i.product_id,i.created_at,i.updated_at,c.name AS customer_name,c.company AS customer_company,p.gls_code,p.source_title AS product_title FROM inquiries i JOIN customers c ON c.id=i.customer_id LEFT JOIN products p ON p.id=i.product_id WHERE " + inquiryWhere.sql + " ORDER BY i.updated_at DESC LIMIT 8").all(...inquiryWhere.params)
+  const inquiries = db.prepare("SELECT i.id,i.customer_id,i.subject,substr(i.content,1,800) AS content,i.status,i.type,i.ai_category,i.product_id,i.created_at,i.updated_at,c.name AS customer_name,c.company AS customer_company,p.gls_code,p.source_title AS product_title FROM inquiries i JOIN customers c ON c.id=i.customer_id LEFT JOIN products p ON p.id=i.product_id WHERE " + inquiryWhere.sql + " ORDER BY i.updated_at DESC LIMIT 8").all(...inquiryWhere.params)
   const products = db.prepare("SELECT id,gls_code,code,source_title,source_url,supplier,price_cny,moq,material_cn,size_cn,weight_g,platform_name,platform_product_id,platform_url,listing,status,updated_at FROM products WHERE status != 'trashed' AND (" + productWhere.sql + ") ORDER BY updated_at DESC LIMIT 10").all(...productWhere.params) as Array<Record<string, any>>
   const orders = db.prepare("SELECT o.id,o.order_number,o.status,o.payment_status,o.total_amount,o.created_at,o.updated_at,c.name AS customer_name,c.company AS customer_company,i.id AS inquiry_id,i.subject AS inquiry_subject FROM orders o JOIN customers c ON c.id=o.customer_id LEFT JOIN inquiries i ON i.id=o.inquiry_id LEFT JOIN order_items oi ON oi.order_id=o.id LEFT JOIN products p ON p.id=oi.product_id WHERE " + orderWhere.sql + " GROUP BY o.id ORDER BY o.updated_at DESC LIMIT 8").all(...orderWhere.params)
   const quotes = db.prepare("SELECT q.id,q.inquiry_id,q.quote_number,q.amount,q.currency,q.quantity,q.shipping_method,q.production_time,q.transit_time,q.valid_until,substr(q.notes,1,300) AS notes,q.status,q.created_at,i.subject AS inquiry_subject,c.name AS customer_name FROM inquiry_quotes q JOIN inquiries i ON i.id=q.inquiry_id JOIN customers c ON c.id=i.customer_id WHERE " + quoteWhere.sql + " ORDER BY q.updated_at DESC LIMIT 10").all(...quoteWhere.params)
@@ -497,7 +497,7 @@ businessOpsRouter.post('/assistant', async (req: Request, res: Response) => {
   }
   const allowedEntities = [
     ...(customers as Array<any>).map(x => ({ type: 'customer', id: x.id })),
-    ...(inquiries as Array<any>).map(x => ({ type: 'inquiry', id: x.id })),
+    ...(inquiries as Array<any>).map(x => ({ type: 'inquiry', id: x.id, customerId: x.customer_id })),
     ...products.map(x => ({ type: 'product', id: x.id })),
     ...(orders as Array<any>).map(x => ({ type: 'order', id: x.id })),
     ...(quotes as Array<any>).map(x => ({ type: 'quote', id: x.id })),
@@ -515,12 +515,13 @@ businessOpsRouter.post('/assistant', async (req: Request, res: Response) => {
   ].join('\n')
   const user = JSON.stringify({ conversation: body.messages, context, suppliedEntities: allowedEntities })
   const raw = await callChatJson<Record<string, unknown>>(loadSettings(), system, user, 0.2, undefined, { task: 'business-assistant' })
-  const allowed = new Set(allowedEntities.map(x => x.type + ':' + x.id))
+  const allowed = new Map(allowedEntities.map(x => [x.type + ':' + x.id, x]))
   const entities = Array.isArray(raw.entities) ? raw.entities.flatMap((item: any) => {
     if (!item || typeof item !== 'object') return []
     const type = String(item.type ?? '')
     const id = String(item.id ?? '')
-    return allowed.has(type + ':' + id) ? [{ type, id }] : []
+    const match = allowed.get(type + ':' + id)
+    return match ? [{ type, id, ...(type === 'inquiry' ? { customerId: (match as any).customerId } : {}) }] : []
   }).slice(0, 8) : []
   const missingInfo = Array.isArray(raw.missingInfo) ? raw.missingInfo.map(String).slice(0, 8) : []
   res.json({ reply: String(raw.reply ?? '').trim() || '暂时无法生成回答，请换一种问法。', entities, missingInfo, counts })
