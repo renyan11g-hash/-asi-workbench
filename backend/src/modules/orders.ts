@@ -148,6 +148,8 @@ ordersRouter.post('/', async (req: Request, res: Response) => {
     const inquiry = db.prepare('SELECT id, customer_id FROM inquiries WHERE id = ?').get(body.inquiryId) as { id: string; customer_id: string } | undefined
     if (!inquiry) throw new AppError(404, '来源询盘不存在')
     if (inquiry.customer_id !== body.customerId) throw new AppError(400, '来源询盘与订单客户不一致')
+    const existingInquiryOrder = db.prepare('SELECT order_number FROM orders WHERE inquiry_id = ? LIMIT 1').get(body.inquiryId) as { order_number: string } | undefined
+    if (existingInquiryOrder) throw new AppError(409, `该询盘已生成订单 ${existingInquiryOrder.order_number}，不能重复转单`)
   }
 
   // 验证订单号是否已存在
@@ -273,6 +275,11 @@ ordersRouter.put('/:id', async (req: Request, res: Response) => {
 ordersRouter.delete('/:id', async (req: Request, res: Response) => {
   const row = findOrder(String(req.params.id))
   if (!row) throw new AppError(404, '订单不存在')
+
+  // 已关联来源询盘的订单保留追溯关系；需要撤销时将订单状态改为 cancelled。
+  if (row.inquiry_id) {
+    throw new AppError(400, '该订单关联来源询盘，不能直接删除；如需撤销请将订单状态改为已取消，以保留业务追溯记录')
+  }
 
   // 只能删除未确认的订单
   if (row.status !== 'pending') {

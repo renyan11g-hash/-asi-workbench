@@ -393,7 +393,7 @@ businessOpsRouter.post('/inquiries/:id/quotes', (req: Request, res: Response) =>
   const now = new Date().toISOString()
   db.prepare('INSERT INTO inquiry_quotes (id,inquiry_id,quote_number,amount,currency,quantity,shipping_method,production_time,transit_time,valid_until,notes,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     .run(id,inquiryId,body.quoteNumber,body.amount,body.currency,body.quantity,body.shippingMethod,body.productionTime,body.transitTime,body.validUntil ?? null,body.notes,'draft',now,now)
-  db.prepare("UPDATE inquiries SET status='quoted',updated_at=? WHERE id=?").run(now,inquiryId)
+  db.prepare("UPDATE inquiries SET status='quoted',updated_at=? WHERE id=? AND status NOT IN ('converted','closed')").run(now,inquiryId)
   res.status(201).json({ quote: db.prepare('SELECT * FROM inquiry_quotes WHERE id = ?').get(id) })
 })
 
@@ -411,8 +411,21 @@ businessOpsRouter.put('/quotes/:id', (req: Request, res: Response) => {
 
 businessOpsRouter.patch('/quotes/:id/status', (req: Request, res: Response) => {
   const id = String(req.params.id)
-  if (!db.prepare('SELECT id FROM inquiry_quotes WHERE id = ?').get(id)) throw new AppError(404, '报价记录不存在')
+  const existing = db.prepare('SELECT id,status FROM inquiry_quotes WHERE id = ?').get(id) as { id: string; status: string } | undefined
+  if (!existing) throw new AppError(404, '报价记录不存在')
   const body = z.object({ status: z.enum(['draft','sent','accepted','rejected','expired']) }).parse(req.body ?? {})
-  db.prepare('UPDATE inquiry_quotes SET status=?,updated_at=? WHERE id=?').run(body.status,new Date().toISOString(),id)
+  const allowedTransitions: Record<string, string[]> = {
+    draft: ['draft', 'sent'],
+    sent: ['sent', 'accepted', 'rejected', 'expired'],
+    accepted: ['accepted'],
+    rejected: ['rejected'],
+    expired: ['expired'],
+  }
+  if (!(allowedTransitions[existing.status] ?? []).includes(body.status)) {
+    throw new AppError(409, '报价状态不能回退或跳级；草稿先标记为已发送，已发送报价再记录接受、拒绝或过期')
+  }
+  if (body.status !== existing.status) {
+    db.prepare('UPDATE inquiry_quotes SET status=?,updated_at=? WHERE id=?').run(body.status,new Date().toISOString(),id)
+  }
   res.json({ quote: db.prepare('SELECT * FROM inquiry_quotes WHERE id = ?').get(id) })
 })

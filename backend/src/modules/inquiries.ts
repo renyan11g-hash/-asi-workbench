@@ -205,8 +205,17 @@ inquiriesRouter.patch('/:id/status', async (req: Request, res: Response) => {
     })
     .parse(req.body ?? {})
 
+  if (status === 'converted' && row.status !== 'converted') {
+    throw new AppError(409, '询盘只能在人工确认创建订单后自动标记为已转订单')
+  }
+  if (row.status === 'converted' && status !== 'converted') {
+    throw new AppError(409, '该询盘已生成订单，不能将状态改回未转订单；如需撤销请处理关联订单')
+  }
+
   const now = new Date().toISOString()
-  db.prepare('UPDATE inquiries SET status = ?, updated_at = ? WHERE id = ?').run(status, now, row.id)
+  if (status !== row.status) {
+    db.prepare('UPDATE inquiries SET status = ?, updated_at = ? WHERE id = ?').run(status, now, row.id)
+  }
 
   const updated = findInquiry(row.id)
   res.json({ inquiry: updated ? rowToInquiry(updated) : null })
@@ -217,17 +226,14 @@ inquiriesRouter.delete('/:id', async (req: Request, res: Response) => {
   const row = findInquiry(String(req.params.id))
   if (!row) throw new AppError(404, '询盘不存在')
 
-  // 关联产品已有订单时禁止删除（询盘与订单通过产品间接关联）
-  if (row.product_id) {
-    const orderCount = db
-      .prepare(
-        'SELECT COUNT(*) as c FROM orders WHERE id IN (SELECT order_id FROM order_items WHERE product_id = ?)'
-      )
-      .get(row.product_id) as { c: number } | undefined
-
-    if (orderCount && orderCount.c > 0) {
-      throw new AppError(400, '该询盘关联的产品已有订单，无法删除')
-    }
+  // 有历史报价或来源订单的询盘必须保留，避免破坏业务追溯关系。
+  const linkedOrder = db.prepare('SELECT order_number FROM orders WHERE inquiry_id = ? LIMIT 1').get(row.id) as { order_number: string } | undefined
+  if (linkedOrder) {
+    throw new AppError(400, `该询盘已关联订单 ${linkedOrder.order_number}，不能删除；如需撤销请将订单状态改为已取消`)
+  }
+  const quoteCount = db.prepare('SELECT COUNT(*) AS c FROM inquiry_quotes WHERE inquiry_id = ?').get(row.id) as { c: number }
+  if (quoteCount.c > 0) {
+    throw new AppError(400, '该询盘已有历史报价，不能删除；请保留记录以便追溯')
   }
 
   db.prepare('DELETE FROM inquiries WHERE id = ?').run(row.id)
