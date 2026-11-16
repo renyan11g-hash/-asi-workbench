@@ -3,6 +3,8 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../db'
 import { AppError } from '../middleware/errorHandler'
+import { callChatJson } from '../services/ai'
+import { loadSettings } from './settings'
 
 export const businessOpsRouter: Router = Router()
 
@@ -428,4 +430,91 @@ businessOpsRouter.patch('/quotes/:id/status', (req: Request, res: Response) => {
     db.prepare('UPDATE inquiry_quotes SET status=?,updated_at=? WHERE id=?').run(body.status,new Date().toISOString(),id)
   }
   res.json({ quote: db.prepare('SELECT * FROM inquiry_quotes WHERE id = ?').get(id) })
+})
+
+ // ---------- 统一业务 AI 助手：只读检索真实业务数据，不直接修改记录 ----------
+businessOpsRouter.post('/assistant', async (req: Request, res: Response) => {
+  const body = z.object({
+    messages: z.array(z.object({
+      role: z.enum(['user', 'assistant']),
+      content: z.string().trim().min(1).max(4000),
+    })).min(1).max(12),
+  }).parse(req.body ?? {})
+  const userMessages = body.messages.filter(m => m.role === 'user')
+  const latestQuestion = userMessages[userMessages.length - 1]?.content ?? ''
+  if (!latestQuestion) throw new AppError(400, '请输入要查询的问题')
+  const retrievalText = userMessages.slice(-4).map(m => m.content).join(' ')
+
+  const stopWords = new Set(['帮我','请问','请帮','一下','这个','那个','怎么','如何','哪些','什么','是否','有没有','可以','现在','目前','相关','情况','信息','资料','查询','查一下','分析','总结','看看','告诉我','the','and','for','with','from','what','which','when','where','how','please','about','show','find','help','can','you','our','your'])
+  const terms = Array.from(new Set(
+    (retrievalText.match(/[\u4e00-\u9fff]{2,}|[a-z0-9][a-z0-9._-]{2,}/gi) ?? [])
+      .map(x => x.toLowerCase())
+      .filter(x => !stopWords.has(x))
+  )).slice(0, 8)
+
+  const buildWhere = (columns: string[]) => {
+    if (!terms.length) return { sql: '1=1', params: [] as string[] }
+    const sql = terms.map(() => '(' + columns.map(c => "COALESCE(" + c + ", '') LIKE ?").join(' OR ') + ')').join(' OR ')
+    return { sql, params: terms.flatMap(term => columns.map(() => '%' + term + '%')) }
+  }
+  const customerWhere = buildWhere(['name','company','country','notes'])
+  const inquiryWhere = buildWhere(['i.subject','i.content','c.name','c.company','p.source_title','p.gls_code'])
+  const productWhere = buildWhere(['gls_code','code','source_title','source_url','supplier','platform_name','platform_product_id','platform_url','listing'])
+  const orderWhere = buildWhere(['o.order_number','c.name','c.company','i.subject','p.source_title'])
+  const quoteWhere = buildWhere(['q.quote_number','q.shipping_method','q.notes','i.subject','c.name','c.company'])
+  const taskWhere = buildWhere(['title','description'])
+  const supplierWhere = buildWhere(['sc.supplier_name','sc.content','sc.response','p.source_title','p.gls_code'])
+
+  const customers = db.prepare("SELECT id,name,company,country,type,notes,updated_at FROM customers WHERE " + customerWhere.sql + " ORDER BY updated_at DESC LIMIT 8").all(...customerWhere.params)
+  const inquiries = db.prepare("SELECT i.id,i.subject,i.content,i.status,i.type,i.ai_category,i.product_id,i.created_at,i.updated_at,c.name AS customer_name,c.company AS customer_company,p.gls_code,p.source_title AS product_title FROM inquiries i JOIN customers c ON c.id=i.customer_id LEFT JOIN products p ON p.id=i.product_id WHERE " + inquiryWhere.sql + " ORDER BY i.updated_at DESC LIMIT 8").all(...inquiryWhere.params)
+  const products = db.prepare("SELECT id,gls_code,code,source_title,source_url,supplier,price_cny,moq,material_cn,size_cn,weight_g,platform_name,platform_product_id,platform_url,listing,status,updated_at FROM products WHERE status != 'trashed' AND (" + productWhere.sql + ") ORDER BY updated_at DESC LIMIT 10").all(...productWhere.params) as Array<Record<string, any>>
+  const orders = db.prepare("SELECT o.id,o.order_number,o.status,o.payment_status,o.total_amount,o.created_at,o.updated_at,c.name AS customer_name,c.company AS customer_company,i.id AS inquiry_id,i.subject AS inquiry_subject FROM orders o JOIN customers c ON c.id=o.customer_id LEFT JOIN inquiries i ON i.id=o.inquiry_id LEFT JOIN order_items oi ON oi.order_id=o.id LEFT JOIN products p ON p.id=oi.product_id WHERE " + orderWhere.sql + " GROUP BY o.id ORDER BY o.updated_at DESC LIMIT 8").all(...orderWhere.params)
+  const quotes = db.prepare("SELECT q.id,q.inquiry_id,q.quote_number,q.amount,q.currency,q.quantity,q.shipping_method,q.production_time,q.transit_time,q.valid_until,q.notes,q.status,q.created_at,i.subject AS inquiry_subject,c.name AS customer_name FROM inquiry_quotes q JOIN inquiries i ON i.id=q.inquiry_id JOIN customers c ON c.id=i.customer_id WHERE " + quoteWhere.sql + " ORDER BY q.updated_at DESC LIMIT 10").all(...quoteWhere.params)
+  const supplierCommunications = db.prepare("SELECT sc.id,sc.product_id,sc.supplier_name,sc.content,sc.response,sc.price_cny,sc.moq,sc.lead_time,sc.created_at,p.gls_code,p.source_title AS product_title FROM supplier_communications sc LEFT JOIN products p ON p.id=sc.product_id WHERE " + supplierWhere.sql + " ORDER BY sc.created_at DESC LIMIT 8").all(...supplierWhere.params)
+  const tasks = db.prepare("SELECT id,title,description,task_type,entity_type,entity_id,due_at,priority,status FROM business_tasks WHERE status='open' AND (" + taskWhere.sql + ") ORDER BY due_at ASC LIMIT 8").all(...taskWhere.params)
+  const count = (sql: string) => (db.prepare(sql).get() as { c: number }).c
+  const counts = {
+    products: count("SELECT COUNT(*) AS c FROM products WHERE status != 'trashed'"),
+    customers: count('SELECT COUNT(*) AS c FROM customers'),
+    inquiries: count('SELECT COUNT(*) AS c FROM inquiries'),
+    orders: count('SELECT COUNT(*) AS c FROM orders'),
+    quotes: count('SELECT COUNT(*) AS c FROM inquiry_quotes'),
+  }
+  const context = {
+    counts, searchTerms: terms, customers, inquiries,
+    products: products.map(p => {
+      let listing: Record<string, any> | null = null
+      try { listing = p.listing ? JSON.parse(String(p.listing)) : null } catch { listing = null }
+      return { ...p, listing: listing ? { title: listing.title, summary: listing.summary, description: String(listing.description ?? '').slice(0, 400), keywords: (listing.keywords ?? []).slice(0, 12), category: listing.category } : null }
+    }),
+    orders, quotes, supplierCommunications, openTasks: tasks,
+  }
+  const allowedEntities = [
+    ...(customers as Array<any>).map(x => ({ type: 'customer', id: x.id })),
+    ...(inquiries as Array<any>).map(x => ({ type: 'inquiry', id: x.id })),
+    ...products.map(x => ({ type: 'product', id: x.id })),
+    ...(orders as Array<any>).map(x => ({ type: 'order', id: x.id })),
+    ...(quotes as Array<any>).map(x => ({ type: 'quote', id: x.id })),
+  ]
+  const system = [
+    '你是中国采购型 ASI Supplier 的内部业务助理，服务美国 Promotional Products Distributor。',
+    '你会收到从 Workbench 数据库检索出的客户、产品、询盘、报价、订单、供应商沟通和待办数据。',
+    '只能把 context 中明确存在的内容当作事实；没有记录就明确说“当前系统未查到/资料未录入”，不得猜测价格、库存、交期、认证、运输成本、客户意向或订单状态。',
+    '先直接回答用户问题，再列出关键依据和需要人工确认的缺口。金额必须保留原币种；日期按数据原样表达。',
+    '如果多个记录名称相似，指出歧义，不要擅自认定为同一客户或同一产品。',
+    '你是只读助手：不得声称已创建、修改、删除、发送邮件、联系供应商或更改状态；可给出建议和可复制草稿，但所有操作必须由用户在对应页面人工确认。',
+    '从 suppliedEntities 中挑选真正支撑回答的记录，返回对应 type 和 id，不得创造 ID。最多 8 条。',
+    '只返回严格 JSON：{"reply":"中文回答","entities":[{"type":"product|customer|inquiry|order|quote","id":"已有ID"}],"missingInfo":["需要人工补充的信息"]}。'
+  ].join('\n')
+  const user = JSON.stringify({ conversation: body.messages, context, suppliedEntities: allowedEntities })
+  const raw = await callChatJson<Record<string, unknown>>(loadSettings(), system, user, 0.2, undefined, { task: 'business-assistant' })
+  const allowed = new Set(allowedEntities.map(x => x.type + ':' + x.id))
+  const entities = Array.isArray(raw.entities) ? raw.entities.flatMap((item: any) => {
+    if (!item || typeof item !== 'object') return []
+    const type = String(item.type ?? '')
+    const id = String(item.id ?? '')
+    return allowed.has(type + ':' + id) ? [{ type, id }] : []
+  }).slice(0, 8) : []
+  const missingInfo = Array.isArray(raw.missingInfo) ? raw.missingInfo.map(String).slice(0, 8) : []
+  res.json({ reply: String(raw.reply ?? '').trim() || '暂时无法生成回答，请换一种问法。', entities, missingInfo, counts })
 })
