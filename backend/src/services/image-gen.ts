@@ -239,6 +239,10 @@ async function wanGenerate(settings: ImageSettings, prompt: string, refs: ImageR
     clearTimeout(timer)
   }
   const raw = await res.text()
+  if (res.status === 401 || res.status === 403)
+    throw new AiError(`百炼 Wan API 鉴权失败 (${res.status})`, '请检查百炼北京地域 API Key、模型开通状态和账户额度。')
+  if (res.status === 404)
+    throw new AiError('Wan API 地址或模型不存在', 'Base URL 应为 https://dashscope.aliyuncs.com，模型 ID 应为 wan2.7-image-pro 或 wan2.7-image。')
   if (!res.ok) throw friendlyImageError(res.status, raw)
   let data: WanImageResponse
   try {
