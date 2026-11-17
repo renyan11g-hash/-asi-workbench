@@ -322,7 +322,7 @@ export default function SettingsPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <Field
                 label="资料结构化模型（可选）"
-                hint="留空就用上面的模型。产品资料提取是「只抄不编」的任务，用更快更便宜的模型就够。"
+                hint="留空就用上面的模型。建议配置支持看图的 Qwen 视觉模型（如 qwen-vl-max）；图片一致性审核会使用这个模型。"
               >
                 <Input
                   className="h-9 text-sm"
@@ -353,7 +353,7 @@ export default function SettingsPage() {
 
       <SectionCard
         title="图像生成（产品图片）"
-        hint="用于生成产品主图/尺寸图/介绍图。火山引擎即梦 Seedream 国内直连、支付宝充值；也兼容 OpenAI gpt-image-1。与上方文本 AI 相互独立。"
+        hint="支持火山 Seedream、OpenAI 兼容接口和阿里云百炼 Wan 2.7。Wan 负责商品图片编辑/场景生成；上方 Qwen 视觉模型负责图片理解与质量复检。"
       >
         <div className="space-y-4">
           <div className="space-y-2">
@@ -407,7 +407,7 @@ export default function SettingsPage() {
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
-              <Field label="Base URL" hint="火山引擎填 https://ark.cn-beijing.volces.com/api/v3（粘贴完整端点也可自动识别）">
+              <Field label="Base URL" hint="Wan 2.7 填 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1；Seedream 填火山方舟 API 地址。">
                 <Input
                   className="h-9 text-sm"
                   value={form.imageBaseUrl}
@@ -422,10 +422,10 @@ export default function SettingsPage() {
                 type="password"
                 value={form.imageApiKey}
                 onChange={(e) => patch({ imageApiKey: e.target.value })}
-                placeholder="火山引擎 API Key"
+                placeholder="百炼北京地域 / 火山方舟 API Key"
               />
             </Field>
-            <Field label="模型名称" hint="需与方舟控制台开通的模型 ID 一致">
+            <Field label="模型名称" hint="Wan 2.7 使用 wan2.7-image-pro；Seedream 使用方舟已开通的模型 ID。">
               <Input
                 className="h-9 text-sm"
                 value={form.imageModel}
@@ -433,7 +433,7 @@ export default function SettingsPage() {
                 placeholder="doubao-seedream-4-0-250828"
               />
             </Field>
-            <Field label="生成尺寸" hint="火山：1K / 2K / 4K；OpenAI：1024x1024 等">
+            <Field label="生成尺寸" hint="Wan 编辑/组图最高 2K；Seedream 按服务商支持设置。">
               <Input
                 className="h-9 text-sm"
                 value={form.imageSize}
