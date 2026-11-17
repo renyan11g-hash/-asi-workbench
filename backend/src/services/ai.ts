@@ -106,7 +106,9 @@ export function modelFor(
   task?: string
 ): string {
   const base = settings.aiModel?.trim() || 'gpt-4o-mini'
-  if (task === 'spec-extract' && settings.aiModelExtract?.trim()) return settings.aiModelExtract.trim()
+  if ((task === 'spec-extract' || task === 'image-review' || task === 'visual-style-learn') && settings.aiModelExtract?.trim()) {
+    return settings.aiModelExtract.trim()
+  }
   if (task === 'listing-qc' && settings.aiModelQc?.trim()) return settings.aiModelQc.trim()
   return base
 }
