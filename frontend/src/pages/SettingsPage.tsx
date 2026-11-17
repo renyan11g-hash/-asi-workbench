@@ -367,7 +367,7 @@ export default function SettingsPage() {
             <div>
               <div className="text-sm font-semibold text-slate-800">独立视觉理解模型（Qwen）</div>
               <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600">
-                与上面的文本模型分开配置。用于生成图片的产品一致性审核；建议使用百炼北京地域的 qwen-vl-max。
+                与上面的文本模型分开配置。用于产品资料识别、自动挑选 1688 产品参考图，以及生成图片的一致性审核；建议使用百炼北京地域的 qwen-vl-max。
               </p>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
