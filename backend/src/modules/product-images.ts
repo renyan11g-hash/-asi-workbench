@@ -845,9 +845,9 @@ Rules:
         (raw.roles ?? [])
           .filter(
             (r) =>
-              typeof r?.index === 'number' &&
-              r.index >= 1 &&
-              r.index <= max &&
+              Number.isInteger(Number(r?.index)) &&
+              Number(r.index) >= 1 &&
+              Number(r.index) <= max &&
               roles.includes(String(r.role ?? '').toUpperCase())
           )
           .map((r) => analyzedUrls[Number(r.index) - 1])
@@ -868,7 +868,7 @@ Rules:
   }
   // 返回给前端的角色序号映射回原始产品图列表，避免下载失败跳图后 UI 标错照片。
   const roles = (raw.roles ?? [])
-    .filter((r) => typeof r?.index === 'number' && r.index >= 1 && r.index <= analyzedOriginalIndexes.length)
+    .filter((r) => Number.isInteger(Number(r?.index)) && Number(r.index) >= 1 && Number(r.index) <= analyzedOriginalIndexes.length)
     .map((r) => ({ ...r, index: analyzedOriginalIndexes[Number(r.index) - 1] }))
   res.json({ picks, roles, count: analyzedUrls.length, plan: readPlan(productId) })
 })
