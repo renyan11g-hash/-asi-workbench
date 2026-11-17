@@ -28,7 +28,7 @@ Replace `{WorkspaceId}` with the Workspace ID from the Model Studio console. The
 - Existing 1688 image collection and local mirroring remain unchanged.
 - Existing product-image prompts, fidelity guardrails, style references, image review and image history remain in use.
 - Wan uses the official Beijing multimodal-generation endpoint and accepts up to 9 ordered image references.
-- Before a Wan request, reference images (including transparent PNG logos) are flattened onto white and encoded as JPEG; very small inputs are upscaled to meet the provider's 240 px minimum side. Images that cannot be read or converted are rejected before generation, rather than silently sending broken references.
+- Before a Wan request, decodable reference images (including transparent PNG logos) are flattened onto white and encoded as JPEG; very small inputs are upscaled to meet the provider's 240 px minimum side. WebP is passed through in its supported native format when the local image decoder cannot read it. Other unreadable references are rejected before generation, rather than silently sending broken references.
 - Wan output URLs are downloaded immediately into a Buffer; the existing image pipeline then persists the result in `image_blobs` and `product_images`.
 - Seedream and OpenAI-compatible image providers remain available by changing the existing image settings.
 - Qwen handles source-product identification (`image-identify`), automatic source-photo role classification (`image-plan`, up to 9 source images per pass) and generated-image QA (`image-review`) when the dedicated vision key is configured. It does not require changing the general text model.
