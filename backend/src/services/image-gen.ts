@@ -204,13 +204,13 @@ async function wanGenerate(
   refs: ImageRef[]
 ): Promise<Buffer> {
   const { base, key, model } = assertConfig(settings)
-  if (!/maas\\.aliyuncs\\.com/i.test(base)) {
+  if (!/maas\.aliyuncs\.com/i.test(base)) {
     throw new AiError(
       'Wan 2.7 Base URL 配置不正确',
       '请填写百炼北京地域工作空间地址：https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1'
     )
   }
-  const endpoint = `${base.replace(/\\/+$/, '')}/services/aigc/multimodal-generation/generation`
+  const endpoint = `${base.replace(/\/+$/, '')}/services/aigc/multimodal-generation/generation`
   const prepared = await normalizeImageRefs(refs)
   const content: Array<{ image: string } | { text: string }> = prepared
     .slice(0, 9)
