@@ -10,7 +10,7 @@ In **Settings → AI API → Independent vision model (Qwen)** configure:
 - Model: `qwen-vl-max` (or another vision-capable model enabled for your account)
 - API Key: Alibaba Cloud Model Studio API key for China (Beijing)
 
-The vision provider is independent from the general text provider. It is used by generated-image QA to compare product silhouette, color, structure, accessories, scene plausibility, background and image quality. The Settings test sends a tiny image to verify multimodal input, not just text connectivity.
+The vision provider is independent from the general text provider. It is used by generated-image QA to compare product silhouette, color, structure, accessories, scene plausibility, background and image quality. The Settings test sends a valid 64×64 PNG probe to verify multimodal input, not just text connectivity.
 
 ## Configure the image generation model (Wan 2.7)
 
@@ -28,9 +28,10 @@ Replace `{WorkspaceId}` with the Workspace ID from the Model Studio console. The
 - Existing 1688 image collection and local mirroring remain unchanged.
 - Existing product-image prompts, fidelity guardrails, style references, image review and image history remain in use.
 - Wan uses the official Beijing multimodal-generation endpoint and accepts up to 9 ordered image references.
+- Before a Wan request, reference images (including transparent PNG logos) are flattened onto white and encoded as JPEG; very small inputs are upscaled to meet the provider's 240 px minimum side. Images that cannot be read or converted are rejected before generation, rather than silently sending broken references.
 - Wan output URLs are downloaded immediately into a Buffer; the existing image pipeline then persists the result in `image_blobs` and `product_images`.
 - Seedream and OpenAI-compatible image providers remain available by changing the existing image settings.
-- Qwen handles both the automatic product-photo identification step (`image-identify`) and generated-image QA (`image-review`) when the dedicated vision key is configured. It does not require changing the general text model.
+- Qwen handles source-product identification (`image-identify`), automatic source-photo role classification (`image-plan`) and generated-image QA (`image-review`) when the dedicated vision key is configured. It does not require changing the general text model.
 
 ## Known limits / rollout checks
 
