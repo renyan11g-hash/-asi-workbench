@@ -225,7 +225,7 @@ async function wanGenerate(settings: ImageSettings, prompt: string, refs: ImageR
   const timer = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS)
   let res: Response
   try {
-    res = await fetch(`${base.replace(/\\/+$/, '')}/api/v1/services/aigc/multimodal-generation/generation`, {
+    res = await fetch(`${base.replace(/\/+$/, '')}/api/v1/services/aigc/multimodal-generation/generation`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify(body),
