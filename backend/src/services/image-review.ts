@@ -114,6 +114,7 @@ MATERIAL: ${input.material || '(未提供)'}
 Image 1 is the generated image. Images 2-${input.productImages.length + 1} are the original product photos.
 Run the 7 checks and output the JSON.`
 
+  const useDedicatedVision = Boolean(settings.imageVisionApiKey?.trim() && settings.imageVisionBaseUrl?.trim())
   try {
     const { data } = await callChatJsonDetailed<{ checks?: Array<{ key?: string; ok?: boolean; note?: string }> }>(
       settings,
@@ -121,7 +122,13 @@ Run the 7 checks and output the JSON.`
       user,
       0.1,
       [input.image, ...input.productImages.slice(0, 3)],
-      { task: 'image-review', productId: productId ?? null }
+      {
+        task: 'image-review',
+        productId: productId ?? null,
+        model: useDedicatedVision ? settings.imageVisionModel || undefined : undefined,
+        baseUrl: useDedicatedVision ? settings.imageVisionBaseUrl : undefined,
+        apiKey: useDedicatedVision ? settings.imageVisionApiKey : undefined,
+      }
     )
     const byKey = new Map<string, { ok: boolean; note: string }>()
     for (const c of data.checks ?? []) {

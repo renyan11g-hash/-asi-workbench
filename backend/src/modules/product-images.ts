@@ -806,13 +806,21 @@ Rules:
     roles?: Array<{ index?: number; role?: string; reason?: string }>
     picks?: Record<string, unknown>
   }
+  const useDedicatedVision = Boolean(settings.imageVisionApiKey?.trim() && settings.imageVisionBaseUrl?.trim())
   try {
     raw = await callChatJson<typeof raw>(
       settings,
       system,
       `Photos of one product, numbered 1..${images.length} in the order sent. Classify them and pick the references.`,
       0.2,
-      images
+      images,
+      {
+        task: 'image-source-classify',
+        productId,
+        model: useDedicatedVision ? settings.imageVisionModel || undefined : undefined,
+        baseUrl: useDedicatedVision ? settings.imageVisionBaseUrl : undefined,
+        apiKey: useDedicatedVision ? settings.imageVisionApiKey : undefined,
+      }
     )
   } catch (err) {
     throw new AppError(502, `自动挑图失败：${err instanceof Error ? err.message : String(err)}`)

@@ -44,6 +44,9 @@ export interface ChatCallOptions {
   model?: string
   task?: string
   productId?: string | null
+  /** 独立任务连接配置；未传时沿用通用 AI 设置 */
+  baseUrl?: string
+  apiKey?: string
 }
 
 /**
@@ -169,10 +172,10 @@ export async function callChatResult(
   images?: string[],
   opts?: ChatCallOptions
 ): Promise<ChatResult> {
-  const baseUrl = settings.aiBaseUrl?.trim()
+  const baseUrl = (opts?.baseUrl || settings.aiBaseUrl)?.trim()
+  const apiKey = (opts?.apiKey || settings.aiApiKey)?.trim()
   if (!baseUrl) throw new AiError('尚未配置 AI 接口地址', '请到「设置」填写 Base URL 与 API Key。')
-  if (!settings.aiApiKey?.trim())
-    throw new AiError('尚未配置 API Key', '请到「设置」填写 API Key 后再生成。')
+  if (!apiKey) throw new AiError('尚未配置 API Key', '请到「设置」填写 API Key 后再生成。')
   const model = opts?.model?.trim() || modelFor(settings, opts?.task)
   const startedAt = Date.now()
 
@@ -236,7 +239,7 @@ export async function callChatResult(
   for (const url of candidates) {
     let res: Response
     try {
-      res = await post(url, body, settings.aiApiKey.trim())
+      res = await post(url, body, apiKey)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       lastErr =

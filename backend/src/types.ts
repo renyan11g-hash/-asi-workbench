@@ -430,6 +430,10 @@ export interface Settings {
   imageSize: string
   /** 生成质量：low / medium / high（OpenAI 专用，火山忽略） */
   imageQuality: 'low' | 'medium' | 'high'
+  /** 图片专用视觉理解模型配置，独立于通用文本模型 */
+  imageVisionBaseUrl?: string
+  imageVisionApiKey?: string
+  imageVisionModel?: string
   // 价格模型
   /** 1 USD = ? CNY（默认 6.7，符合用户给定公式） */
   fxRate: number
@@ -483,6 +487,9 @@ export const DEFAULT_SETTINGS: Settings = {
   imageModel: 'doubao-seedream-4-0-250828',
   imageSize: '2K',
   imageQuality: 'high',
+  imageVisionBaseUrl: '',
+  imageVisionApiKey: '',
+  imageVisionModel: '',
   fxRate: 6.7,
   fxAutoUpdate: true,
   airRateCnyPerKg: 50,

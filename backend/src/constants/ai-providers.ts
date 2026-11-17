@@ -24,6 +24,18 @@ export interface AiProviderPreset {
 
 export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
+    id: 'aliyun-wan',
+    name: '阿里云百炼 Wan 2.7 Image Pro',
+    kind: 'image',
+    baseUrl: 'https://dashscope.aliyuncs.com',
+    models: ['wan2.7-image-pro', 'wan2.7-image'],
+    keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1',
+    needsProxy: false,
+    supportsVision: false,
+    priceNote: '按生成张数与分辨率计费，以百炼控制台为准',
+    note: '国内直连；支持最多 9 张参考图、图像编辑和组图生成。北京地域 API Key。',
+  },
+  {
     id: 'volcengine-ark',
     name: '火山引擎方舟（即梦 Seedream 图像）',
     kind: 'image',
