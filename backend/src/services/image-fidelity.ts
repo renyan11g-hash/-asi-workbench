@@ -197,7 +197,7 @@ export interface ImageCapabilities {
 
 export function capabilitiesFor(baseUrl: string, model: string): ImageCapabilities {
   const m = (model || '').trim() || 'doubao-seedream-4-0-250828'
-  if (/maas\\.aliyuncs\\.com/i.test(baseUrl || '') || /^wan2\\.7-image/i.test(m)) {
+  if (/maas\.aliyuncs\.com/i.test(baseUrl || '') || /^wan2\.7-image/i.test(m)) {
     return {
       provider: '阿里云百炼 Wan 2.7',
       model: m,
