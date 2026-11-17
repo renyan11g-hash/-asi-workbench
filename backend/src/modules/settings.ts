@@ -38,6 +38,9 @@ const settingsSchema = z.object({
   // 模型分工：不同任务可以指定不同模型（留空=沿用 aiModel）
   aiModelExtract: z.string().max(200).optional(),
   aiModelQc: z.string().max(200).optional(),
+  visionBaseUrl: z.string().url().optional(),
+  visionApiKey: z.string().optional(),
+  visionModel: z.string().max(200).optional(),
   // 图像生成配置
   imageBaseUrl: z.string().optional(),
   imageApiKey: z.string().optional(),
@@ -74,8 +77,9 @@ const maskKey = (key?: string) => {
 settingsRouter.get('/', async (_req: Request, res: Response) => {
   const s = loadSettings()
   res.json({
-    settings: { ...s, aiApiKey: maskKey(s.aiApiKey), imageApiKey: maskKey(s.imageApiKey) },
+    settings: { ...s, aiApiKey: maskKey(s.aiApiKey), visionApiKey: maskKey(s.visionApiKey), imageApiKey: maskKey(s.imageApiKey) },
     hasApiKey: Boolean(s.aiApiKey?.trim()),
+    hasVisionApiKey: Boolean(s.visionApiKey?.trim()),
     hasImageApiKey: Boolean(s.imageApiKey?.trim()),
   })
 })
@@ -90,15 +94,31 @@ settingsRouter.put('/', async (req: Request, res: Response) => {
   if (patch.imageApiKey && patch.imageApiKey.includes('****')) {
     next.imageApiKey = current.imageApiKey
   }
+  if (patch.visionApiKey && patch.visionApiKey.includes('****')) {
+    next.visionApiKey = current.visionApiKey
+  }
   if (patch.qtyLevels?.length) {
     next.qtyLevels = [...patch.qtyLevels].sort((a, b) => a - b)
   }
   saveSettings(next)
   res.json({
-    settings: { ...next, aiApiKey: maskKey(next.aiApiKey), imageApiKey: maskKey(next.imageApiKey) },
+    settings: { ...next, aiApiKey: maskKey(next.aiApiKey), visionApiKey: maskKey(next.visionApiKey), imageApiKey: maskKey(next.imageApiKey) },
     hasApiKey: Boolean(next.aiApiKey?.trim()),
+    hasVisionApiKey: Boolean(next.visionApiKey?.trim()),
     hasImageApiKey: Boolean(next.imageApiKey?.trim()),
   })
+})
+
+settingsRouter.post('/test-vision', async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Partial<Settings>
+  const current = loadSettings()
+  const probe = {
+    aiBaseUrl: body.visionBaseUrl ?? current.visionBaseUrl,
+    aiApiKey: body.visionApiKey && !body.visionApiKey.includes('****') ? body.visionApiKey : current.visionApiKey,
+    aiModel: body.visionModel ?? current.visionModel,
+  }
+  const result = await testConnection(probe)
+  res.json(result)
 })
 
 settingsRouter.post('/test', async (req: Request, res: Response) => {
