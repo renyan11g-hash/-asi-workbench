@@ -30,7 +30,6 @@ import { productionRouter } from './modules/production'
 import { libraryRouter } from './modules/library'
 import { adminRouter } from './modules/admin'
 import { businessOpsRouter } from './modules/business-ops'
-import { aiImageStudioRouter } from './modules/ai-image-studio'
 
 export const createApp = (): Application => {
   const app = express()
@@ -57,8 +56,6 @@ export const createApp = (): Application => {
   // 一次可能带几张，单独放宽；前端会分小批（每次 ≤3 张）以免单请求过大
   app.use(`${env.API_PREFIX}/master-products/images`, express.json({ limit: '32mb' }))
   app.use(`${env.API_PREFIX}/product-images/product`, express.json({ limit: '32mb' }))
-  // AI 图片工作室：多张参考图以 data URL 传入，单独放宽请求体
-  app.use(`${env.API_PREFIX}/ai-image-studio`, express.json({ limit: '32mb' }))
   app.use(express.json({ limit: '8mb' }))
   app.use(express.urlencoded({ extended: true }))
   app.use(compression())
@@ -80,7 +77,6 @@ export const createApp = (): Application => {
   app.use(`${env.API_PREFIX}/dashboard`, dashboardRouter)
   app.use(`${env.API_PREFIX}/business-ops`, businessOpsRouter)
   app.use(`${env.API_PREFIX}/product-images`, productImagesRouter)
-  app.use(`${env.API_PREFIX}/ai-image-studio`, aiImageStudioRouter)
   // 视觉风格中心：参考图库 / 结构化风格配置 / 自动匹配（图片真身进 DB，长期复用）
   app.use(`${env.API_PREFIX}/visual-styles`, visualStylesRouter)
   // 批量处理：粘贴多条链接，后台逐条跑单品同款流程
