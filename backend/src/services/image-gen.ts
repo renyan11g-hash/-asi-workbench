@@ -1,6 +1,8 @@
 import { Settings } from '../types'
 import { AiError } from './ai'
 import { inlineImage } from './image-inline'
+import Jimp from 'jimp'
+import { dataUrlToBuffer, sniffExt } from './image-source'
 
 /**
  * 图像生成服务 —— 双协议：
@@ -85,6 +87,8 @@ function assertConfig(settings: ImageSettings): { base: string; key: string; mod
 }
 
 const isArk = (baseUrl: string) => /volces\.com/i.test(baseUrl)
+const isWan = (baseUrl: string, model: string) =>
+  /maas\.aliyuncs\.com/i.test(baseUrl) || /^wan2\.7-image/i.test(model || '')
 
 function friendlyImageError(status: number, raw: string): AiError {
   if (status === 401 || status === 403)
@@ -193,6 +197,154 @@ async function arkGenerate(
   if (item?.url) return downloadImage(item.url)
   if (item?.b64_json) return Buffer.from(item.b64_json, 'base64')
   throw new AiError('图像接口未返回图片数据，请重试')
+}
+
+/**
+ * Wan 2.7 input normalization:
+ * - flatten transparent PNGs (especially uploaded brand logos) onto white;
+ * - encode every input as JPEG, avoiding unsupported alpha channels;
+ * - upscale tiny logos/photos to the documented 240px minimum side;
+ * - keep input dimensions and aspect ratio inside the provider limits.
+ */
+async function wanJpegDataUrl(buffer: Buffer): Promise<string> {
+  try {
+    const image = await Jimp.read(buffer)
+    const originalWidth = image.getWidth()
+    const originalHeight = image.getHeight()
+    if (!originalWidth || !originalHeight) throw new AiError('Wan 参考图尺寸无效')
+
+    // 先限制长边，再尽量放大到最短边 240px；若原图极细长，则通过白边补足比例。
+    const downScale = Math.min(1, 4000 / Math.max(originalWidth, originalHeight))
+    const scaled = image.clone().scale(downScale)
+    const currentMax = Math.max(scaled.getWidth(), scaled.getHeight())
+    const currentMin = Math.min(scaled.getWidth(), scaled.getHeight())
+    const upScale = Math.min(240 / currentMin, 8000 / currentMax)
+    if (upScale > 1) scaled.scale(upScale)
+
+    const width = scaled.getWidth()
+    const height = scaled.getHeight()
+    // Wan 接受的宽高比为 1:8 到 8:1；极细长的透明 Logo 用白边补齐，不拉伸图案。
+    const canvasWidth = Math.max(width, Math.ceil(height / 8), 240)
+    const canvasHeight = Math.max(height, Math.ceil(width / 8), 240)
+    if (Math.max(canvasWidth, canvasHeight) > 8000) {
+      throw new AiError('Wan 参考图尺寸超出限制', '请先裁剪或重新上传比例正常的产品图。')
+    }
+    const canvas = new Jimp(canvasWidth, canvasHeight, 0xffffffff)
+    canvas.composite(scaled, Math.floor((canvasWidth - width) / 2), Math.floor((canvasHeight - height) / 2))
+    const jpeg = await canvas.quality(84).getBufferAsync(Jimp.MIME_JPEG)
+    return `data:image/jpeg;base64,${jpeg.toString('base64')}`
+  } catch (err) {
+    if (err instanceof AiError) throw err
+    // Jimp 目前不解码 WebP；Wan 原生支持 WebP，因此保留原格式直传，避免把合法来源图误拒。
+    if (sniffExt(buffer) === 'webp') {
+      return `data:image/webp;base64,${buffer.toString('base64')}`
+    }
+    throw new AiError(
+      'Wan 参考图格式无法读取',
+      '请先在产品图片区执行「一键修复/转存」，或重新上传 JPG/PNG/WebP 图片后再生成。'
+    )
+  }
+}
+
+/** Alibaba Cloud Model Studio Wan 2.7: multimodal image generation/editing API. */
+async function wanGenerate(
+  settings: ImageSettings,
+  prompt: string,
+  refs: ImageRef[]
+): Promise<Buffer> {
+  const { base, key, model } = assertConfig(settings)
+  if (!/maas\.aliyuncs\.com/i.test(base)) {
+    throw new AiError(
+      'Wan 2.7 Base URL 配置不正确',
+      '请填写百炼北京地域工作空间地址：https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1'
+    )
+  }
+  const endpoint = `${base.replace(/\/+$/, '')}/services/aigc/multimodal-generation/generation`
+  const prepared = await normalizeImageRefs(refs)
+  // Wan 2.7 does not accept alpha-channel PNG input. Flatten every reference onto white
+  // and encode as JPEG, including transparent brand-logo buffers and raw data URLs.
+  // Remote URLs are inlined first so anti-hotlinking, format and alpha handling happen here,
+  // before we pay for a generation request.
+  const imageInputs = await Promise.all(
+    prepared.slice(0, 9).map(async (r) => {
+      if ('buffer' in r) return wanJpegDataUrl(r.buffer)
+      const parsed = dataUrlToBuffer(r.url)
+      if (parsed) return wanJpegDataUrl(parsed.buffer)
+      const inlined = await inlineImage(r.url)
+      const inlinedImage = inlined ? dataUrlToBuffer(inlined) : null
+      if (inlinedImage) return wanJpegDataUrl(inlinedImage.buffer)
+      // WebP is accepted by Wan but may not be decodable by Jimp in our local inliner.
+      if (/^https?:\/\//i.test(r.url) && /\.webp(?:[?#]|$)/i.test(r.url)) return r.url
+      throw new AiError(
+        'Wan 参考图无法读取或转换',
+        '请先在产品图片区执行「一键修复/转存」，或重新上传这张参考图后再生成。'
+      )
+    })
+  )
+  const content: Array<{ image: string } | { text: string }> = imageInputs.map((image) => ({ image }))
+  content.push({ text: prompt })
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model,
+        input: { messages: [{ role: 'user', content }] },
+        parameters: {
+          size: /^1K$/i.test(settings.imageSize || '') ? '1K' : '2K',
+          n: 1,
+          watermark: false,
+        },
+      }),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new AiError('Wan 图片生成超时（超过 10 分钟）', '可稍后重试，任务不会自动重复扣费。')
+    }
+    throw new AiError(`无法连接阿里云百炼 Wan：${message}`, '检查百炼北京地域 API Key、Workspace ID 和网络。')
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const raw = await response.text()
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new AiError(`Wan 接口鉴权失败 (${response.status})`, '确认 API Key 与 Workspace endpoint 都属于中国（北京）地域。')
+    }
+    if (response.status === 429) {
+      throw new AiError('Wan 接口限流或额度不足 (429)', '检查模型是否已开通、账户额度和并发限制。')
+    }
+    throw new AiError(`Wan 图片生成失败 (${response.status})：${raw.slice(0, 400)}`)
+  }
+
+  let data: {
+    output?: {
+      choices?: Array<{
+        message?: { content?: Array<{ type?: string; image?: string }> }
+      }>
+    }
+    message?: string
+    code?: string
+  }
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    throw new AiError(`Wan 接口返回无法解析：${raw.slice(0, 200)}`)
+  }
+  if (data.code && data.code !== 'Success') {
+    throw new AiError(`Wan 接口错误：${data.message || data.code}`)
+  }
+  const imageUrl = data.output?.choices
+    ?.flatMap((choice) => choice.message?.content ?? [])
+    .find((item) => (item.type === 'image' || item.image) && item.image)?.image
+  if (!imageUrl) throw new AiError(data.message || 'Wan 接口没有返回图片')
+  return downloadImage(imageUrl)
 }
 
 /** OpenAI 兼容：generations（文生图） */
@@ -318,6 +470,9 @@ export async function generateImage(
   prompt: string,
   refs: ImageRef[] = []
 ): Promise<Buffer> {
+  if (isWan(settings.imageBaseUrl || '', settings.imageModel || '')) {
+    return wanGenerate(settings, prompt, refs)
+  }
   if (isArk(settings.imageBaseUrl || '')) {
     return arkGenerate(settings, prompt, refs)
   }
@@ -339,8 +494,12 @@ export async function testImageConnection(
   settings: ImageSettings
 ): Promise<{ ok: boolean; message: string; model?: string }> {
   try {
+    // Wan 连接测试固定用 1K，避免用户选择 2K 时为一次连通性测试支付完整高分辨率费用。
+    const probeSettings = isWan(settings.imageBaseUrl || '', settings.imageModel || '')
+      ? { ...settings, imageSize: '1K' }
+      : settings
     const buf = await generateImage(
-      settings,
+      probeSettings,
       'A simple blue circle on a pure white background, minimal product photography style, no text.',
       []
     )

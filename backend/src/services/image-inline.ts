@@ -9,7 +9,7 @@
 
 import Jimp from 'jimp'
 import { db } from '../db'
-import { tryFetchRemoteImage } from './image-source'
+import { sniffExt, tryFetchRemoteImage } from './image-source'
 
 const MAX_BYTES = 8 * 1024 * 1024
 const TARGET = 720
@@ -79,6 +79,8 @@ async function toDataUrl(buf: Buffer): Promise<string | null> {
     const out = await canvas.quality(QUALITY).getBufferAsync(Jimp.MIME_JPEG)
     return `data:image/jpeg;base64,${out.toString('base64')}`
   } catch {
+    // Jimp 不支持解码 WebP 时保留原格式；Qwen/Wan 等视觉服务可直接接收 WebP。
+    if (sniffExt(buf) === 'webp') return `data:image/webp;base64,${buf.toString('base64')}`
     return null
   }
 }

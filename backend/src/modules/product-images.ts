@@ -760,18 +760,29 @@ productImagesRouter.post('/product/:productId/plan/auto', async (req: Request, r
   const productId = String(req.params.productId)
   const p = findProduct(productId)
   const settings = loadSettings()
-  const urls = (p.source.images ?? [])
-    .filter((u) => isHttpUrl(u) || isManagedImage(u) || u.startsWith('data:image/'))
-    .slice(0, 6)
+  const sourceImages = p.source.images ?? []
+  const indexedUrls = sourceImages
+    .map((url, index) => ({ url, originalIndex: index + 1 }))
+    .filter(({ url }) => isHttpUrl(url) || isManagedImage(url) || url.startsWith('data:image/'))
+    .slice(0, 9)
+  const urls = indexedUrls.map((item) => item.url)
   if (!urls.length) throw new AppError(400, '还没有产品图：先「从 1688 抓取」或上传/粘贴产品图')
 
   // 转成模型能读的 data URL（外链防盗链/失效都不影响）
+  // 必须让送入模型的图片与后续可保存的源地址保持同一索引。
+  // 不能用原始 urls 做索引：某张图片下载失败并跳过后，模型返回的序号会整体错位。
   const images: string[] = []
-  for (const u of urls) {
+  const analyzedUrls: string[] = []
+  const analyzedOriginalIndexes: number[] = []
+  for (let i = 0; i < urls.length; i++) {
+    const u = urls[i]
     try {
-      images.push(await refToDataUrl(u))
+      const dataUrl = await refToDataUrl(u)
+      images.push(dataUrl)
+      analyzedUrls.push(u)
+      analyzedOriginalIndexes.push(indexedUrls[i].originalIndex)
     } catch {
-      /* 单张失败跳过 */
+      /* 单张失败跳过；同时不把失败图片计入模型序号 */
     }
   }
   if (!images.length)
@@ -812,13 +823,14 @@ Rules:
       system,
       `Photos of one product, numbered 1..${images.length} in the order sent. Classify them and pick the references.`,
       0.2,
-      images
+      images,
+      { task: 'image-plan' }
     )
   } catch (err) {
     throw new AppError(502, `自动挑图失败：${err instanceof Error ? err.message : String(err)}`)
   }
 
-  const max = urls.length
+  const max = analyzedUrls.length
   const pick = (key: string, limit: number): string[] => {
     const list = Array.isArray(raw.picks?.[key]) ? (raw.picks?.[key] as unknown[]) : []
     return Array.from(
@@ -826,7 +838,7 @@ Rules:
         list
           .map((v) => Number(v))
           .filter((n) => Number.isInteger(n) && n >= 1 && n <= max)
-          .map((n) => urls[n - 1])
+          .map((n) => analyzedUrls[n - 1])
       )
     ).slice(0, limit)
   }
@@ -836,26 +848,37 @@ Rules:
         (raw.roles ?? [])
           .filter(
             (r) =>
-              typeof r?.index === 'number' &&
-              r.index >= 1 &&
-              r.index <= max &&
-              roles.includes(String(r.role ?? '').toUpperCase())
+              Number.isInteger(Number(r?.index)) &&
+              Number(r.index) >= 1 &&
+              Number(r.index) <= max &&
+              roles.includes(String(r.role ?? '').trim().toUpperCase())
           )
-          .map((r) => urls[Number(r.index) - 1])
+          .map((r) => analyzedUrls[Number(r.index) - 1])
       )
     ).slice(0, limit)
 
   const picks = {
-    main: pick('MAIN', 3).length ? pick('MAIN', 3) : fromRole(['FRONT'], 2).length ? fromRole(['FRONT'], 2) : urls.slice(0, 2),
+    main: pick('MAIN', 3).length ? pick('MAIN', 3) : fromRole(['FRONT'], 2).length ? fromRole(['FRONT'], 2) : analyzedUrls.slice(0, 2),
     dimension: pick('DIMENSION', 2).length ? pick('DIMENSION', 2) : fromRole(['SIDE', 'FRONT'], 2),
     detail: pick('DETAIL', 2).length ? pick('DETAIL', 2) : fromRole(['DETAIL'], 2),
     scene: pick('SCENE', 2).length ? pick('SCENE', 2) : fromRole(['SCENE'], 2),
   }
 
+  // 每次自动分析都覆盖四类图的来源；某一类没有合适原图时必须清空旧选择，
+  // 否则产品图片更新后，旧的场景图/细节图可能被误用于新一轮生成。
   for (const k of KINDS) {
-    if (picks[k].length) savePlan(productId, k, { sources: picks[k] })
+    savePlan(productId, k, { sources: picks[k] })
   }
-  res.json({ picks, roles: raw.roles ?? [], count: urls.length, plan: readPlan(productId) })
+  // 返回给前端的角色序号映射回原始产品图列表，避免下载失败跳图后 UI 标错照片。
+  const validRoles = new Set(['FRONT', 'SIDE', 'DETAIL', 'SCENE', 'COLOR', 'OTHER'])
+  const roles = (raw.roles ?? [])
+    .filter((r) => Number.isInteger(Number(r?.index)) && Number(r.index) >= 1 && Number(r.index) <= analyzedOriginalIndexes.length)
+    .map((r) => ({
+      index: analyzedOriginalIndexes[Number(r.index) - 1],
+      role: validRoles.has(String(r.role ?? '').trim().toUpperCase()) ? String(r.role).trim().toUpperCase() : 'OTHER',
+      reason: String(r.reason ?? '').slice(0, 120),
+    }))
+  res.json({ picks, roles, count: analyzedUrls.length, plan: readPlan(productId) })
 })
 
 /**

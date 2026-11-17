@@ -50,6 +50,7 @@ export default function SettingsPage() {
   const [imprintText, setImprintText] = useState('')
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [testingVision, setTestingVision] = useState(false)
   const [testingImage, setTestingImage] = useState(false)
   const [uploadingLogo, setUploadingLogo] = useState(false)
   const [logoUrl, setLogoUrl] = useState<string | null>(null)
@@ -115,6 +116,24 @@ export default function SettingsPage() {
       toast.error(getErrorMessage(err))
     } finally {
       setTesting(false)
+    }
+  }
+
+  const testVision = async () => {
+    if (!form) return
+    setTestingVision(true)
+    try {
+      const res = await api.testVisionConnection({
+        visionBaseUrl: form.visionBaseUrl,
+        visionApiKey: form.visionApiKey,
+        visionModel: form.visionModel,
+      })
+      if (res.ok) toast.success(res.message)
+      else toast.error(res.message)
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setTestingVision(false)
     }
   }
 
@@ -322,7 +341,7 @@ export default function SettingsPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <Field
                 label="资料结构化模型（可选）"
-                hint="留空就用上面的模型。产品资料提取是「只抄不编」的任务，用更快更便宜的模型就够。"
+                hint="留空就用上面的模型。此处用于产品资料结构化；图片一致性审核使用下面独立的 Qwen 视觉模型配置。"
               >
                 <Input
                   className="h-9 text-sm"
@@ -344,6 +363,31 @@ export default function SettingsPage() {
               </Field>
             </div>
           </div>
+          <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 space-y-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-800">独立视觉理解模型（Qwen）</div>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600">
+                与上面的文本模型分开配置。用于产品资料识别、自动挑选 1688 产品参考图，以及生成图片的一致性审核；建议使用百炼北京地域的 qwen-vl-max。
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="视觉模型 Base URL" hint="百炼 OpenAI 兼容地址">
+                <Input className="h-9 text-sm" value={form.visionBaseUrl} onChange={(e) => patch({ visionBaseUrl: e.target.value })} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+              </Field>
+              <Field label="视觉模型名称" hint="需支持图片输入，例如 qwen-vl-max">
+                <Input className="h-9 text-sm" value={form.visionModel} onChange={(e) => patch({ visionModel: e.target.value })} placeholder="qwen-vl-max" />
+              </Field>
+              <div className="sm:col-span-2">
+                <Field label="百炼视觉模型 API Key" hint={data?.hasVisionApiKey ? '已保存 Key，留空则不修改' : '填写中国（北京）地域的百炼 API Key'}>
+                  <Input className="h-9 text-sm" type="password" value={form.visionApiKey} onChange={(e) => patch({ visionApiKey: e.target.value })} placeholder="百炼 API Key" />
+                </Field>
+              </div>
+            </div>
+            <Button size="sm" variant="outline" onClick={testVision} disabled={testingVision}>
+              {testingVision ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Wifi className="mr-1 h-4 w-4" />}
+              测试视觉模型连接
+            </Button>
+          </div>
           <Button variant="outline" onClick={test} disabled={testing}>
             {testing ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Wifi className="mr-1 h-4 w-4" />}
             测试连接
@@ -353,7 +397,7 @@ export default function SettingsPage() {
 
       <SectionCard
         title="图像生成（产品图片）"
-        hint="用于生成产品主图/尺寸图/介绍图。火山引擎即梦 Seedream 国内直连、支付宝充值；也兼容 OpenAI gpt-image-1。与上方文本 AI 相互独立。"
+        hint="支持火山 Seedream、OpenAI 兼容接口和阿里云百炼 Wan 2.7。Wan 负责商品图片编辑/场景生成；上方 Qwen 视觉模型负责图片理解与质量复检。"
       >
         <div className="space-y-4">
           <div className="space-y-2">
@@ -407,7 +451,7 @@ export default function SettingsPage() {
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
-              <Field label="Base URL" hint="火山引擎填 https://ark.cn-beijing.volces.com/api/v3（粘贴完整端点也可自动识别）">
+              <Field label="Base URL" hint="Wan 2.7 填 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1；Seedream 填火山方舟 API 地址。">
                 <Input
                   className="h-9 text-sm"
                   value={form.imageBaseUrl}
@@ -422,10 +466,10 @@ export default function SettingsPage() {
                 type="password"
                 value={form.imageApiKey}
                 onChange={(e) => patch({ imageApiKey: e.target.value })}
-                placeholder="火山引擎 API Key"
+                placeholder="百炼北京地域 / 火山方舟 API Key"
               />
             </Field>
-            <Field label="模型名称" hint="需与方舟控制台开通的模型 ID 一致">
+            <Field label="模型名称" hint="Wan 2.7 使用 wan2.7-image-pro；Seedream 使用方舟已开通的模型 ID。">
               <Input
                 className="h-9 text-sm"
                 value={form.imageModel}
@@ -433,7 +477,7 @@ export default function SettingsPage() {
                 placeholder="doubao-seedream-4-0-250828"
               />
             </Field>
-            <Field label="生成尺寸" hint="火山：1K / 2K / 4K；OpenAI：1024x1024 等">
+            <Field label="生成尺寸" hint="Wan 编辑/组图最高 2K；Seedream 按服务商支持设置。">
               <Input
                 className="h-9 text-sm"
                 value={form.imageSize}

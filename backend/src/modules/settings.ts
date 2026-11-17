@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db, getSetting, setSetting } from '../db'
 import { DEFAULT_SETTINGS, Settings } from '../types'
-import { testConnection } from '../services/ai'
+import { callChat, testConnection } from '../services/ai'
 import { AppError } from '../middleware/errorHandler'
 import { getFxStatus, refreshFxRate } from '../services/fx'
 import { AI_PROVIDER_PRESETS } from '../constants/ai-providers'
@@ -38,6 +38,9 @@ const settingsSchema = z.object({
   // 模型分工：不同任务可以指定不同模型（留空=沿用 aiModel）
   aiModelExtract: z.string().max(200).optional(),
   aiModelQc: z.string().max(200).optional(),
+  visionBaseUrl: z.string().optional(),
+  visionApiKey: z.string().optional(),
+  visionModel: z.string().max(200).optional(),
   // 图像生成配置
   imageBaseUrl: z.string().optional(),
   imageApiKey: z.string().optional(),
@@ -74,8 +77,9 @@ const maskKey = (key?: string) => {
 settingsRouter.get('/', async (_req: Request, res: Response) => {
   const s = loadSettings()
   res.json({
-    settings: { ...s, aiApiKey: maskKey(s.aiApiKey), imageApiKey: maskKey(s.imageApiKey) },
+    settings: { ...s, aiApiKey: maskKey(s.aiApiKey), visionApiKey: maskKey(s.visionApiKey), imageApiKey: maskKey(s.imageApiKey) },
     hasApiKey: Boolean(s.aiApiKey?.trim()),
+    hasVisionApiKey: Boolean(s.visionApiKey?.trim()),
     hasImageApiKey: Boolean(s.imageApiKey?.trim()),
   })
 })
@@ -90,15 +94,58 @@ settingsRouter.put('/', async (req: Request, res: Response) => {
   if (patch.imageApiKey && patch.imageApiKey.includes('****')) {
     next.imageApiKey = current.imageApiKey
   }
+  if (patch.visionApiKey && patch.visionApiKey.includes('****')) {
+    next.visionApiKey = current.visionApiKey
+  }
   if (patch.qtyLevels?.length) {
     next.qtyLevels = [...patch.qtyLevels].sort((a, b) => a - b)
   }
   saveSettings(next)
   res.json({
-    settings: { ...next, aiApiKey: maskKey(next.aiApiKey), imageApiKey: maskKey(next.imageApiKey) },
+    settings: { ...next, aiApiKey: maskKey(next.aiApiKey), visionApiKey: maskKey(next.visionApiKey), imageApiKey: maskKey(next.imageApiKey) },
     hasApiKey: Boolean(next.aiApiKey?.trim()),
+    hasVisionApiKey: Boolean(next.visionApiKey?.trim()),
     hasImageApiKey: Boolean(next.imageApiKey?.trim()),
   })
+})
+
+settingsRouter.post('/test-vision', async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Partial<Settings>
+  const current = loadSettings()
+  const probe = {
+    aiBaseUrl: body.visionBaseUrl ?? current.visionBaseUrl,
+    aiApiKey: body.visionApiKey && !body.visionApiKey.includes('****') ? body.visionApiKey : current.visionApiKey,
+    aiModel: body.visionModel ?? current.visionModel,
+  }
+  if (!probe.aiApiKey?.trim()) {
+    res.status(400).json({ ok: false, message: '请先填写百炼视觉模型 API Key' })
+    return
+  }
+  // 64×64 PNG：用可识别的蓝色圆形验证真正的视觉输入，避免 1×1 极小图触发模型尺寸限制。
+  const probeImage =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAA80lEQVR4nO2ZQQ6CQBAEwfgPDzzQt/hAD75kPXAhoIn09Ni7ma6jCe3U9kKyMLfWppG5qAeIYgE1FlBjATUWUGMBNRZQYwE116Tc2/15/PH1WOh/NHMPNB/nPkI0oQn8OPoWigbnHgCmh6/aEW2AMkSkilADlOmDOcM/RnEB1vIH00AB7vSRzJJbKGP54eSSDXTFaYG8/YPl12ugNyygxgJqTgtknGsj+fUa6A1EIG8XAcklG5hySsAy8Qa4DnBa1S20wiohksN5tQgfEuJLwNlC2ByUAv12+gujfh/4P7Ufoz1gATUWUGMBNRZQYwE1FlDzBsccUWOuUf5aAAAAAElFTkSuQmCC'
+  try {
+    const reply = await callChat(
+      probe,
+      'You are testing image understanding. Identify both the colour and shape in the attached image in one short phrase.',
+      'What shape and colour are visible in the attached image?',
+      0,
+      [probeImage],
+      { task: 'vision-test' }
+    )
+    const recognizedColor = /\bblue\b|蓝/i.test(reply)
+    const recognizedShape = /\bcircle\b|\bcircular\b|\bround\b|\bdisk\b|\bdisc\b|圆/i.test(reply)
+    if (!recognizedColor || !recognizedShape) {
+      res.status(400).json({
+        ok: false,
+        message: `模型已返回文本，但没有正确识别测试图中的蓝色圆形；请确认选择的是支持视觉输入的模型。模型回复：${reply.trim().slice(0, 100)}`,
+      })
+      return
+    }
+    res.json({ ok: true, message: `视觉模型连接成功，已确认识别出蓝色圆形。模型回复：${reply.trim().slice(0, 80)}` })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
 })
 
 settingsRouter.post('/test', async (req: Request, res: Response) => {

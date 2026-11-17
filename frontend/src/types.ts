@@ -437,6 +437,10 @@ export interface Settings {
   aiModelExtract?: string
   /** Listing 质量检查（AI 复检）专用模型（留空=沿用 aiModel） */
   aiModelQc?: string
+  /** 独立视觉理解模型（图片分析/一致性审核） */
+  visionBaseUrl: string
+  visionApiKey: string
+  visionModel: string
   // 图像生成（火山引擎 Seedream / OpenAI gpt-image-1）
   imageBaseUrl: string
   imageApiKey: string
