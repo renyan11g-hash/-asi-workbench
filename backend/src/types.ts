@@ -419,6 +419,10 @@ export interface Settings {
   aiModelExtract?: string
   /** Listing 质量检查（AI 复检）专用模型（留空 = 用 aiModel） */
   aiModelQc?: string
+  /** 独立视觉理解模型（用于图片结构分析与生成图审核） */
+  visionBaseUrl: string
+  visionApiKey: string
+  visionModel: string
   // 图像生成（默认火山引擎即梦 Seedream 4.0，国内直连；也兼容 OpenAI gpt-image-1）
   /** 图像接口 Base URL（火山 https://ark.cn-beijing.volces.com/api/v3 / OpenAI https://api.openai.com/v1） */
   imageBaseUrl: string
@@ -478,6 +482,9 @@ export const DEFAULT_SETTINGS: Settings = {
   aiModel: 'deepseek-chat',
   aiModelExtract: '',
   aiModelQc: '',
+  visionBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  visionApiKey: '',
+  visionModel: 'qwen-vl-max',
   imageBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
   imageApiKey: '',
   imageModel: 'doubao-seedream-4-0-250828',
