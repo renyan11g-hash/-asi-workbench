@@ -14,7 +14,7 @@ The vision provider is independent from the general text provider. It is used by
 
 ## Configure the image generation model (Wan 2.7)
 
-In **Settings → Image Generation** configure:
+In **Settings → Image Generation**, select the **阿里云百炼 Wan 2.7 Image Pro** provider preset, then replace the `{WorkspaceId}` placeholder with your actual Beijing workspace ID. Configure:
 
 - Base URL: `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1`
 - API Key: Alibaba Cloud Model Studio API key for China (Beijing)
