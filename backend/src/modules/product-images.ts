@@ -851,7 +851,7 @@ Rules:
               Number.isInteger(Number(r?.index)) &&
               Number(r.index) >= 1 &&
               Number(r.index) <= max &&
-              roles.includes(String(r.role ?? '').toUpperCase())
+              roles.includes(String(r.role ?? '').trim().toUpperCase())
           )
           .map((r) => analyzedUrls[Number(r.index) - 1])
       )
