@@ -121,7 +121,13 @@ Run the 7 checks and output the JSON.`
       user,
       0.1,
       [input.image, ...input.productImages.slice(0, 3)],
-      { task: 'image-review', productId: productId ?? null }
+      {
+        task: 'image-review',
+        productId: productId ?? null,
+        model: settings.imageVisionModel || undefined,
+        baseUrl: settings.imageVisionBaseUrl || undefined,
+        apiKey: settings.imageVisionApiKey || undefined,
+      }
     )
     const byKey = new Map<string, { ok: boolean; note: string }>()
     for (const c of data.checks ?? []) {
