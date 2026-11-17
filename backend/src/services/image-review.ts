@@ -132,16 +132,23 @@ Run the 7 checks and output the JSON.`
       { task: 'image-review', productId: productId ?? null }
     )
     const byKey = new Map<string, { ok: boolean; note: string }>()
-    for (const c of data.checks ?? []) {
-      if (!c?.key) continue
-      byKey.set(String(c.key), { ok: c.ok !== false, note: String(c.note ?? '') })
+    for (const item of data.checks ?? []) {
+      if (!item?.key || !CHECKS.some((check) => check.key === item.key)) continue
+      // 只有模型明确返回布尔 true 才算通过；字符串 "false"、缺失值都不能被误判为通过。
+      byKey.set(String(item.key), {
+        ok: item.ok === true,
+        note: String(item.note ?? ''),
+      })
     }
-    const checks: ImageReviewCheck[] = CHECKS.map((c) => ({
-      key: c.key,
-      label: c.label,
-      ok: byKey.get(c.key)?.ok ?? true,
-      note: byKey.get(c.key)?.note ?? '无法判断',
-    }))
+    const checks: ImageReviewCheck[] = CHECKS.map((check) => {
+      const result = byKey.get(check.key)
+      return {
+        key: check.key,
+        label: check.label,
+        ok: result?.ok ?? false,
+        note: result?.note || (result ? '模型未提供审查说明' : '审查结果缺少此项，需人工复核'),
+      }
+    })
     return {
       ok: checks.every((c) => c.ok),
       checks,
