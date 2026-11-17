@@ -10,7 +10,7 @@ In **Settings → AI API → Independent vision model (Qwen)** configure:
 - Model: `qwen-vl-max` (or another vision-capable model enabled for your account)
 - API Key: Alibaba Cloud Model Studio API key for China (Beijing)
 
-The vision provider is independent from the general text provider. It is used by generated-image QA to compare product silhouette, color, structure, accessories, scene plausibility, background and image quality. The Settings test sends a valid 64×64 PNG probe to verify multimodal input, not just text connectivity.
+The vision provider is independent from the general text provider. It is used by generated-image QA to compare product silhouette, color, structure, accessories, scene plausibility, background and image quality. The Settings test sends a valid 64×64 blue-circle PNG probe and checks that the model identifies both its colour and shape, not just that the API returns text.
 
 ## Configure the image generation model (Wan 2.7)
 
