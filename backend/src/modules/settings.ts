@@ -44,6 +44,9 @@ const settingsSchema = z.object({
   imageModel: z.string().optional(),
   imageSize: z.string().max(20).optional(),
   imageQuality: z.enum(['low', 'medium', 'high']).optional(),
+  imageVisionBaseUrl: z.string().max(500).optional(),
+  imageVisionApiKey: z.string().max(500).optional(),
+  imageVisionModel: z.string().max(200).optional(),
   fxRate: z.number().positive().optional(),
   fxAutoUpdate: z.boolean().optional(),
   airRateCnyPerKg: z.number().min(0).optional(),
@@ -74,7 +77,7 @@ const maskKey = (key?: string) => {
 settingsRouter.get('/', async (_req: Request, res: Response) => {
   const s = loadSettings()
   res.json({
-    settings: { ...s, aiApiKey: maskKey(s.aiApiKey), imageApiKey: maskKey(s.imageApiKey) },
+    settings: { ...s, aiApiKey: maskKey(s.aiApiKey), imageApiKey: maskKey(s.imageApiKey), imageVisionApiKey: maskKey(s.imageVisionApiKey) },
     hasApiKey: Boolean(s.aiApiKey?.trim()),
     hasImageApiKey: Boolean(s.imageApiKey?.trim()),
   })
@@ -90,12 +93,15 @@ settingsRouter.put('/', async (req: Request, res: Response) => {
   if (patch.imageApiKey && patch.imageApiKey.includes('****')) {
     next.imageApiKey = current.imageApiKey
   }
+  if (patch.imageVisionApiKey && patch.imageVisionApiKey.includes('****')) {
+    next.imageVisionApiKey = current.imageVisionApiKey
+  }
   if (patch.qtyLevels?.length) {
     next.qtyLevels = [...patch.qtyLevels].sort((a, b) => a - b)
   }
   saveSettings(next)
   res.json({
-    settings: { ...next, aiApiKey: maskKey(next.aiApiKey), imageApiKey: maskKey(next.imageApiKey) },
+    settings: { ...next, aiApiKey: maskKey(next.aiApiKey), imageApiKey: maskKey(next.imageApiKey), imageVisionApiKey: maskKey(next.imageVisionApiKey) },
     hasApiKey: Boolean(next.aiApiKey?.trim()),
     hasImageApiKey: Boolean(next.imageApiKey?.trim()),
   })
