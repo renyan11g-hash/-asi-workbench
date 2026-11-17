@@ -443,6 +443,9 @@ export interface Settings {
   imageModel: string
   imageSize: string
   imageQuality: 'low' | 'medium' | 'high'
+  imageVisionBaseUrl?: string
+  imageVisionApiKey?: string
+  imageVisionModel?: string
   fxRate: number
   airRateCnyPerKg: number
   seaRateCnyPerKg: number
