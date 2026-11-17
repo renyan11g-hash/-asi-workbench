@@ -30,7 +30,7 @@ Replace `{WorkspaceId}` with the Workspace ID from the Model Studio console. The
 - Wan uses the official Beijing multimodal-generation endpoint and accepts up to 9 ordered image references.
 - Wan output URLs are downloaded immediately into a Buffer; the existing image pipeline then persists the result in `image_blobs` and `product_images`.
 - Seedream and OpenAI-compatible image providers remain available by changing the existing image settings.
-- Qwen vision review is independently configured and does not require changing the general text model.
+- Qwen handles both the automatic product-photo identification step (`image-identify`) and generated-image QA (`image-review`) when the dedicated vision key is configured. It does not require changing the general text model.
 
 ## Known limits / rollout checks
 
