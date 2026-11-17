@@ -858,10 +858,12 @@ Rules:
     scene: pick('SCENE', 2).length ? pick('SCENE', 2) : fromRole(['SCENE'], 2),
   }
 
+  // 每次自动分析都覆盖四类图的来源；某一类没有合适原图时必须清空旧选择，
+  // 否则产品图片更新后，旧的场景图/细节图可能被误用于新一轮生成。
   for (const k of KINDS) {
-    if (picks[k].length) savePlan(productId, k, { sources: picks[k] })
+    savePlan(productId, k, { sources: picks[k] })
   }
-  res.json({ picks, roles: raw.roles ?? [], count: urls.length, plan: readPlan(productId) })
+  res.json({ picks, roles: raw.roles ?? [], count: analyzedUrls.length, plan: readPlan(productId) })
 })
 
 /**
