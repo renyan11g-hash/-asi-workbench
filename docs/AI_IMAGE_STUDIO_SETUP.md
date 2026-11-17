@@ -1,46 +1,48 @@
-# ASI Workbench — Wan 2.7 + Qwen vision setup
+# ASI Workbench — Qwen Vision + Wan 2.7 setup
 
-The image engine is integrated into the existing product-image pipeline. Do not create a second image storage or task system.
+The image engine reuses the existing product-image workflow, task handling, product image history, visual style references and DB-backed image storage.
 
-## Configure in Workbench Settings
+## Configure the vision model (Qwen)
 
-### Vision model (Qwen)
-Use the existing **AI model for structured extraction** setting (`aiModelExtract`) for the visual QA task. Set it to a vision-capable Alibaba Cloud Model Studio model available to your Beijing workspace, for example `qwen-vl-max`.
+In **Settings → AI API → Independent vision model (Qwen)** configure:
 
-The normal text model (`aiModel`) remains available for other text tasks. Image review is routed to `aiModelExtract`.
+- Base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`
+- Model: `qwen-vl-max` (or another vision-capable model enabled for your account)
+- API Key: Alibaba Cloud Model Studio API key for China (Beijing)
 
-### Image model (Wan 2.7)
-In **Settings → Image Generation**, configure:
+The vision provider is independent from the general text provider. It is used by generated-image QA to compare product silhouette, color, structure, accessories, scene plausibility, background and image quality. The Settings test sends a tiny image to verify multimodal input, not just text connectivity.
+
+## Configure the image generation model (Wan 2.7)
+
+In **Settings → Image Generation** configure:
 
 - Base URL: `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1`
-- API Key: your Alibaba Cloud Model Studio **China (Beijing)** API key
+- API Key: Alibaba Cloud Model Studio API key for China (Beijing)
 - Model: `wan2.7-image-pro`
-- Image size: `2K` for quality-first reference editing (image sets/editing support up to 2K; 4K applies to text-to-image only).
+- Image size: `2K` for quality-first reference editing.
 
 Replace `{WorkspaceId}` with the Workspace ID from the Model Studio console. The API key and workspace endpoint must belong to the same region. Do not use a Singapore key with the Beijing endpoint.
 
-## What the code now does
+## What the integration does
 
-- Existing source image collection and local mirroring remain unchanged.
-- Existing product image prompts, product-fidelity guardrails, visual style references and image review remain in use.
-- Wan requests use the official Beijing multimodal-generation endpoint.
-- Up to 9 product/style reference images are normalized and sent in their existing order.
-- The generated result URL is downloaded immediately to a Buffer; the existing product-image pipeline then persists the image in `image_blobs` and the product image history.
-- Existing Seedream and OpenAI-compatible image providers remain available by changing the current image settings.
-- Image review uses `aiModelExtract` when configured, so a vision-capable Qwen model can serve as the specialist reviewer without replacing the normal text model.
+- Existing 1688 image collection and local mirroring remain unchanged.
+- Existing product-image prompts, fidelity guardrails, style references, image review and image history remain in use.
+- Wan uses the official Beijing multimodal-generation endpoint and accepts up to 9 ordered image references.
+- Wan output URLs are downloaded immediately into a Buffer; the existing image pipeline then persists the result in `image_blobs` and `product_images`.
+- Seedream and OpenAI-compatible image providers remain available by changing the existing image settings.
+- Qwen vision review is independently configured and does not require changing the general text model.
 
-## Important limitations
+## Known limits / rollout checks
 
-- This integration does not make 1688 crawling immune to login, dynamic loading, or anti-bot restrictions. Existing collection errors must remain visible rather than pretending all images were collected.
-- Model-based visual QA is a filter, not a guarantee. Product images still need human approval, especially for logo, exact colorways, small parts and hidden construction.
-- The first test should use one existing product with several supplier images. Generate one image, inspect it, then run the full shot set.
-- Do not automatically regenerate every failed image without a user-visible retry budget. Reuse the existing task manager and cost logging where available.
+- 1688 crawling can still fail on login, dynamic-loading or anti-bot restrictions. Existing collection errors must remain visible; do not pretend all images were collected.
+- Vision QA is a filter, not a guarantee. Human approval is still required for exact logo, colorways, tiny components and hidden construction.
+- The first test should use one existing product with several supplier images. Generate one image, inspect it, then run the complete shot set.
+- Keep the existing per-image task history and cost controls. Do not automatically regenerate every failed image without a bounded retry budget.
 
 ## Smoke test
 
-1. Set the Qwen vision model in the structured-extraction model field.
-2. Set the Wan endpoint, API key and model in Image Generation settings.
-3. Use the existing image connection test.
-4. Generate one main image for a product with clear source photos.
-5. Confirm the output appears in the product image gallery and survives a service restart/redeploy (DB-backed image storage).
-6. Confirm the image review record identifies the Qwen model and checks product/color/structure/accessories.
+1. Configure Qwen vision URL, model and key; run **Test vision model connection**.
+2. Configure Wan URL, key and model; run the existing **Test image connection**.
+3. Generate one main image for a product with clear source photos.
+4. Confirm the result appears in the product gallery and is stored in the DB-backed image storage.
+5. Confirm the QA report checks product/color/structure/accessories and records a useful failure note when the image differs.
