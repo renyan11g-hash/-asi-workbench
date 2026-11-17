@@ -341,7 +341,7 @@ export default function SettingsPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <Field
                 label="资料结构化模型（可选）"
-                hint="留空就用上面的模型。建议配置支持看图的 Qwen 视觉模型（如 qwen-vl-max）；图片一致性审核会使用这个模型。"
+                hint="留空就用上面的模型。此处用于产品资料结构化；图片一致性审核使用下面独立的 Qwen 视觉模型配置。"
               >
                 <Input
                   className="h-9 text-sm"
