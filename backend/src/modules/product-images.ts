@@ -764,7 +764,7 @@ productImagesRouter.post('/product/:productId/plan/auto', async (req: Request, r
   const indexedUrls = sourceImages
     .map((url, index) => ({ url, originalIndex: index + 1 }))
     .filter(({ url }) => isHttpUrl(url) || isManagedImage(url) || url.startsWith('data:image/'))
-    .slice(0, 6)
+    .slice(0, 9)
   const urls = indexedUrls.map((item) => item.url)
   if (!urls.length) throw new AppError(400, '还没有产品图：先「从 1688 抓取」或上传/粘贴产品图')
 
@@ -870,9 +870,14 @@ Rules:
     savePlan(productId, k, { sources: picks[k] })
   }
   // 返回给前端的角色序号映射回原始产品图列表，避免下载失败跳图后 UI 标错照片。
+  const validRoles = new Set(['FRONT', 'SIDE', 'DETAIL', 'SCENE', 'COLOR', 'OTHER'])
   const roles = (raw.roles ?? [])
     .filter((r) => Number.isInteger(Number(r?.index)) && Number(r.index) >= 1 && Number(r.index) <= analyzedOriginalIndexes.length)
-    .map((r) => ({ ...r, index: analyzedOriginalIndexes[Number(r.index) - 1] }))
+    .map((r) => ({
+      index: analyzedOriginalIndexes[Number(r.index) - 1],
+      role: validRoles.has(String(r.role ?? '').trim().toUpperCase()) ? String(r.role).trim().toUpperCase() : 'OTHER',
+      reason: String(r.reason ?? '').slice(0, 120),
+    }))
   res.json({ picks, roles, count: analyzedUrls.length, plan: readPlan(productId) })
 })
 
