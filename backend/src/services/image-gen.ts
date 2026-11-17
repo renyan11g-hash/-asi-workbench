@@ -1,6 +1,7 @@
 import { Settings } from '../types'
 import { AiError } from './ai'
 import { inlineImage } from './image-inline'
+import { dataUrlToBuffer, toJpegDataUrl } from './image-source'
 
 /**
  * 图像生成服务 —— 双协议：
@@ -212,11 +213,25 @@ async function wanGenerate(
   }
   const endpoint = `${base.replace(/\/+$/, '')}/services/aigc/multimodal-generation/generation`
   const prepared = await normalizeImageRefs(refs)
-  const content: Array<{ image: string } | { text: string }> = prepared
-    .slice(0, 9)
-    .map((r) => ({
-      image: 'url' in r ? r.url : `data:image/png;base64,${r.buffer.toString('base64')}`,
-    }))
+  // Wan 2.7 does not accept alpha-channel PNG input. Flatten every reference onto white
+  // and encode as JPEG, including transparent brand-logo buffers and raw data URLs.
+  // Remote URLs are inlined first so anti-hotlinking, format and alpha handling happen here,
+  // before we pay for a generation request.
+  const imageInputs = await Promise.all(
+    prepared.slice(0, 9).map(async (r) => {
+      if ('buffer' in r) return toJpegDataUrl(r.buffer, 1200, 84)
+      const parsed = dataUrlToBuffer(r.url)
+      if (parsed) return toJpegDataUrl(parsed.buffer, 1200, 84)
+      const inlined = await inlineImage(r.url)
+      const inlinedImage = inlined ? dataUrlToBuffer(inlined) : null
+      if (inlinedImage) return toJpegDataUrl(inlinedImage.buffer, 1200, 84)
+      throw new AiError(
+        'Wan 参考图无法读取或转换',
+        '请先在产品图片区执行「一键修复/转存」，或重新上传这张参考图后再生成。'
+      )
+    })
+  )
+  const content: Array<{ image: string } | { text: string }> = imageInputs.map((image) => ({ image }))
   content.push({ text: prompt })
 
   const controller = new AbortController()
