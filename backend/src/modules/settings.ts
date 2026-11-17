@@ -121,15 +121,16 @@ settingsRouter.post('/test-vision', async (req: Request, res: Response) => {
     res.status(400).json({ ok: false, message: '请先填写百炼视觉模型 API Key' })
     return
   }
-  // 1×1 PNG：不仅验证 Key 和模型可用，还确认该模型确实接受图片输入。
-  const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='
+  // 64×64 PNG：用可识别的蓝色圆形验证真正的视觉输入，避免 1×1 极小图触发模型尺寸限制。
+  const probeImage =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAA80lEQVR4nO2ZQQ6CQBAEwfgPDzzQt/hAD75kPXAhoIn09Ni7ma6jCe3U9kKyMLfWppG5qAeIYgE1FlBjATUWUGMBNRZQYwE116Tc2/15/PH1WOh/NHMPNB/nPkI0oQn8OPoWigbnHgCmh6/aEW2AMkSkilADlOmDOcM/RnEB1vIH00AB7vSRzJJbKGP54eSSDXTFaYG8/YPl12ugNyygxgJqTgtknGsj+fUa6A1EIG8XAcklG5hySsAy8Qa4DnBa1S20wiohksN5tQgfEuJLwNlC2ByUAv12+gujfh/4P7Ufoz1gATUWUGMBNRZQYwE1FlDzBsccUWOuUf5aAAAAAElFTkSuQmCC'
   try {
     const reply = await callChat(
       probe,
-      'You are testing image understanding. Describe the single visible pixel image in one short phrase.',
-      'What do you see in the attached image?',
+      'You are testing image understanding. Describe the simple geometric image in one short phrase.',
+      'What shape and colour are visible in the attached image?',
       0,
-      [pixel],
+      [probeImage],
       { task: 'vision-test' }
     )
     res.json({ ok: true, message: `视觉模型连接成功，已验证图片输入能力。模型回复：${reply.trim().slice(0, 80)}` })
