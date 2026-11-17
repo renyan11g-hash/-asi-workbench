@@ -207,27 +207,39 @@ async function arkGenerate(
  * - keep input dimensions and aspect ratio inside the provider limits.
  */
 async function wanJpegDataUrl(buffer: Buffer): Promise<string> {
-  const image = await Jimp.read(buffer)
-  const originalWidth = image.getWidth()
-  const originalHeight = image.getHeight()
-  if (!originalWidth || !originalHeight) throw new AiError('Wan 参考图尺寸无效')
+  try {
+    const image = await Jimp.read(buffer)
+    const originalWidth = image.getWidth()
+    const originalHeight = image.getHeight()
+    if (!originalWidth || !originalHeight) throw new AiError('Wan 参考图尺寸无效')
 
-  let scale = Math.min(1, 4000 / Math.max(originalWidth, originalHeight))
-  scale = Math.max(scale, 240 / Math.min(originalWidth, originalHeight))
-  const scaled = image.clone().scale(scale)
-  const width = scaled.getWidth()
-  const height = scaled.getHeight()
-  if (Math.max(width, height) > 8000) {
-    throw new AiError('Wan 参考图尺寸超出限制', '请先裁剪或重新上传比例正常的产品图。')
+    // 先限制长边，再尽量放大到最短边 240px；若原图极细长，则通过白边补足比例。
+    const downScale = Math.min(1, 4000 / Math.max(originalWidth, originalHeight))
+    const scaled = image.clone().scale(downScale)
+    const currentMax = Math.max(scaled.getWidth(), scaled.getHeight())
+    const currentMin = Math.min(scaled.getWidth(), scaled.getHeight())
+    const upScale = Math.min(240 / currentMin, 8000 / currentMax)
+    if (upScale > 1) scaled.scale(upScale)
+
+    const width = scaled.getWidth()
+    const height = scaled.getHeight()
+    // Wan 接受的宽高比为 1:8 到 8:1；极细长的透明 Logo 用白边补齐，不拉伸图案。
+    const canvasWidth = Math.max(width, Math.ceil(height / 8), 240)
+    const canvasHeight = Math.max(height, Math.ceil(width / 8), 240)
+    if (Math.max(canvasWidth, canvasHeight) > 8000) {
+      throw new AiError('Wan 参考图尺寸超出限制', '请先裁剪或重新上传比例正常的产品图。')
+    }
+    const canvas = new Jimp(canvasWidth, canvasHeight, 0xffffffff)
+    canvas.composite(scaled, Math.floor((canvasWidth - width) / 2), Math.floor((canvasHeight - height) / 2))
+    const jpeg = await canvas.quality(84).getBufferAsync(Jimp.MIME_JPEG)
+    return `data:image/jpeg;base64,${jpeg.toString('base64')}`
+  } catch (err) {
+    if (err instanceof AiError) throw err
+    throw new AiError(
+      'Wan 参考图格式无法读取',
+      '请先在产品图片区执行「一键修复/转存」，或重新上传 JPG/PNG 图片后再生成。'
+    )
   }
-
-  // Wan 接受的宽高比为 1:8 到 8:1；极细长的透明 Logo 用白边补齐，不拉伸图案。
-  const canvasWidth = Math.max(width, Math.ceil(height / 8), 240)
-  const canvasHeight = Math.max(height, Math.ceil(width / 8), 240)
-  const canvas = new Jimp(canvasWidth, canvasHeight, 0xffffffff)
-  canvas.composite(scaled, Math.floor((canvasWidth - width) / 2), Math.floor((canvasHeight - height) / 2))
-  const jpeg = await canvas.quality(84).getBufferAsync(Jimp.MIME_JPEG)
-  return `data:image/jpeg;base64,${jpeg.toString('base64')}`
 }
 
 /** Alibaba Cloud Model Studio Wan 2.7: multimodal image generation/editing API. */
