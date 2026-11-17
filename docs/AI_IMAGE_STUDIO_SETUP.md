@@ -1,43 +1,46 @@
-# AI Product Image Studio — API setup (phase 1)
+# ASI Workbench — Wan 2.7 + Qwen vision setup
 
-This branch adds a first backend adapter for two-provider image work:
+The image engine is integrated into the existing product-image pipeline. Do not create a second image storage or task system.
 
-- Vision analysis: Qwen through the Alibaba Cloud Model Studio OpenAI-compatible chat completions endpoint.
-- Image editing/generation: Wan 2.7 Image Pro through the China (Beijing) workspace-specific Model Studio endpoint.
+## Configure in Workbench Settings
 
-## Render environment variables
+### Vision model (Qwen)
+Use the existing **AI model for structured extraction** setting (`aiModelExtract`) for the visual QA task. Set it to a vision-capable Alibaba Cloud Model Studio model available to your Beijing workspace, for example `qwen-vl-max`.
 
-Configure these on the Render service (never place keys in frontend code):
+The normal text model (`aiModel`) remains available for other text tasks. Image review is routed to `aiModelExtract`.
 
-- `DASHSCOPE_API_KEY`: Alibaba Cloud Model Studio API key for China (Beijing).
-- `BAILIAN_WORKSPACE_ID`: Model Studio workspace ID for the same Beijing region.
-- `BAILIAN_VISION_MODEL`: optional vision model ID; defaults to `qwen-vl-max`. Set this to a vision-capable model enabled in the workspace.
-- `WAN_IMAGE_MODEL`: optional image model ID; defaults to `wan2.7-image-pro`.
+### Image model (Wan 2.7)
+In **Settings → Image Generation**, configure:
 
-The Beijing API key and workspace endpoint must belong to the same region. Singapore credentials/endpoints are not interchangeable.
+- Base URL: `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1`
+- API Key: your Alibaba Cloud Model Studio **China (Beijing)** API key
+- Model: `wan2.7-image-pro`
+- Image size: `2K` for quality-first reference editing (image sets/editing support up to 2K; 4K applies to text-to-image only).
 
-## API
+Replace `{WorkspaceId}` with the Workspace ID from the Model Studio console. The API key and workspace endpoint must belong to the same region. Do not use a Singapore key with the Beijing endpoint.
 
-All endpoints inherit the application's existing authentication and same-origin protections.
+## What the code now does
 
-- `GET /api/ai-image-studio/status`: reports provider configuration presence and selected model IDs; never returns secrets.
-- `POST /api/ai-image-studio/analyze`: body `{ "productHint": "...", "images": [{ "image": "data:image/jpeg;base64,...", "role": "product-reference" }] }`. Accepts 1–9 image URLs or data URLs and returns a JSON product-visual analysis.
-- `POST /api/ai-image-studio/generate`: body `{ "prompt": "...", "size": "2K", "images": [{ "image": "data:image/jpeg;base64,...", "role": "hero" }] }`. Accepts 1–9 image URLs or data URLs and returns the Wan output URL(s).
+- Existing source image collection and local mirroring remain unchanged.
+- Existing product image prompts, product-fidelity guardrails, visual style references and image review remain in use.
+- Wan requests use the official Beijing multimodal-generation endpoint.
+- Up to 9 product/style reference images are normalized and sent in their existing order.
+- The generated result URL is downloaded immediately to a Buffer; the existing product-image pipeline then persists the image in `image_blobs` and the product image history.
+- Existing Seedream and OpenAI-compatible image providers remain available by changing the current image settings.
+- Image review uses `aiModelExtract` when configured, so a vision-capable Qwen model can serve as the specialist reviewer without replacing the normal text model.
 
-## Important limitations in this first backend slice
+## Important limitations
 
-- The endpoints are adapters, not yet the complete Product Image Studio workflow.
-- The current generate endpoint intentionally requests one image per call. The UI/task queue should preview one image first, then schedule only approved image jobs.
-- Wan result URLs are temporary. A later asset-persistence step must download the result immediately and save it through the existing product image storage service before marking the job complete.
-- 1688 page crawling, image deduplication/contact sheets, durable task records, quality review, retries, and frontend UI are not implemented by this commit.
-- Do not treat AI-inferred material/specification as verified product facts. Keep unknowns explicitly unknown.
-- Model IDs are configurable because regional availability and model naming can change.
+- This integration does not make 1688 crawling immune to login, dynamic loading, or anti-bot restrictions. Existing collection errors must remain visible rather than pretending all images were collected.
+- Model-based visual QA is a filter, not a guarantee. Product images still need human approval, especially for logo, exact colorways, small parts and hidden construction.
+- The first test should use one existing product with several supplier images. Generate one image, inspect it, then run the full shot set.
+- Do not automatically regenerate every failed image without a user-visible retry budget. Reuse the existing task manager and cost logging where available.
 
 ## Smoke test
 
-1. Set the environment variables on a non-production/staging deployment.
-2. Call `GET /api/ai-image-studio/status` and verify both providers show configured.
-3. Send 1–3 representative product reference images to `POST /api/ai-image-studio/analyze`.
-4. Inspect the JSON for fabricated material, structure, colors, or accessories before using it.
-5. Send one test prompt to `POST /api/ai-image-studio/generate`.
-6. Download the returned URL promptly for manual inspection; do not use it as a permanent asset URL.
+1. Set the Qwen vision model in the structured-extraction model field.
+2. Set the Wan endpoint, API key and model in Image Generation settings.
+3. Use the existing image connection test.
+4. Generate one main image for a product with clear source photos.
+5. Confirm the output appears in the product image gallery and survives a service restart/redeploy (DB-backed image storage).
+6. Confirm the image review record identifies the Qwen model and checks product/color/structure/accessories.
