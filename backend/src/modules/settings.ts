@@ -127,13 +127,22 @@ settingsRouter.post('/test-vision', async (req: Request, res: Response) => {
   try {
     const reply = await callChat(
       probe,
-      'You are testing image understanding. Describe the simple geometric image in one short phrase.',
+      'You are testing image understanding. Identify both the colour and shape in the attached image in one short phrase.',
       'What shape and colour are visible in the attached image?',
       0,
       [probeImage],
       { task: 'vision-test' }
     )
-    res.json({ ok: true, message: `视觉模型连接成功，已验证图片输入能力。模型回复：${reply.trim().slice(0, 80)}` })
+    const recognizedColor = /\bblue\b|蓝/i.test(reply)
+    const recognizedShape = /\bcircle\b|\bcircular\b|\bround\b|\bdisk\b|\bdisc\b|圆/i.test(reply)
+    if (!recognizedColor || !recognizedShape) {
+      res.status(400).json({
+        ok: false,
+        message: `模型已返回文本，但没有正确识别测试图中的蓝色圆形；请确认选择的是支持视觉输入的模型。模型回复：${reply.trim().slice(0, 100)}`,
+      })
+      return
+    }
+    res.json({ ok: true, message: `视觉模型连接成功，已确认识别出蓝色圆形。模型回复：${reply.trim().slice(0, 80)}` })
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
   }
