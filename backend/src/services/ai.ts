@@ -46,6 +46,11 @@ export interface ChatCallOptions {
   productId?: string | null
 }
 
+export type AiSettings = Pick<
+  Settings,
+  'aiBaseUrl' | 'aiApiKey' | 'aiModel' | 'aiModelExtract' | 'aiModelQc'
+> & Partial<Pick<Settings, 'visionBaseUrl' | 'visionApiKey' | 'visionModel'>>
+
 /**
  * 台账任务名兜底：调用方没写 opts.task 时，从调用栈里取最近的业务函数名。
  *
@@ -164,18 +169,24 @@ function friendlyError(status: number, raw: string): AiError {
  * 并把这一笔记进 ai_call_logs（成功失败都记，失败带错误原因）。
  */
 export async function callChatResult(
-  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel' | 'aiModelExtract' | 'aiModelQc'>,
+  settings: AiSettings,
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.6,
   images?: string[],
   opts?: ChatCallOptions
 ): Promise<ChatResult> {
-  const baseUrl = settings.aiBaseUrl?.trim()
-  if (!baseUrl) throw new AiError('尚未配置 AI 接口地址', '请到「设置」填写 Base URL 与 API Key。')
-  if (!settings.aiApiKey?.trim())
-    throw new AiError('尚未配置 API Key', '请到「设置」填写 API Key 后再生成。')
-  const model = opts?.model?.trim() || modelFor(settings, opts?.task)
+  const task = opts?.task ?? taskFromStack()
+  const useVisionProvider = /^(image-|visual-)/i.test(task) && Boolean(settings.visionApiKey?.trim())
+  const baseUrl = (useVisionProvider ? settings.visionBaseUrl : settings.aiBaseUrl)?.trim()
+  const apiKey = (useVisionProvider ? settings.visionApiKey : settings.aiApiKey)?.trim()
+  if (!baseUrl) throw new AiError('尚未配置 AI 接口地址', '请到「设置」填写对应模型的 Base URL。')
+  if (!apiKey) throw new AiError('尚未配置 API Key', '请到「设置」填写对应模型的 API Key 后再生成。')
+  const model = opts?.model?.trim() || (
+    useVisionProvider
+      ? settings.visionModel?.trim() || 'qwen-vl-max'
+      : modelFor(settings, task)
+  )
   const startedAt = Date.now()
 
   // 支持图片：images 为 base64 dataURL 或 https URL 列表
@@ -224,7 +235,7 @@ export async function callChatResult(
 
   const fail = (err: AiError): never => {
     logAiCall({
-      task: opts?.task ?? taskFromStack(),
+      task,
       productId: opts?.productId,
       model,
       baseUrl,
@@ -238,7 +249,7 @@ export async function callChatResult(
   for (const url of candidates) {
     let res: Response
     try {
-      res = await post(url, body, settings.aiApiKey.trim())
+      res = await post(url, body, apiKey)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       lastErr =
@@ -288,7 +299,7 @@ export async function callChatResult(
 }
 
 export async function callChat(
-  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel' | 'aiModelExtract' | 'aiModelQc'>,
+  settings: AiSettings,
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.6,
@@ -325,7 +336,7 @@ export function extractJson<T>(text: string): T {
 }
 
 export async function callChatJson<T>(
-  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel' | 'aiModelExtract' | 'aiModelQc'>,
+  settings: AiSettings,
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.6,
@@ -337,7 +348,7 @@ export async function callChatJson<T>(
 }
 
 export async function callChatJsonDetailed<T>(
-  settings: Pick<Settings, 'aiBaseUrl' | 'aiApiKey' | 'aiModel' | 'aiModelExtract' | 'aiModelQc'>,
+  settings: AiSettings,
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.6,
