@@ -766,12 +766,17 @@ productImagesRouter.post('/product/:productId/plan/auto', async (req: Request, r
   if (!urls.length) throw new AppError(400, '还没有产品图：先「从 1688 抓取」或上传/粘贴产品图')
 
   // 转成模型能读的 data URL（外链防盗链/失效都不影响）
+  // 必须让送入模型的图片与后续可保存的源地址保持同一索引。
+  // 不能用原始 urls 做索引：某张图片下载失败并跳过后，模型返回的序号会整体错位。
   const images: string[] = []
+  const analyzedUrls: string[] = []
   for (const u of urls) {
     try {
-      images.push(await refToDataUrl(u))
+      const dataUrl = await refToDataUrl(u)
+      images.push(dataUrl)
+      analyzedUrls.push(u)
     } catch {
-      /* 单张失败跳过 */
+      /* 单张失败跳过；同时不把失败图片计入模型序号 */
     }
   }
   if (!images.length)
@@ -819,7 +824,7 @@ Rules:
     throw new AppError(502, `自动挑图失败：${err instanceof Error ? err.message : String(err)}`)
   }
 
-  const max = urls.length
+  const max = analyzedUrls.length
   const pick = (key: string, limit: number): string[] => {
     const list = Array.isArray(raw.picks?.[key]) ? (raw.picks?.[key] as unknown[]) : []
     return Array.from(
@@ -827,7 +832,7 @@ Rules:
         list
           .map((v) => Number(v))
           .filter((n) => Number.isInteger(n) && n >= 1 && n <= max)
-          .map((n) => urls[n - 1])
+          .map((n) => analyzedUrls[n - 1])
       )
     ).slice(0, limit)
   }
@@ -842,12 +847,12 @@ Rules:
               r.index <= max &&
               roles.includes(String(r.role ?? '').toUpperCase())
           )
-          .map((r) => urls[Number(r.index) - 1])
+          .map((r) => analyzedUrls[Number(r.index) - 1])
       )
     ).slice(0, limit)
 
   const picks = {
-    main: pick('MAIN', 3).length ? pick('MAIN', 3) : fromRole(['FRONT'], 2).length ? fromRole(['FRONT'], 2) : urls.slice(0, 2),
+    main: pick('MAIN', 3).length ? pick('MAIN', 3) : fromRole(['FRONT'], 2).length ? fromRole(['FRONT'], 2) : analyzedUrls.slice(0, 2),
     dimension: pick('DIMENSION', 2).length ? pick('DIMENSION', 2) : fromRole(['SIDE', 'FRONT'], 2),
     detail: pick('DETAIL', 2).length ? pick('DETAIL', 2) : fromRole(['DETAIL'], 2),
     scene: pick('SCENE', 2).length ? pick('SCENE', 2) : fromRole(['SCENE'], 2),
