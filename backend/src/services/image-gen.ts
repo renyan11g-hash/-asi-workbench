@@ -85,6 +85,8 @@ function assertConfig(settings: ImageSettings): { base: string; key: string; mod
 }
 
 const isArk = (baseUrl: string) => /volces\.com/i.test(baseUrl)
+const isWan = (baseUrl: string, model: string) =>
+  /maas\.aliyuncs\.com/i.test(baseUrl) || /^wan2\.7-image/i.test(model || '')
 
 function friendlyImageError(status: number, raw: string): AiError {
   if (status === 401 || status === 403)
@@ -193,6 +195,85 @@ async function arkGenerate(
   if (item?.url) return downloadImage(item.url)
   if (item?.b64_json) return Buffer.from(item.b64_json, 'base64')
   throw new AiError('图像接口未返回图片数据，请重试')
+}
+
+/** Alibaba Cloud Model Studio Wan 2.7: multimodal image generation/editing API. */
+async function wanGenerate(
+  settings: ImageSettings,
+  prompt: string,
+  refs: ImageRef[]
+): Promise<Buffer> {
+  const { base, key, model } = assertConfig(settings)
+  const endpoint = `${base.replace(/\\/+$/, '')}/services/aigc/multimodal-generation/generation`
+  const prepared = await normalizeImageRefs(refs)
+  const content: Array<{ image: string } | { text: string }> = prepared
+    .slice(0, 9)
+    .map((r) => ({
+      image: 'url' in r ? r.url : `data:image/png;base64,${r.buffer.toString('base64')}`,
+    }))
+  content.push({ text: prompt })
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model,
+        input: { messages: [{ role: 'user', content }] },
+        parameters: {
+          size: /^1K$/i.test(settings.imageSize || '') ? '1K' : '2K',
+          n: 1,
+          watermark: false,
+        },
+      }),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new AiError('Wan 图片生成超时（超过 10 分钟）', '可稍后重试，任务不会自动重复扣费。')
+    }
+    throw new AiError(`无法连接阿里云百炼 Wan：${message}`, '检查百炼北京地域 API Key、Workspace ID 和网络。')
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const raw = await response.text()
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new AiError(`Wan 接口鉴权失败 (${response.status})`, '确认 API Key 与 Workspace endpoint 都属于中国（北京）地域。')
+    }
+    if (response.status === 429) {
+      throw new AiError('Wan 接口限流或额度不足 (429)', '检查模型是否已开通、账户额度和并发限制。')
+    }
+    throw new AiError(`Wan 图片生成失败 (${response.status})：${raw.slice(0, 400)}`)
+  }
+
+  let data: {
+    output?: {
+      choices?: Array<{
+        message?: { content?: Array<{ type?: string; image?: string }> }
+      }>
+    }
+    message?: string
+    code?: string
+  }
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    throw new AiError(`Wan 接口返回无法解析：${raw.slice(0, 200)}`)
+  }
+  if (data.code && data.code !== 'Success') {
+    throw new AiError(`Wan 接口错误：${data.message || data.code}`)
+  }
+  const imageUrl = data.output?.choices
+    ?.flatMap((choice) => choice.message?.content ?? [])
+    .find((item) => (item.type === 'image' || item.image) && item.image)?.image
+  if (!imageUrl) throw new AiError(data.message || 'Wan 接口没有返回图片')
+  return downloadImage(imageUrl)
 }
 
 /** OpenAI 兼容：generations（文生图） */
@@ -318,6 +399,9 @@ export async function generateImage(
   prompt: string,
   refs: ImageRef[] = []
 ): Promise<Buffer> {
+  if (isWan(settings.imageBaseUrl || '', settings.imageModel || '')) {
+    return wanGenerate(settings, prompt, refs)
+  }
   if (isArk(settings.imageBaseUrl || '')) {
     return arkGenerate(settings, prompt, refs)
   }
