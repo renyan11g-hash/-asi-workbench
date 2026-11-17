@@ -283,7 +283,7 @@ export async function callChatResult(
     const completionTokens =
       typeof data.usage?.completion_tokens === 'number' ? data.usage.completion_tokens : null
     logAiCall({
-      task: opts?.task ?? taskFromStack(),
+      task,
       productId: opts?.productId,
       model,
       baseUrl,
