@@ -62,6 +62,7 @@ export { getErrorMessage }
 export interface SettingsResponse {
   settings: Settings
   hasApiKey: boolean
+  hasVisionApiKey?: boolean
   hasImageApiKey?: boolean
 }
 
@@ -109,6 +110,11 @@ export const api = {
       probe,
       LONG_TIMEOUT
     )
+    return data
+  },
+
+  async testVisionConnection(probe: Partial<Pick<Settings, 'visionBaseUrl' | 'visionApiKey' | 'visionModel'>>): Promise<{ ok: boolean; message: string }> {
+    const { data } = await apiClient.post<{ ok: boolean; message: string }>('/settings/test-vision', probe, LONG_TIMEOUT)
     return data
   },
 
