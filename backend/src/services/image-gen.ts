@@ -85,6 +85,7 @@ function assertConfig(settings: ImageSettings): { base: string; key: string; mod
 }
 
 const isArk = (baseUrl: string) => /volces\.com/i.test(baseUrl)
+const isWan = (model: string) => /^wan2\.7-image(?:-pro)?$/i.test(model.trim())
 
 function friendlyImageError(status: number, raw: string): AiError {
   if (status === 401 || status === 403)
@@ -193,6 +194,63 @@ async function arkGenerate(
   if (item?.url) return downloadImage(item.url)
   if (item?.b64_json) return Buffer.from(item.b64_json, 'base64')
   throw new AiError('图像接口未返回图片数据，请重试')
+}
+
+
+interface WanImageResponse {
+  output?: { choices?: Array<{ message?: { content?: Array<{ type?: string; image?: string }> } }> }
+  code?: string
+  message?: string
+}
+
+/** 阿里云百炼 Wan 2.7：多图参考/编辑走 multimodal-generation 同步接口。 */
+async function wanGenerate(settings: ImageSettings, prompt: string, refs: ImageRef[]): Promise<Buffer> {
+  const { base, key, model } = assertConfig(settings)
+  const prepared = await normalizeImageRefs(refs)
+  const content: Array<Record<string, string>> = prepared.slice(0, 9).map((r) => ({
+    image: 'url' in r ? r.url : `data:image/png;base64,${r.buffer.toString('base64')}`,
+  }))
+  content.push({ text: prompt })
+  const body = {
+    model,
+    input: { messages: [{ role: 'user', content }] },
+    parameters: {
+      size: /^(1K|2K|4K)$/i.test(settings.imageSize || '') ? settings.imageSize!.toUpperCase() : '2K',
+      n: 1,
+      watermark: false,
+      ...(prepared.length ? {} : { thinking_mode: true }),
+    },
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS)
+  let res: Response
+  try {
+    res = await fetch(`${base.replace(/\\/+$/, '')}/api/v1/services/aigc/multimodal-generation/generation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (err instanceof Error && err.name === 'AbortError') throw new AiError('Wan 图片生成超时（超过 10 分钟）')
+    throw new AiError(`无法连接阿里云百炼 Wan：${msg}`, '检查 Base URL、北京地域 API Key 和网络。')
+  } finally {
+    clearTimeout(timer)
+  }
+  const raw = await res.text()
+  if (!res.ok) throw friendlyImageError(res.status, raw)
+  let data: WanImageResponse
+  try {
+    data = JSON.parse(raw) as WanImageResponse
+  } catch {
+    throw new AiError(`Wan 接口返回无法解析：${raw.slice(0, 240)}`)
+  }
+  if (data.code) throw new AiError(`Wan 接口错误：${data.code} ${data.message || ''}`)
+  const imageUrl = data.output?.choices?.flatMap((c) => c.message?.content ?? []).find((c) => c.image)?.image
+  if (!imageUrl) throw new AiError('Wan 接口未返回图片，请检查模型权限和请求参数')
+  // 百炼图片 URL 仅短期有效，必须在本次请求中立即下载并转为 Buffer。
+  return downloadImage(imageUrl)
 }
 
 /** OpenAI 兼容：generations（文生图） */
@@ -318,6 +376,7 @@ export async function generateImage(
   prompt: string,
   refs: ImageRef[] = []
 ): Promise<Buffer> {
+  if (isWan(settings.imageModel || '')) return wanGenerate(settings, prompt, refs)
   if (isArk(settings.imageBaseUrl || '')) {
     return arkGenerate(settings, prompt, refs)
   }
