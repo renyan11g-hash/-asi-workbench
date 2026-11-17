@@ -760,9 +760,12 @@ productImagesRouter.post('/product/:productId/plan/auto', async (req: Request, r
   const productId = String(req.params.productId)
   const p = findProduct(productId)
   const settings = loadSettings()
-  const urls = (p.source.images ?? [])
-    .filter((u) => isHttpUrl(u) || isManagedImage(u) || u.startsWith('data:image/'))
+  const sourceImages = p.source.images ?? []
+  const indexedUrls = sourceImages
+    .map((url, index) => ({ url, originalIndex: index + 1 }))
+    .filter(({ url }) => isHttpUrl(url) || isManagedImage(url) || url.startsWith('data:image/'))
     .slice(0, 6)
+  const urls = indexedUrls.map((item) => item.url)
   if (!urls.length) throw new AppError(400, '还没有产品图：先「从 1688 抓取」或上传/粘贴产品图')
 
   // 转成模型能读的 data URL（外链防盗链/失效都不影响）
@@ -777,7 +780,7 @@ productImagesRouter.post('/product/:productId/plan/auto', async (req: Request, r
       const dataUrl = await refToDataUrl(u)
       images.push(dataUrl)
       analyzedUrls.push(u)
-      analyzedOriginalIndexes.push(i + 1)
+      analyzedOriginalIndexes.push(indexedUrls[i].originalIndex)
     } catch {
       /* 单张失败跳过；同时不把失败图片计入模型序号 */
     }
