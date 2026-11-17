@@ -61,11 +61,12 @@ export async function reviewProductImage(
   input: ReviewInput,
   productId?: string | null
 ): Promise<ImageReviewResult | null> {
+  const hasDedicatedVision = Boolean(settings.visionApiKey?.trim())
   const visionSettings = {
     ...settings,
-    aiBaseUrl: settings.visionBaseUrl?.trim() || settings.aiBaseUrl,
-    aiApiKey: settings.visionApiKey?.trim() || settings.aiApiKey,
-    aiModel: settings.visionModel?.trim() || settings.aiModel,
+    aiBaseUrl: hasDedicatedVision ? settings.visionBaseUrl : settings.aiBaseUrl,
+    aiApiKey: hasDedicatedVision ? settings.visionApiKey : settings.aiApiKey,
+    aiModel: hasDedicatedVision ? settings.visionModel : settings.aiModel,
     aiModelExtract: '',
   }
   if (!visionSettings.aiApiKey?.trim()) return null
