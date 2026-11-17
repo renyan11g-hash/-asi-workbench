@@ -197,6 +197,16 @@ export interface ImageCapabilities {
 
 export function capabilitiesFor(baseUrl: string, model: string): ImageCapabilities {
   const m = (model || '').trim() || 'doubao-seedream-4-0-250828'
+  if (/maas\\.aliyuncs\\.com/i.test(baseUrl || '') || /^wan2\\.7-image/i.test(m)) {
+    return {
+      provider: '阿里云百炼 Wan 2.7',
+      model: m,
+      multiRef: true,
+      supportsEdit: true,
+      maxRefs: 9,
+      note: '支持最多 9 张多图参考与商品编辑；产品真实素材放前面，风格参考图放最后，生成结果由现有图片审核与持久化流程接管。',
+    }
+  }
   if (/volces\.com/i.test(baseUrl || '') || /seedream|seededit/i.test(m)) {
     return {
       provider: '火山方舟 Ark（Seedream）',
