@@ -352,8 +352,27 @@ export default function SettingsPage() {
       </SectionCard>
 
       <SectionCard
+        title="图片视觉理解（商品分析）"
+        hint="独立于通用文本 AI。用于识别 1688 图片的主体、角度、细节和颜色，并审核生成图。建议使用阿里云百炼 Qwen-VL。"
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="视觉模型 Base URL">
+            <Input className="h-9 text-sm" value={form.imageVisionBaseUrl ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1'} onChange={(e) => patch({ imageVisionBaseUrl: e.target.value })} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+          </Field>
+          <Field label="视觉模型名称">
+            <Input className="h-9 text-sm" value={form.imageVisionModel ?? 'qwen-vl-plus'} onChange={(e) => patch({ imageVisionModel: e.target.value })} placeholder="qwen-vl-plus" />
+          </Field>
+          <div className="sm:col-span-2">
+            <Field label="视觉模型 API Key" hint="单独配置，不影响上方通用文本 AI；已保存时留空不修改">
+              <Input className="h-9 text-sm" type="password" value={form.imageVisionApiKey ?? ''} onChange={(e) => patch({ imageVisionApiKey: e.target.value })} placeholder="阿里云百炼 API Key" />
+            </Field>
+          </div>
+        </div>
+      </SectionCard>
+
+      <SectionCard
         title="图像生成（产品图片）"
-        hint="用于生成产品主图/尺寸图/介绍图。火山引擎即梦 Seedream 国内直连、支付宝充值；也兼容 OpenAI gpt-image-1。与上方文本 AI 相互独立。"
+        hint="用于生成产品主图/尺寸图/细节图/场景图。支持火山 Seedream、阿里云百炼 Wan 2.7 和 OpenAI 兼容接口；与视觉理解模型独立配置。"
       >
         <div className="space-y-4">
           <div className="space-y-2">
@@ -407,12 +426,12 @@ export default function SettingsPage() {
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
-              <Field label="Base URL" hint="火山引擎填 https://ark.cn-beijing.volces.com/api/v3（粘贴完整端点也可自动识别）">
+              <Field label="Base URL" hint="Seedream 填 https://ark.cn-beijing.volces.com/api/v3；Wan 填 https://dashscope.aliyuncs.com">
                 <Input
                   className="h-9 text-sm"
                   value={form.imageBaseUrl}
                   onChange={(e) => patch({ imageBaseUrl: e.target.value })}
-                  placeholder="https://ark.cn-beijing.volces.com/api/v3"
+                  placeholder="https://dashscope.aliyuncs.com 或 https://ark.cn-beijing.volces.com/api/v3"
                 />
               </Field>
             </div>
@@ -422,15 +441,15 @@ export default function SettingsPage() {
                 type="password"
                 value={form.imageApiKey}
                 onChange={(e) => patch({ imageApiKey: e.target.value })}
-                placeholder="火山引擎 API Key"
+                placeholder="火山方舟或阿里云百炼 API Key"
               />
             </Field>
-            <Field label="模型名称" hint="需与方舟控制台开通的模型 ID 一致">
+            <Field label="模型名称" hint="Seedream：doubao-seedream…；Wan：wan2.7-image-pro">
               <Input
                 className="h-9 text-sm"
                 value={form.imageModel}
                 onChange={(e) => patch({ imageModel: e.target.value })}
-                placeholder="doubao-seedream-4-0-250828"
+                placeholder="wan2.7-image-pro"
               />
             </Field>
             <Field label="生成尺寸" hint="火山：1K / 2K / 4K；OpenAI：1024x1024 等">
