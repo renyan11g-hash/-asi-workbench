@@ -770,11 +770,14 @@ productImagesRouter.post('/product/:productId/plan/auto', async (req: Request, r
   // 不能用原始 urls 做索引：某张图片下载失败并跳过后，模型返回的序号会整体错位。
   const images: string[] = []
   const analyzedUrls: string[] = []
-  for (const u of urls) {
+  const analyzedOriginalIndexes: number[] = []
+  for (let i = 0; i < urls.length; i++) {
+    const u = urls[i]
     try {
       const dataUrl = await refToDataUrl(u)
       images.push(dataUrl)
       analyzedUrls.push(u)
+      analyzedOriginalIndexes.push(i + 1)
     } catch {
       /* 单张失败跳过；同时不把失败图片计入模型序号 */
     }
@@ -863,7 +866,11 @@ Rules:
   for (const k of KINDS) {
     savePlan(productId, k, { sources: picks[k] })
   }
-  res.json({ picks, roles: raw.roles ?? [], count: analyzedUrls.length, plan: readPlan(productId) })
+  // 返回给前端的角色序号映射回原始产品图列表，避免下载失败跳图后 UI 标错照片。
+  const roles = (raw.roles ?? [])
+    .filter((r) => typeof r?.index === 'number' && r.index >= 1 && r.index <= analyzedOriginalIndexes.length)
+    .map((r) => ({ ...r, index: analyzedOriginalIndexes[Number(r.index) - 1] }))
+  res.json({ picks, roles, count: analyzedUrls.length, plan: readPlan(productId) })
 })
 
 /**
