@@ -806,6 +806,7 @@ Rules:
     roles?: Array<{ index?: number; role?: string; reason?: string }>
     picks?: Record<string, unknown>
   }
+  const useDedicatedVision = Boolean(settings.imageVisionApiKey?.trim() && settings.imageVisionBaseUrl?.trim())
   try {
     raw = await callChatJson<typeof raw>(
       settings,
@@ -816,9 +817,9 @@ Rules:
       {
         task: 'image-source-classify',
         productId,
-        model: settings.imageVisionModel || undefined,
-        baseUrl: settings.imageVisionBaseUrl || undefined,
-        apiKey: settings.imageVisionApiKey || undefined,
+        model: useDedicatedVision ? settings.imageVisionModel || undefined : undefined,
+        baseUrl: useDedicatedVision ? settings.imageVisionBaseUrl : undefined,
+        apiKey: useDedicatedVision ? settings.imageVisionApiKey : undefined,
       }
     )
   } catch (err) {
