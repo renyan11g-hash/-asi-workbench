@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db, getSetting, setSetting } from '../db'
 import { DEFAULT_SETTINGS, Settings } from '../types'
-import { testConnection } from '../services/ai'
+import { callChat, testConnection } from '../services/ai'
 import { AppError } from '../middleware/errorHandler'
 import { getFxStatus, refreshFxRate } from '../services/fx'
 import { AI_PROVIDER_PRESETS } from '../constants/ai-providers'
@@ -117,8 +117,25 @@ settingsRouter.post('/test-vision', async (req: Request, res: Response) => {
     aiApiKey: body.visionApiKey && !body.visionApiKey.includes('****') ? body.visionApiKey : current.visionApiKey,
     aiModel: body.visionModel ?? current.visionModel,
   }
-  const result = await testConnection(probe)
-  res.json(result)
+  if (!probe.aiApiKey?.trim()) {
+    res.status(400).json({ ok: false, message: '请先填写百炼视觉模型 API Key' })
+    return
+  }
+  // 1×1 PNG：不仅验证 Key 和模型可用，还确认该模型确实接受图片输入。
+  const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='
+  try {
+    const reply = await callChat(
+      probe,
+      'You are testing image understanding. Describe the single visible pixel image in one short phrase.',
+      'What do you see in the attached image?',
+      0,
+      [pixel],
+      { task: 'vision-test' }
+    )
+    res.json({ ok: true, message: `视觉模型连接成功，已验证图片输入能力。模型回复：${reply.trim().slice(0, 80)}` })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
 })
 
 settingsRouter.post('/test', async (req: Request, res: Response) => {
