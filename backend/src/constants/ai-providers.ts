@@ -36,6 +36,18 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     note: '图像生成专用（产品图/尺寸图/介绍图）：国内直连、支付宝充值、支持产品图+Logo 多参考图合成与指令编辑。',
   },
   {
+    id: 'aliyun-wan',
+    name: '阿里云百炼 Wan 2.7 Image Pro',
+    kind: 'image',
+    baseUrl: 'https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1',
+    models: ['wan2.7-image-pro', 'wan2.7-image'],
+    keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1',
+    needsProxy: false,
+    supportsVision: false,
+    priceNote: '按百炼控制台当前模型价格计费',
+    note: '国内直连；先把 WorkspaceId 替换为北京地域工作空间 ID；支持最多 9 张参考图，图生图最高 2K。',
+  },
+  {
     id: 'deepseek',
     name: 'DeepSeek（深度求索）',
     kind: 'text',
