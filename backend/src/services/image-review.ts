@@ -61,7 +61,14 @@ export async function reviewProductImage(
   input: ReviewInput,
   productId?: string | null
 ): Promise<ImageReviewResult | null> {
-  if (!settings.aiApiKey?.trim()) return null
+  const visionSettings = {
+    ...settings,
+    aiBaseUrl: settings.visionBaseUrl?.trim() || settings.aiBaseUrl,
+    aiApiKey: settings.visionApiKey?.trim() || settings.aiApiKey,
+    aiModel: settings.visionModel?.trim() || settings.aiModel,
+    aiModelExtract: '',
+  }
+  if (!visionSettings.aiApiKey?.trim()) return null
   if (!input.image || !input.productImages.length) return null
 
   const kindLabel =
@@ -116,7 +123,7 @@ Run the 7 checks and output the JSON.`
 
   try {
     const { data } = await callChatJsonDetailed<{ checks?: Array<{ key?: string; ok?: boolean; note?: string }> }>(
-      settings,
+      visionSettings,
       system,
       user,
       0.1,
