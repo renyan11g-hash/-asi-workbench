@@ -2,7 +2,7 @@ import { Settings } from '../types'
 import { AiError } from './ai'
 import { inlineImage } from './image-inline'
 import Jimp from 'jimp'
-import { dataUrlToBuffer } from './image-source'
+import { dataUrlToBuffer, sniffExt } from './image-source'
 
 /**
  * 图像生成服务 —— 双协议：
@@ -235,9 +235,13 @@ async function wanJpegDataUrl(buffer: Buffer): Promise<string> {
     return `data:image/jpeg;base64,${jpeg.toString('base64')}`
   } catch (err) {
     if (err instanceof AiError) throw err
+    // Jimp 目前不解码 WebP；Wan 原生支持 WebP，因此保留原格式直传，避免把合法来源图误拒。
+    if (sniffExt(buffer) === 'webp') {
+      return `data:image/webp;base64,${buffer.toString('base64')}`
+    }
     throw new AiError(
       'Wan 参考图格式无法读取',
-      '请先在产品图片区执行「一键修复/转存」，或重新上传 JPG/PNG 图片后再生成。'
+      '请先在产品图片区执行「一键修复/转存」，或重新上传 JPG/PNG/WebP 图片后再生成。'
     )
   }
 }
@@ -269,6 +273,8 @@ async function wanGenerate(
       const inlined = await inlineImage(r.url)
       const inlinedImage = inlined ? dataUrlToBuffer(inlined) : null
       if (inlinedImage) return wanJpegDataUrl(inlinedImage.buffer)
+      // WebP is accepted by Wan but may not be decodable by Jimp in our local inliner.
+      if (/^https?:\/\//i.test(r.url) && /\.webp(?:[?#]|$)/i.test(r.url)) return r.url
       throw new AiError(
         'Wan 参考图无法读取或转换',
         '请先在产品图片区执行「一键修复/转存」，或重新上传这张参考图后再生成。'
