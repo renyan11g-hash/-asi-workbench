@@ -812,7 +812,14 @@ Rules:
       system,
       `Photos of one product, numbered 1..${images.length} in the order sent. Classify them and pick the references.`,
       0.2,
-      images
+      images,
+      {
+        task: 'image-source-classify',
+        productId,
+        model: settings.imageVisionModel || undefined,
+        baseUrl: settings.imageVisionBaseUrl || undefined,
+        apiKey: settings.imageVisionApiKey || undefined,
+      }
     )
   } catch (err) {
     throw new AppError(502, `自动挑图失败：${err instanceof Error ? err.message : String(err)}`)
