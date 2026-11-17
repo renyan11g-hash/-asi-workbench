@@ -1,7 +1,8 @@
 import { Settings } from '../types'
 import { AiError } from './ai'
 import { inlineImage } from './image-inline'
-import { dataUrlToBuffer, toJpegDataUrl } from './image-source'
+import Jimp from 'jimp'
+import { dataUrlToBuffer } from './image-source'
 
 /**
  * 图像生成服务 —— 双协议：
@@ -198,6 +199,37 @@ async function arkGenerate(
   throw new AiError('图像接口未返回图片数据，请重试')
 }
 
+/**
+ * Wan 2.7 input normalization:
+ * - flatten transparent PNGs (especially uploaded brand logos) onto white;
+ * - encode every input as JPEG, avoiding unsupported alpha channels;
+ * - upscale tiny logos/photos to the documented 240px minimum side;
+ * - keep input dimensions and aspect ratio inside the provider limits.
+ */
+async function wanJpegDataUrl(buffer: Buffer): Promise<string> {
+  const image = await Jimp.read(buffer)
+  const originalWidth = image.getWidth()
+  const originalHeight = image.getHeight()
+  if (!originalWidth || !originalHeight) throw new AiError('Wan 参考图尺寸无效')
+
+  let scale = Math.min(1, 4000 / Math.max(originalWidth, originalHeight))
+  scale = Math.max(scale, 240 / Math.min(originalWidth, originalHeight))
+  const scaled = image.clone().scale(scale)
+  const width = scaled.getWidth()
+  const height = scaled.getHeight()
+  if (Math.max(width, height) > 8000) {
+    throw new AiError('Wan 参考图尺寸超出限制', '请先裁剪或重新上传比例正常的产品图。')
+  }
+
+  // Wan 接受的宽高比为 1:8 到 8:1；极细长的透明 Logo 用白边补齐，不拉伸图案。
+  const canvasWidth = Math.max(width, Math.ceil(height / 8), 240)
+  const canvasHeight = Math.max(height, Math.ceil(width / 8), 240)
+  const canvas = new Jimp(canvasWidth, canvasHeight, 0xffffffff)
+  canvas.composite(scaled, Math.floor((canvasWidth - width) / 2), Math.floor((canvasHeight - height) / 2))
+  const jpeg = await canvas.quality(84).getBufferAsync(Jimp.MIME_JPEG)
+  return `data:image/jpeg;base64,${jpeg.toString('base64')}`
+}
+
 /** Alibaba Cloud Model Studio Wan 2.7: multimodal image generation/editing API. */
 async function wanGenerate(
   settings: ImageSettings,
@@ -219,12 +251,12 @@ async function wanGenerate(
   // before we pay for a generation request.
   const imageInputs = await Promise.all(
     prepared.slice(0, 9).map(async (r) => {
-      if ('buffer' in r) return toJpegDataUrl(r.buffer, 1200, 84)
+      if ('buffer' in r) return wanJpegDataUrl(r.buffer)
       const parsed = dataUrlToBuffer(r.url)
-      if (parsed) return toJpegDataUrl(parsed.buffer, 1200, 84)
+      if (parsed) return wanJpegDataUrl(parsed.buffer)
       const inlined = await inlineImage(r.url)
       const inlinedImage = inlined ? dataUrlToBuffer(inlined) : null
-      if (inlinedImage) return toJpegDataUrl(inlinedImage.buffer, 1200, 84)
+      if (inlinedImage) return wanJpegDataUrl(inlinedImage.buffer)
       throw new AiError(
         'Wan 参考图无法读取或转换',
         '请先在产品图片区执行「一键修复/转存」，或重新上传这张参考图后再生成。'
