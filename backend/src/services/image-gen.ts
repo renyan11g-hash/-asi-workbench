@@ -429,8 +429,12 @@ export async function testImageConnection(
   settings: ImageSettings
 ): Promise<{ ok: boolean; message: string; model?: string }> {
   try {
+    // Wan 连接测试固定用 1K，避免用户选择 2K 时为一次连通性测试支付完整高分辨率费用。
+    const probeSettings = isWan(settings.imageBaseUrl || '', settings.imageModel || '')
+      ? { ...settings, imageSize: '1K' }
+      : settings
     const buf = await generateImage(
-      settings,
+      probeSettings,
       'A simple blue circle on a pure white background, minimal product photography style, no text.',
       []
     )
