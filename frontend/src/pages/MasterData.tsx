@@ -170,6 +170,8 @@ function MasterDataPanel() {
     imageTaskId?: string | null
     /** 图片列填的是本机路径、服务器读不到的行数 */
     localPathRows?: number
+    /** 表头里没认出来的列 */
+    unknownHeaders?: string[]
   } | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
 
@@ -696,6 +698,12 @@ function MasterDataPanel() {
                 ? ` · 表格里有 ${importResult.pendingImages} 行带「嵌入单元格的图片」，正在后台解析（${importing ? '进行中…' : '已完成'}）`
                 : ''}
             </div>
+            {(importResult.unknownHeaders?.length ?? 0) > 0 && (
+              <div className="mt-1 text-rose-600">
+                这些列没认出来，已忽略：{importResult.unknownHeaders!.join('、')}
+                —— 改个列名（或点「导出 Excel」用标准表头）重新导入即可。
+              </div>
+            )}
             {(importResult.localPathRows ?? 0) > 0 && (
               <div className="mt-1 text-amber-600">
                 有 {importResult.localPathRows} 行的图片列填的是本机路径（C:\...），服务器读不到 ——

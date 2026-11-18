@@ -1323,6 +1323,8 @@ export const api = {
     imageTaskId?: string | null
     /** 图片列填的是本机路径、服务器读不到的行数 */
     localPathRows?: number
+    /** 表头里没认出来的列 */
+    unknownHeaders?: string[]
   }> {
     const { data } = await apiClient.post<{
       created: number
@@ -1333,6 +1335,7 @@ export const api = {
       pendingImages?: number
       imageTaskId?: string | null
       localPathRows?: number
+      unknownHeaders?: string[]
     }>('/master-products/import', { filename, dataBase64 }, { timeout: 180_000 })
     return data
   },

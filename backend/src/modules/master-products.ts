@@ -1248,6 +1248,16 @@ const HEADER_ALIASES: Record<string, ColKey> = {
   产品图: 'imagesText',
   商品主图: 'imagesText',
   主图: 'imagesText',
+  // 用户表格里最常见的写法（漏了这行整列图片会被静默丢掉）
+  商品图片地址: 'imagesText',
+  图片地址: 'imagesText',
+  商品图片: 'imagesText',
+  产品图片: 'imagesText',
+  产品图片地址: 'imagesText',
+  主图地址: 'imagesText',
+  图片链接: 'imagesText',
+  图片路径: 'imagesText',
+  本地图片: 'imagesText',
   // 下面这些是用户实际表格里常见的列名（带单位后缀会被 normHeader 去掉）
   商品尺寸: 'sizeCn',
   规格: 'sizeCn',
@@ -1282,10 +1292,29 @@ function isMarker(v: string): boolean {
 }
 
 /** 表头 → 该字段可以取值的所有列下标（同一字段可能有多列，取第一个有真实数据的） */
+/**
+ * 这个表头像不像「图片」列。
+ *
+ * 只用来兜底：别名表里登记过的优先，没登记的才走这里。
+ * 认「图片 / 主图 / 照片 / 图集」以及 image、photo、picture，
+ * 但不认「图片说明 / 图片备注」这种明显是文字说明的列。
+ */
+export function looksLikeImageHeader(name: string): boolean {
+  const n = String(name ?? '').trim().toLowerCase()
+  if (!n) return false
+  if (/说明|备注|描述|文字|文案|数量|张数|大小/.test(n)) return false
+  return /图片|主图|照片|图集|product ?image|image|photo|picture/.test(n)
+}
+
 function headerMap(header: string[]): Map<ColKey, number[]> {
   const map = new Map<ColKey, number[]>()
   header.forEach((h, i) => {
-    const key = HEADER_ALIASES[normHeader(h)] as ColKey | undefined
+    const norm = normHeader(h)
+    if (!norm) return
+    let key = HEADER_ALIASES[norm] as ColKey | undefined
+    // 兜底：没登记过的写法（「商品图片地址」「产品图片 url」…）只要明显是图片列也认，
+    // 否则表头换个说法，整列图片就会被静默丢掉 —— 用户只会看到「导入成功但没图」。
+    if (!key && looksLikeImageHeader(norm)) key = 'imagesText'
     if (!key) return
     const list = map.get(key) ?? []
     list.push(i)
@@ -1584,6 +1613,12 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
   let productsCreated = 0
   let productsLinked = 0
   const errors: Array<{ row: number; error: string }> = []
+  /** 表头里没认出来的列（用户改个列名就能导进去，别让人猜） */
+  const unknownHeaders = (grid[headerRow] ?? [])
+    .map((h) => String(h ?? '').trim())
+    .filter((h) => h && headerMap([h]).size === 0)
+    .slice(0, 8)
+
   /** 图片列填的是本机路径的行数：服务器读不到，需要用户再选图片文件夹 */
   let localPathRows = 0
 
@@ -1681,6 +1716,7 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
     total: Math.max(0, grid.length - headerRow - 1),
     /** 有这么多行的图片列填的是本机路径（服务器读不到）→ 让用户选「导入图片文件夹」按文件名补 */
     localPathRows,
+    unknownHeaders,
     /** 有这么多行带「嵌入单元格图片」，图片在后台解析 */
     pendingImages: pendingImages.length,
     imageTaskId,
