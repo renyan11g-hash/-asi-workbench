@@ -690,17 +690,18 @@ function MasterDataPanel() {
               </ul>
             )}
             <div className="mt-1 text-[11px] text-slate-400">
-              按 1688 链接去重：已存在就更新，不存在就新增。
-              {(importResult.localPathRows ?? 0) > 0 && (
-          <div className="mt-1 text-amber-600">
-            有 {importResult.localPathRows} 行的图片列填的是本机路径（C:\\...），服务器读不到 ——
-            点上方「导入图片文件夹」，按文件名自动配对补图。
-          </div>
-        )}
-        {importResult.pendingImages
+              按 1688 链接去重：已存在就更新，不存在就新增。图片列填多张网址可以直接用；
+              填本机路径（C:\...）也行 —— 导入后点「导入图片文件夹」，按文件名自动配对。
+              {importResult.pendingImages
                 ? ` · 表格里有 ${importResult.pendingImages} 行带「嵌入单元格的图片」，正在后台解析（${importing ? '进行中…' : '已完成'}）`
-                : ' · 图片列支持换行分隔的多张网址'}
+                : ''}
             </div>
+            {(importResult.localPathRows ?? 0) > 0 && (
+              <div className="mt-1 text-amber-600">
+                有 {importResult.localPathRows} 行的图片列填的是本机路径（C:\...），服务器读不到 ——
+                点上方「导入图片文件夹」，按文件名自动配对补图。
+              </div>
+            )}
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2">
