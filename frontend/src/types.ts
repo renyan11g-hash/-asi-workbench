@@ -828,6 +828,8 @@ export interface MasterProduct {
   cartonGwKg: number | null
   /** 多张产品图（出图时作为参考图） */
   images: string[]
+  /** 表格图片列里填过、但服务器读不到的本地路径（如 C:\\Users\\x\\a.jpg） */
+  localImagePaths?: string[]
   notes: string
   supplier: string
   /** 备选供应商：一个或多个，每行一个 */

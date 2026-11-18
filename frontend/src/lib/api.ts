@@ -1321,6 +1321,8 @@ export const api = {
     total: number
     pendingImages?: number
     imageTaskId?: string | null
+    /** 图片列填的是本机路径、服务器读不到的行数 */
+    localPathRows?: number
   }> {
     const { data } = await apiClient.post<{
       created: number
@@ -1330,6 +1332,7 @@ export const api = {
       total: number
       pendingImages?: number
       imageTaskId?: string | null
+      localPathRows?: number
     }>('/master-products/import', { filename, dataBase64 }, { timeout: 180_000 })
     return data
   },
@@ -1461,6 +1464,21 @@ export const api = {
       { images },
       LONG_TIMEOUT
     )
+    return data
+  },
+  /**
+   * 「导入图片文件夹」：本地图片按文件名配回资料库。
+   * 表格图片列里填的 C:\\...\\a.jpg 服务器读不到，只存了路径，靠这一步按文件名配对回填。
+   */
+  async fillMasterImagesByName(
+    files: Array<{ name: string; data: string }>
+  ): Promise<{ filled: number; products: number; unmatched: string[]; full: string[] }> {
+    const { data } = await apiClient.post<{
+      filled: number
+      products: number
+      unmatched: string[]
+      full: string[]
+    }>('/master-products/fill-images-by-name', { files }, LONG_TIMEOUT)
     return data
   },
   /** 把资料库里的资料推进系统：建/复用产品档案（之后就能在流水线看到） */

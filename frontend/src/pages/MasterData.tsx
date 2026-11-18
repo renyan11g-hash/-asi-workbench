@@ -21,7 +21,7 @@ import { SectionCard } from '@/components/ui/primitives'
 import { useNavigate } from 'react-router-dom'
 import { api, getErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { chunkImages, fileToDataUrl as readFileAsDataUrl } from '@/lib/files'
+import { chunkImages, fileToDataUrl as readFileAsDataUrl, pickImageFiles } from '@/lib/files'
 import { ProductSpecCards } from './ProductSpecs'
 import { MasterProduct, MasterStage } from '@/types'
 
@@ -168,6 +168,8 @@ function MasterDataPanel() {
     errors: Array<{ row: number; error: string }>
     pendingImages?: number
     imageTaskId?: string | null
+    /** 图片列填的是本机路径、服务器读不到的行数 */
+    localPathRows?: number
   } | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
 
@@ -525,6 +527,58 @@ function MasterDataPanel() {
     toast.success(`抓图完成：${got}/${targets.length} 条拿到图`)
     await load(q)
   }
+  // ---------------------------------------------------------------- 导入图片文件夹
+  /** 图片列填的是本机路径的行：这些行服务器读不到图，需要用户选一次文件夹 */
+  const localImageRows = useMemo(
+    () => list.filter((p) => (p.localImagePaths?.length ?? 0) > 0),
+    [list]
+  )
+  const folderRef = useRef<HTMLInputElement | null>(null)
+  const [fillingFolder, setFillingFolder] = useState(false)
+  const [fillProgress, setFillProgress] = useState({ done: 0, total: 0, filled: 0 })
+
+  /**
+   * 按文件名把本地图片配回资料库。
+   * 表格图片列填的是 C:\\Users\\...\\风扇1.jpg，服务器读不到；这里把用户选的图片文件夹
+   * 按文件名（不含目录、不区分大小写）配到对应产品，配对成功才从待配列表里删掉。
+   */
+  const onPickImageFolder = async (files: FileList | null) => {
+    const imgs = pickImageFiles(files)
+    if (!imgs.length) {
+      toast.error('没选到图片文件（选包含产品图的文件夹）')
+      return
+    }
+    setFillingFolder(true)
+    setFillProgress({ done: 0, total: imgs.length, filled: 0 })
+    let filled = 0
+    let products = 0
+    const unmatched: string[] = []
+    // 一次 2 张：手机原图 3-5MB，base64 后更大，批次太大会被 JSON 上限拦掉
+    const batches = chunkImages(imgs, 2)
+    let done = 0
+    for (const batch of batches) {
+      const payload = await Promise.all(
+        batch.map(async (f) => ({ name: f.name, data: await readFileAsDataUrl(f) }))
+      )
+      try {
+        const r = await api.fillMasterImagesByName(payload)
+        filled += r.filled
+        products += r.products
+        unmatched.push(...(r.unmatched ?? []))
+      } catch {
+        unmatched.push(...batch.map((b) => b.name))
+      }
+      done += batch.length
+      setFillProgress({ done, total: imgs.length, filled })
+    }
+    setFillingFolder(false)
+    if (filled) toast.success(`已配对 ${filled} 张图 → ${products} 条资料`)
+    if (unmatched.length)
+      toast.warning(
+        `${unmatched.length} 张没找到对应产品：${unmatched.slice(0, 3).join('、')}${unmatched.length > 3 ? ' 等' : ''}`
+      )
+    await load(q)
+  }
 
   return (
     <div className="space-y-4">
@@ -566,6 +620,36 @@ function MasterDataPanel() {
                   : `批量抓图（缺 ${noImageRows.length} 条）`}
               </Button>
             )}
+            {localImageRows.length > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={fillingFolder}
+                onClick={() => folderRef.current?.click()}
+                title="表格图片列填的是本机路径（C:\\...），服务器读不到：选一次图片文件夹，按文件名自动配对"
+              >
+                {fillingFolder ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ImagePlus className="mr-1 h-3.5 w-3.5" />
+                )}
+                {fillingFolder
+                  ? `配对中 ${fillProgress.done}/${fillProgress.total}`
+                  : `导入图片文件夹（待配 ${localImageRows.length} 条）`}
+              </Button>
+            )}
+            <input
+              ref={folderRef}
+              type="file"
+              multiple
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                void onPickImageFolder(e.target.files)
+                e.target.value = ''
+              }}
+              {...({ webkitdirectory: 'true', directory: 'true' } as React.InputHTMLAttributes<HTMLInputElement>)}
+            />
             <input
               ref={fileRef}
               type="file"
@@ -607,7 +691,13 @@ function MasterDataPanel() {
             )}
             <div className="mt-1 text-[11px] text-slate-400">
               按 1688 链接去重：已存在就更新，不存在就新增。
-              {importResult.pendingImages
+              {(importResult.localPathRows ?? 0) > 0 && (
+          <div className="mt-1 text-amber-600">
+            有 {importResult.localPathRows} 行的图片列填的是本机路径（C:\\...），服务器读不到 ——
+            点上方「导入图片文件夹」，按文件名自动配对补图。
+          </div>
+        )}
+        {importResult.pendingImages
                 ? ` · 表格里有 ${importResult.pendingImages} 行带「嵌入单元格的图片」，正在后台解析（${importing ? '进行中…' : '已完成'}）`
                 : ' · 图片列支持换行分隔的多张网址'}
             </div>

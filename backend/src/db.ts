@@ -375,6 +375,8 @@ CREATE TABLE IF NOT EXISTS master_products (
   -- 备选供应商：一个或多个（每行一个），用于主供应商没货/涨价时快速替换
   alt_suppliers TEXT NOT NULL DEFAULT '',
   material_cn TEXT NOT NULL DEFAULT '',
+  -- 表格图片列里填的本地路径（服务器读不到，仅用于按文件名配对补图）
+  local_image_paths TEXT NOT NULL DEFAULT '[]',
   colors_cn TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -712,6 +714,9 @@ ensureTableColumn('batch_jobs', 'last_stage', "last_stage TEXT NOT NULL DEFAULT 
 
 // 资料库老表补「备选供应商」列（表已存在时 CREATE TABLE 不会新增列）
 ensureTableColumn('master_products', 'alt_suppliers', "alt_suppliers TEXT NOT NULL DEFAULT ''")
+// 导入表格时图片列填的是本机路径（C:\\Users\\...\\a.jpg）：服务器读不到，
+// 原样存这里，之后用「导入图片文件夹」按文件名配对回填
+ensureTableColumn('master_products', 'local_image_paths', "local_image_paths TEXT NOT NULL DEFAULT '[]'")
 
 // 单产品定价参数覆盖（汇率/空运海运价/印刷费/样品费/杂费/会员折扣）：null = 用全局设置
 ensureTableColumn('products', 'price_settings', 'price_settings TEXT')

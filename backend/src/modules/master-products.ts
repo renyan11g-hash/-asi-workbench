@@ -40,6 +40,11 @@ export interface MasterProduct {
   pcsPerCarton: number | null
   cartonGwKg: number | null
   images: string[]
+  /**
+   * 表格图片列里填过、但服务器读不到的本地路径（如 C:\Users\x\风扇1.jpg）。
+   * 存下来只为一件事：「导入图片文件夹」时按文件名把图配对回来。
+   */
+  localImagePaths?: string[]
   notes: string
   supplier: string
   /** 备选供应商：一个或多个，每行一个（主供应商断货/涨价时用来替换） */
@@ -64,6 +69,8 @@ interface Row {
   pcs_per_carton: number | null
   carton_gw_kg: number | null
   images: string
+  /** 表格图片列里填的本地路径（服务器读不到，仅用于按文件名配对） */
+  local_image_paths: string | null
   notes: string
   supplier: string
   alt_suppliers: string
@@ -97,6 +104,7 @@ function rowToMaster(r: Row): MasterProduct {
     pcsPerCarton: r.pcs_per_carton,
     cartonGwKg: r.carton_gw_kg,
     images: parseImages(r.images),
+    localImagePaths: parseImages(r.local_image_paths ?? '[]'),
     notes: r.notes,
     supplier: r.supplier,
     altSuppliers: r.alt_suppliers ?? '',
@@ -145,6 +153,9 @@ const masterSchema = z.object({
   // 图片数量不限（用户可能从 1688 存几十张多角度图）；只留一个防滥用的硬上限 300 张，
   // 单条 URL 仍限长 4000，避免把整段 base64 塞进来。
   images: z.array(z.string().max(4000)).max(300).default([]),
+  // 表格图片列里填的本地路径：服务器读不到客户端磁盘，先原样存下来，
+  // 之后用「导入图片文件夹」按文件名配对回填（见 /fill-images-by-name）。
+  localImagePaths: z.array(z.string().max(2000)).max(60).optional(),
   notes: z.string().max(2000).default(''),
   supplier: z.string().max(200).default(''),
   /** 备选供应商：每行一个（允许多个），也兼容逗号/顿号分隔 */
@@ -162,8 +173,8 @@ function insertMaster(input: MasterInput): string {
   db.prepare(
     `INSERT INTO master_products (id, offer_id, source_url, title, price_cny, size_cn, weight_g,
       carton_l_cm, carton_w_cm, carton_h_cm, pcs_per_carton, carton_gw_kg, images, notes,
-      supplier, alt_suppliers, material_cn, colors_cn, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      supplier, alt_suppliers, material_cn, colors_cn, local_image_paths, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     offerId,
@@ -183,6 +194,7 @@ function insertMaster(input: MasterInput): string {
     input.altSuppliers ?? '',
     input.materialCn,
     input.colorsCn,
+    JSON.stringify(input.localImagePaths ?? []),
     now,
     now
   )
@@ -233,7 +245,8 @@ function updateMaster(id: string, input: MasterInput): MasterSyncResult {
   db.prepare(
     `UPDATE master_products SET offer_id=?, source_url=?, title=?, price_cny=?, size_cn=?, weight_g=?,
       carton_l_cm=?, carton_w_cm=?, carton_h_cm=?, pcs_per_carton=?, carton_gw_kg=?, images=?, notes=?,
-      supplier=?, alt_suppliers=?, material_cn=?, colors_cn=?, updated_at=? WHERE id=?`
+      supplier=?, alt_suppliers=?, material_cn=?, colors_cn=?,
+      local_image_paths=COALESCE(?, local_image_paths), updated_at=? WHERE id=?`
   ).run(
     offerIdOf(input.sourceUrl) || null,
     input.sourceUrl,
@@ -252,6 +265,8 @@ function updateMaster(id: string, input: MasterInput): MasterSyncResult {
     input.altSuppliers ?? '',
     input.materialCn,
     input.colorsCn,
+    // 没传就保留原来的本地路径（手工保存资料卡不该把它清掉）
+    input.localImagePaths ? JSON.stringify(input.localImagePaths) : null,
     new Date().toISOString(),
     id
   )
@@ -882,6 +897,107 @@ function linkedProducts(): Map<string, LinkedMeta> {
 }
 
 /**
+ * 「导入图片文件夹」：把本地图片按文件名配回资料库。
+ *
+ * 场景：Excel 图片列填的是 C:\\Users\\...\\风扇1.jpg 这种本机路径，服务器读不到，
+ * 导入时只把路径存进 local_image_paths。用户随后选一次图片文件夹，这里按「文件名」
+ * （不带目录、不区分大小写）把每张图配到对应产品，存成站内地址并回填 images。
+ * 配对成功后把该路径从 local_image_paths 里删掉，重复导入同一批图不会重复追加。
+ */
+masterProductsRouter.post('/fill-images-by-name', async (req: Request, res: Response) => {
+  const body = z
+    .object({
+      // 一次最多 4 张：手机原图一张 3-5MB，base64 后再涨 33%，批次太大会撑爆 JSON 上限
+      files: z
+        .array(z.object({ name: z.string().max(300), data: z.string().max(8_000_000) }))
+        .min(1)
+        .max(4),
+    })
+    .parse(req.body ?? {})
+
+  const rows = db
+    .prepare("SELECT * FROM master_products WHERE local_image_paths IS NOT NULL AND local_image_paths != '[]'")
+    .all() as unknown as Row[]
+
+  /** 只取文件名：C:\\a\\b\\风扇1.jpg 和 风扇1.jpg 视为同一张 */
+  const baseName = (p: string) =>
+    String(p ?? '')
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .split(/[\\/]/)
+      .pop()
+      ?.trim() ?? ''
+
+  const byName = new Map<string, Row[]>()
+  for (const r of rows) {
+    for (const path of parseImages(r.local_image_paths ?? '[]')) {
+      const key = baseName(path).toLowerCase()
+      if (!key) continue
+      const list = byName.get(key) ?? []
+      if (!list.includes(r)) list.push(r)
+      byName.set(key, list)
+    }
+  }
+
+  const unmatched: string[] = []
+  const full: string[] = []
+  let filled = 0
+  const touched = new Set<string>()
+
+  for (const f of body.files) {
+    const name = baseName(f.name)
+    const key = name.toLowerCase()
+    const targets = byName.get(key)
+    if (!targets?.length) {
+      unmatched.push(name)
+      continue
+    }
+    const parsed = dataUrlToBuffer(f.data)
+    if (!parsed) {
+      unmatched.push(name)
+      continue
+    }
+    let url = ''
+    try {
+      const norm = await normalizeImage(parsed.buffer, { max: 1600, quality: 88 })
+      url = `/api/product-images/public/master/${saveImageBuffer('master', norm.buffer, norm.ext)}`
+    } catch {
+      unmatched.push(name)
+      continue
+    }
+    for (const r of targets) {
+      const current = parseImages(r.images)
+      if (current.length >= 8) {
+        full.push(name)
+        continue
+      }
+      const next = [...current, url]
+      const rest = parseImages(r.local_image_paths ?? '[]').filter((x) => baseName(x).toLowerCase() !== key)
+      db.prepare(
+        'UPDATE master_products SET images=?, local_image_paths=?, updated_at=? WHERE id=?'
+      ).run(JSON.stringify(next), JSON.stringify(rest), new Date().toISOString(), r.id)
+      // 同一批里同一条产品可能命中多张图：内存里同步，避免互相覆盖
+      r.images = JSON.stringify(next)
+      r.local_image_paths = JSON.stringify(rest)
+      filled += 1
+      touched.add(r.id)
+    }
+  }
+
+  res.json({
+    ok: true,
+    /** 配对成功的图片张数 */
+    filled,
+    /** 涉及多少条资料 */
+    products: touched.size,
+    /** 没在资料库里找到对应产品的文件名 */
+    unmatched: unmatched.slice(0, 50),
+    /** 该产品图已满 8 张、没再追加的 */
+    full: full.slice(0, 20),
+  })
+})
+
+/**
  * 资料库图片上传：本地文件 / 剪贴板截图 / 手机拍照 都走这里。
  *
  * 前端把文件读成 data URL 传上来，服务端压到 1600px JPEG 存进 image_blobs（真身落库，
@@ -1201,6 +1317,32 @@ export function parseCartonText(text: string): {
   }
 }
 
+/**
+ * 从「图片」单元格里挑出本机路径。
+ *
+ * 表格里常见四种写法会混在一起：
+ *   C:\Users\x\桌面\图\风扇1.jpg      本机路径，服务器读不到
+ *   file:///C:/Users/x/a.jpg             同上
+ *   https://cbu01.alicdn.com/img/x.jpg   公网地址，本来就能用
+ *   =DISPIMG("ID_xxx",1)                 WPS 嵌入单元格图片，走另一条通道
+ * 这里只挑出「服务器读不到、但以后能按文件名配对」的那一类。
+ */
+export function extractLocalImagePaths(raw: string): string[] {
+  if (!raw) return []
+  // 先把 DISPIMG(...) 整段抠掉：它内部带逗号，先切分会剩个「1)」这种碎片混进结果
+  const cleaned = String(raw).replace(/=DISPIMG\s*\([^)]*\)/gi, ' ')
+  const out: string[] = []
+  for (const part of cleaned.split(/[\n\r|,，;；]+/)) {
+    const t = part.trim().replace(/^["']|["']$/g, '').trim()
+    if (!t) continue
+    if (/^https?:\/\//i.test(t)) continue
+    if (t.length < 3) continue
+    out.push(t)
+    if (out.length >= 60) break
+  }
+  return out
+}
+
 /** 把一行表格数据变成资料库输入；没有名称和链接就返回 null */
 function rowToInput(map: Map<ColKey, number[]>, row: unknown[], cellImages?: Map<string, string>): MasterInput | null {
   /** 取该字段第一个「有真实数据」的单元格（跳过 √ 这类标记和空值） */
@@ -1267,6 +1409,7 @@ function rowToInput(map: Map<ColKey, number[]>, row: unknown[], cellImages?: Map
         .filter((s) => /^https?:\/\//i.test(s))
         .slice(0, 300)
     })(),
+    localImagePaths: extractLocalImagePaths(get('imagesText')),
     notes: get('notes'),
     supplier: get('supplier'),
     altSuppliers: get('altSuppliers'),
@@ -1441,6 +1584,8 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
   let productsCreated = 0
   let productsLinked = 0
   const errors: Array<{ row: number; error: string }> = []
+  /** 图片列填的是本机路径的行数：服务器读不到，需要用户再选图片文件夹 */
+  let localPathRows = 0
 
   // 记录哪些行有「嵌入单元格图片」，导入完成后交给后台任务慢慢解
   const pendingImages: Array<{ id: string; imgIds: string[] }> = []
@@ -1452,13 +1597,19 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
     try {
       // 先不解析图片（解 38 张要几分钟，会把请求拖超时），先按文字入库
       const input = rowToInput(map, row)
+      if (input?.localImagePaths?.length) localPathRows += 1
       if (!input) {
         skipped += 1
         continue
       }
       const existing = input.sourceUrl ? findMasterByUrl(input.sourceUrl) : null
       if (existing) {
-        updateMaster(existing.id, input)
+        // 这行图片列没给本地路径（空 / 只有网址）→ 保留之前存下的待配路径
+        const patch =
+          input.localImagePaths && input.localImagePaths.length
+            ? input
+            : { ...input, localImagePaths: undefined }
+        updateMaster(existing.id, patch)
         updated += 1
       } else {
         insertMaster(input)
@@ -1528,6 +1679,8 @@ masterProductsRouter.post('/import', async (req: Request, res: Response) => {
     productsLinked,
     errors: errors.slice(0, 20),
     total: Math.max(0, grid.length - headerRow - 1),
+    /** 有这么多行的图片列填的是本机路径（服务器读不到）→ 让用户选「导入图片文件夹」按文件名补 */
+    localPathRows,
     /** 有这么多行带「嵌入单元格图片」，图片在后台解析 */
     pendingImages: pendingImages.length,
     imageTaskId,
