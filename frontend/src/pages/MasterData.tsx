@@ -21,7 +21,15 @@ import { SectionCard } from '@/components/ui/primitives'
 import { useNavigate } from 'react-router-dom'
 import { api, getErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { chunkImages, fileToDataUrl as readFileAsDataUrl, pickImageFiles } from '@/lib/files'
+import {
+  chunkImages,
+  collectDroppedFolders,
+  fileToDataUrl as readFileAsDataUrl,
+  groupFilesByFolder,
+  pickImageFiles,
+  type ImageFolderGroup,
+} from '@/lib/files'
+import { ImageFolderPairDialog } from '@/components/ImageFolderPairDialog'
 import { ProductSpecCards } from './ProductSpecs'
 import { MasterProduct, MasterStage } from '@/types'
 
@@ -531,59 +539,69 @@ function MasterDataPanel() {
   }
   // ---------------------------------------------------------------- 导入图片文件夹
   /** 图片列填的是本机路径的行：这些行服务器读不到图，需要用户选一次文件夹 */
+  /** 图片列填的是本机路径的行：这些行服务器读不到图，需要用户选一次文件夹 */
   const localImageRows = useMemo(
     () => list.filter((p) => (p.localImagePaths?.length ?? 0) > 0),
     [list]
   )
   const folderRef = useRef<HTMLInputElement | null>(null)
-  const [fillingFolder, setFillingFolder] = useState(false)
-  const [fillProgress, setFillProgress] = useState({ done: 0, total: 0, filled: 0 })
+  /** 待配对：一个文件夹 = 一款产品的图（文件夹名通常就是产品名） */
+  const [folderGroups, setFolderGroups] = useState<ImageFolderGroup[]>([])
+  const [pairOpen, setPairOpen] = useState(false)
+  /** 拖拽提示（与表单里 imgUrl 的 dragOver 是两回事，别混用） */
+  const [dropHint, setDropHint] = useState(false)
 
-  /**
-   * 按文件名把本地图片配回资料库。
-   * 表格图片列填的是 C:\\Users\\...\\风扇1.jpg，服务器读不到；这里把用户选的图片文件夹
-   * 按文件名（不含目录、不区分大小写）配到对应产品，配对成功才从待配列表里删掉。
-   */
-  const onPickImageFolder = async (files: FileList | null) => {
-    const imgs = pickImageFiles(files)
-    if (!imgs.length) {
-      toast.error('没选到图片文件（选包含产品图的文件夹）')
+  /** 选完文件夹 / 拖完文件夹 → 打开配对确认（不确认不写库） */
+  const openPairs = (groups: ImageFolderGroup[]) => {
+    if (!groups.length) {
+      toast.error('没读到图片：选一个（或拖进来）装产品图的文件夹')
       return
     }
-    setFillingFolder(true)
-    setFillProgress({ done: 0, total: imgs.length, filled: 0 })
-    let filled = 0
-    let products = 0
-    const unmatched: string[] = []
-    // 一次 2 张：手机原图 3-5MB，base64 后更大，批次太大会被 JSON 上限拦掉
-    const batches = chunkImages(imgs, 2)
-    let done = 0
-    for (const batch of batches) {
-      const payload = await Promise.all(
-        batch.map(async (f) => ({ name: f.name, data: await readFileAsDataUrl(f) }))
-      )
-      try {
-        const r = await api.fillMasterImagesByName(payload)
-        filled += r.filled
-        products += r.products
-        unmatched.push(...(r.unmatched ?? []))
-      } catch {
-        unmatched.push(...batch.map((b) => b.name))
-      }
-      done += batch.length
-      setFillProgress({ done, total: imgs.length, filled })
-    }
-    setFillingFolder(false)
-    if (filled) toast.success(`已配对 ${filled} 张图 → ${products} 条资料`)
-    if (unmatched.length)
-      toast.warning(
-        `${unmatched.length} 张没找到对应产品：${unmatched.slice(0, 3).join('、')}${unmatched.length > 3 ? ' 等' : ''}`
-      )
-    await load(q)
+    setFolderGroups(groups)
+    setPairOpen(true)
   }
 
+  const onPickImageFolder = (files: FileList | null) => {
+    openPairs(groupFilesByFolder(pickImageFiles(files)))
+  }
+
+  const onDropFolders = async (e: React.DragEvent) => {
+    e.preventDefault()
+    setDropHint(false)
+    try {
+      openPairs(await collectDroppedFolders(e.dataTransfer))
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+
   return (
-    <div className="space-y-4">
+    <div
+      className="space-y-4"
+      onDragOver={(e) => {
+        if (e.dataTransfer?.types?.includes('Files')) {
+          e.preventDefault()
+          setDropHint(true)
+        }
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setDropHint(false)
+      }}
+      onDrop={(e) => void onDropFolders(e)}
+    >
+      <ImageFolderPairDialog
+        open={pairOpen}
+        onOpenChange={setPairOpen}
+        groups={folderGroups}
+        products={list}
+        onDone={() => load(q)}
+      />
+      {dropHint && (
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-blue-50/80 text-[15px] font-medium text-blue-700">
+          松开即可按文件夹配对补图（可以一次拖多个文件夹）
+        </div>
+      )}
       <SectionCard
         title="产品资料库"
         hint="录一次就够了：批量处理 / 产品信息预填去抓 1688 时，会先查这里，命中就直接用你录的箱规和图片，不用再补"
@@ -622,24 +640,20 @@ function MasterDataPanel() {
                   : `批量抓图（缺 ${noImageRows.length} 条）`}
               </Button>
             )}
-            {localImageRows.length > 0 && (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={fillingFolder}
-                onClick={() => folderRef.current?.click()}
-                title="表格图片列填的是本机路径（C:\\...），服务器读不到：选一次图片文件夹，按文件名自动配对"
-              >
-                {fillingFolder ? (
-                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <ImagePlus className="mr-1 h-3.5 w-3.5" />
-                )}
-                {fillingFolder
-                  ? `配对中 ${fillProgress.done}/${fillProgress.total}`
-                  : `导入图片文件夹（待配 ${localImageRows.length} 条）`}
-              </Button>
-            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => folderRef.current?.click()}
+              title="一个文件夹 = 一款产品：可以选文件夹，也可以把多个文件夹直接拖到页面上；按文件夹名猜产品，确认后才写入"
+            >
+              <ImagePlus className="mr-1 h-3.5 w-3.5" />
+              导入图片文件夹
+              {localImageRows.length > 0 && (
+                <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                  待配 {localImageRows.length}
+                </span>
+              )}
+            </Button>
             <input
               ref={folderRef}
               type="file"
@@ -647,7 +661,7 @@ function MasterDataPanel() {
               accept="image/*"
               className="hidden"
               onChange={(e) => {
-                void onPickImageFolder(e.target.files)
+                onPickImageFolder(e.target.files)
                 e.target.value = ''
               }}
               {...({ webkitdirectory: 'true', directory: 'true' } as React.InputHTMLAttributes<HTMLInputElement>)}
